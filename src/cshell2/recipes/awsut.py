@@ -2,6 +2,8 @@
 
 Provides the ``awsut`` command tree:
 
+* ``awsut whoami``                   — identity, account, region, credential
+  expiry and every setting that got them
 * ``awsut console <page>``           — open a Management Console URL
 * ``awsut credentials set``          — write pasted ``export AWS_…`` lines into
   a ``~/.aws/credentials`` profile
@@ -65,6 +67,7 @@ import webbrowser
 from typing import Callable
 
 import boto3
+import botocore.exceptions
 
 from ..commands import registry as command_registry, arg
 from ..completion import Completer, Completion, CompletionContext, FileCompleter
@@ -76,7 +79,9 @@ from ._awsut_common import (
     RESET,
     YELLOW,
     SmError,
+    api_message,
     fmt_bytes,
+    fmt_dur,
     fmt_time,
     guard,
     print_header,
@@ -84,7 +89,7 @@ from ._awsut_common import (
     print_table,
     section,
 )
-from .aws import AwsProfileCompleter
+from .aws import AWS_REGIONS, AwsProfileCompleter
 
 
 # ─── User-customisable module-level config ──────────────────────────────────
@@ -368,6 +373,235 @@ def _mask(value: str) -> str:
     if len(value) <= 8:
         return "*" * len(value)
     return f"{value[:4]}{'*' * 8}{value[-4:]}"
+
+
+# ─── `awsut whoami` — what the next AWS call will do ────────────────────────
+#
+# A session asks the same four questions over and over: who am I, in which
+# account, in which region, and for how much longer.  Each answer lives
+# somewhere else — ``sts:GetCallerIdentity`` for the first two, the shell's own
+# env/profile for the third, and the credential object boto3 already resolved
+# for the fourth — so they get collected here instead of being pieced together
+# from `aws sts get-caller-identity` plus `env | grep AWS`.
+
+# Values whose whole point is to be unusable by a reader over your shoulder.
+_SECRET_ENV_PATTERN = re.compile(r"SECRET|TOKEN|PASSWORD|ACCESS_KEY_ID")
+
+# Caller-identity ARN resource types, in the words the console uses.
+_ARN_KINDS: dict[str, str] = {
+    "assumed-role":   "assumed role",
+    "user":           "IAM user",
+    "federated-user": "federated user",
+    "root":           "account root",
+}
+
+# A `var` override worth reporting is one that differs from the built-in
+# default; only a Var that *has* a non-empty default needs an entry here.
+_VAR_DEFAULTS: dict[str, str] = {"sagemaker_service_name": "sagemaker"}
+
+# The Vars that redirect a client somewhere other than the public endpoint.
+# Named rather than discovered, because "every registered Var" would drag the
+# whole user config into an answer about AWS.
+_ENDPOINT_VARS: tuple[str, ...] = (
+    "sagemaker_endpoint",
+    "sagemaker_service_name",
+    "agentcore_control_endpoint",
+    "agentcore_data_endpoint",
+)
+
+# Under this much time left, the expiry line is the point of the output.
+_EXPIRY_WARN_SECONDS = 15 * 60
+
+
+def parse_identity_arn(arn: str) -> tuple[str, str, str]:
+    """``(kind, name, session)`` — the three facts a caller ARN carries.
+
+    ``…:assumed-role/Admin/alice`` → ``("assumed role", "Admin", "alice")``;
+    ``…:user/alice`` → ``("IAM user", "alice", "")``; ``…:root`` →
+    ``("account root", "", "")``.  A resource type this doesn't know is
+    reported verbatim rather than guessed at — the full ARN prints anyway, so
+    an unfamiliar shape costs nothing.
+    """
+    parts = arn.split(":", 5)
+    if len(parts) < 6:
+        return ("", "", "")
+    kind, _, rest = parts[5].partition("/")
+    name, _, session = rest.partition("/")
+    return (_ARN_KINDS.get(kind, kind), name, session)
+
+
+def identity_pairs(identity: dict) -> list[tuple[str, str]]:
+    """The caller-identity block: the API's three fields, then what they mean."""
+    arn = identity.get("Arn") or ""
+    kind, name, session = parse_identity_arn(arn)
+    return [
+        ("Account", identity.get("Account") or ""),
+        ("UserId",  identity.get("UserId") or ""),
+        ("Arn",     arn),
+        ("Type",    kind),
+        ("Name",    name),
+        ("Session", session),
+    ]
+
+
+def expiry_label(expiry, now=None, *, colorize: bool = False) -> str:
+    """When the credentials die, and how long that is from now.
+
+    Reads botocore's ``_expiry_time``: private, but the only place the answer
+    exists, and the question ("do I need to refresh before starting this?") is
+    asked too often to leave out.  ``None`` means no expiry — which is itself
+    the answer for a long-lived access key.
+    """
+    if expiry is None:
+        return ""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=datetime.timezone.utc)
+    remaining = (expiry - now).total_seconds()
+    if remaining <= 0:
+        text, color = f"{fmt_time(expiry)}  (expired)", RED
+    elif remaining <= _EXPIRY_WARN_SECONDS:
+        text, color = f"{fmt_time(expiry)}  ({fmt_dur(remaining)} left)", YELLOW
+    else:
+        text, color = f"{fmt_time(expiry)}  ({fmt_dur(remaining)} left)", ""
+    return f"{color}{text}{RESET}" if color and colorize else text
+
+
+def credential_pairs(credentials, now=None, *,
+                     colorize: bool = False) -> list[tuple[str, str]]:
+    """Where the credentials came from, which key they are, and their expiry.
+
+    ``credentials.method`` is botocore's own name for the provider that won
+    (``env``, ``shared-credentials-file``, ``custom-process``, ``sso``,
+    ``assume-role``, ``iam-role``) — the fact that explains why a profile
+    switch did or didn't take effect, since an ``AWS_ACCESS_KEY_ID`` in the
+    environment silently outranks ``AWS_PROFILE``.
+    """
+    if credentials is None:
+        return [("Credentials", "none found — refresh them or set a profile")]
+    pairs = [("Credentials", getattr(credentials, "method", "") or "unknown")]
+    try:
+        frozen = credentials.get_frozen_credentials()
+    except Exception:
+        frozen = None
+    if frozen is not None and frozen.access_key:
+        pairs.append(("Access key", _mask(frozen.access_key)))
+    pairs.append(("Expires", expiry_label(
+        getattr(credentials, "_expiry_time", None), now, colorize=colorize)))
+    return pairs
+
+
+def region_pairs() -> list[tuple[str, str]]:
+    """The effective region, its human name, and which setting chose it."""
+    region = _get_region()
+    if not region:
+        return [("Region", "(not set — var aws_region=…)")]
+    from_env = bool(os.environ.get("AWS_REGION")
+                    or os.environ.get("AWS_DEFAULT_REGION"))
+    name = dict(AWS_REGIONS).get(region, "")
+    source = "AWS_REGION" if from_env else "profile config"
+    return [("Region", " · ".join(p for p in (region, name) if p)
+                       + f"  ({source})")]
+
+
+def profile_pairs() -> list[tuple[str, str]]:
+    """The profile in effect, plus the account/role its config file names.
+
+    The config-file account is printed next to the live one from
+    ``GetCallerIdentity`` on purpose: when they disagree, the profile is not
+    the thing supplying the credentials.
+    """
+    name = os.environ.get("AWS_PROFILE")
+    pairs = [("Profile", f"{name}  (AWS_PROFILE)" if name
+                         else "default  (AWS_PROFILE not set)")]
+    config = _get_all_profiles().get(name or "default", {})
+    if config.get("account"):
+        pairs.append(("Profile account", config["account"]))
+    if config.get("role"):
+        pairs.append(("Profile role", config["role"]))
+    return pairs
+
+
+def aws_env_pairs() -> list[tuple[str, str]]:
+    """Every ``AWS_*`` variable that is set, secrets masked.
+
+    The block that explains a surprise: an ``AWS_ENDPOINT_URL`` or a stale
+    ``AWS_SESSION_TOKEN`` left behind by a sourced script redirects calls
+    without showing up anywhere else in the output.
+    """
+    return [
+        (key, _mask(value) if _SECRET_ENV_PATTERN.search(key) else value)
+        for key, value in sorted(os.environ.items())
+        if key.startswith("AWS_") and value
+    ]
+
+
+def endpoint_override_pairs() -> list[tuple[str, str]]:
+    """The ``var`` settings pointing a client away from the public endpoint."""
+    pairs = []
+    for name in _ENDPOINT_VARS:
+        var = var_registry.get(name)
+        value = var.get() if var is not None else None
+        if value and value != _VAR_DEFAULTS.get(name):
+            pairs.append((name, value))
+    return pairs
+
+
+def _aws_session() -> tuple[object | None, str]:
+    """``(session, error)`` — constructing one fails on an unknown profile.
+
+    ``boto3.Session()`` reads the config file eagerly, so a stale
+    ``var aws_profile=`` raises before any call goes out.  That is the answer
+    ``whoami`` is being asked for, not a reason to print nothing.
+    """
+    try:
+        return (boto3.Session(), "")
+    except Exception as exc:
+        return (None, str(exc))
+
+
+def _session_credentials(session):
+    """The resolved credentials, or ``None`` when the chain can't produce any."""
+    if session is None:
+        return None
+    try:
+        return session.get_credentials()
+    except Exception:
+        return None
+
+
+def _caller_identity(session) -> tuple[dict, str]:
+    """``(identity, error)`` — never raises, because the rest still prints.
+
+    A failure here is the common case worth reporting *with* the settings
+    rather than instead of them: an expired or mis-pointed profile is exactly
+    what the profile/region/environment blocks below diagnose.
+    """
+    try:
+        client = session.client("sts", region_name=os.environ.get("AWS_REGION"))
+        return (client.get_caller_identity(), "")
+    except botocore.exceptions.NoCredentialsError:
+        return ({}, "no AWS credentials found — refresh them and retry")
+    except botocore.exceptions.ClientError as exc:
+        return ({}, api_message(exc))
+    except Exception as exc:
+        # Unknown profile, unreachable endpoint, bad credential_process, …
+        return ({}, str(exc))
+
+
+def _account_alias(session) -> str:
+    """The account's IAM alias — a name a human recognises faster than 12 digits.
+
+    Best effort: plenty of roles can call ``sts`` but not ``iam``, and a
+    missing alias must not turn a successful identity lookup into an error.
+    """
+    try:
+        aliases = session.client(
+            "iam", region_name=os.environ.get("AWS_REGION")
+        ).list_account_aliases()
+        return (aliases.get("AccountAliases") or [""])[0]
+    except Exception:
+        return ""
 
 
 # ─── progress dots used by `cloudformation watch` ───────────────────────────
@@ -690,6 +924,7 @@ class _SagemakerServiceNameVar(Var):
 def register() -> None:
     awsut = command_registry.command("awsut", help="AWS utility commands")
 
+    _register_whoami(awsut)
     _register_console(awsut)
     _register_credentials(awsut)
     _register_recent_cost(awsut)
@@ -706,6 +941,58 @@ def register() -> None:
 
     var_registry.register(_SagemakerEndpointVar())
     var_registry.register(_SagemakerServiceNameVar())
+
+
+def _register_whoami(awsut) -> None:
+    @awsut.command(
+        "whoami",
+        help="Show the identity, account, region and credential expiry the "
+             "next AWS call will use",
+        params=[
+            arg("--raw", action="store_true",
+                help="Show the raw sts:GetCallerIdentity response as JSON"),
+            arg("--no-alias", action="store_true",
+                help="Skip the iam:ListAccountAliases lookup (one fewer call)"),
+        ],
+    )
+    @guard
+    def _whoami(raw=False, no_alias=False):
+        # One session for all three lookups: a fresh one re-resolves the
+        # credential chain, which for a `credential_process` profile means
+        # running the helper (and any prompt it carries) a second time.
+        session, error = _aws_session()
+        identity: dict = {}
+        if session is not None:
+            identity, error = _caller_identity(session)
+        if raw:
+            if not identity:
+                raise SmError(error)
+            _print_json(identity)
+            return
+
+        colorize = sys.stdout.isatty()
+        alias = _account_alias(session) if identity and not no_alias else ""
+        pairs: list = []
+        if identity:
+            pairs += identity_pairs(identity)
+            pairs += [("Alias", alias)]
+        else:
+            pairs += [("Identity", f"{RED}unavailable{RESET}" if colorize
+                                   else "unavailable"),
+                      ("Reason", error)]
+        pairs += [None]
+        pairs += profile_pairs()
+        pairs += region_pairs()
+        pairs += credential_pairs(_session_credentials(session),
+                                  colorize=colorize)
+        print_labeled(pairs)
+
+        for label, block in (("environment", aws_env_pairs()),
+                             ("endpoint overrides", endpoint_override_pairs())):
+            if block:
+                print()
+                section(label)
+                print_labeled(block)
 
 
 def _register_console(awsut) -> None:
