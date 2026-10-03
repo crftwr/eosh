@@ -2,6 +2,8 @@
 
 A lightweight but powerful terminal shell environment with rich tab completion and context switching.
 
+![Pitash demo: TAB completion with descriptions, the multi-select flag picker, and switching contexts while a build keeps running](doc/images/demo.gif)
+
 ## Features
 
 - **Rich tab completion** — per-argument completers with descriptions, inline picker UI

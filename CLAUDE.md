@@ -980,7 +980,9 @@ pitash/
 │   ├── _version_source.py      # read/rewrite the single __version__ literal
 │   ├── bump_version.py         # used by `make tag`
 │   ├── release_preflight.py    # refuses a release from a dirty/stale checkout
-│   └── gen_pypi_readme.py      # README.md → README.pypi.md (absolute links)
+│   ├── gen_pypi_readme.py      # README.md → README.pypi.md (absolute links)
+│   └── demo/                   # `make demo`: setup.sh (throwaway HOME) +
+│                               # demo.tape (VHS) → doc/images/demo.gif
 ├── src/
 │   └── pitash/
 │       ├── __init__.py         # public API exports + __version__ (single source)

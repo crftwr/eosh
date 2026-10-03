@@ -27,7 +27,7 @@ endif
 
 $(info Using Python bootstrap: $(PYTHON_BOOTSTRAP))
 
-.PHONY: help install test clean run install-launcher build publish-testpypi tag release-github release-whl release-status
+.PHONY: help install test clean run demo install-launcher build publish-testpypi tag release-github release-whl release-status
 
 help:
 	@echo "Pitash utility commands:"
@@ -35,6 +35,7 @@ help:
 	@echo "  make test             - run the test suite"
 	@echo "  make run              - run pitash from the venv"
 	@echo "  make install-launcher - put a pitash launcher on PATH"
+	@echo "  make demo             - re-record doc/images/demo.gif (needs vhs)"
 	@echo "  make clean            - remove the venv, build artifacts and caches"
 	@echo ""
 	@echo "Release (run in this order):"
@@ -59,6 +60,12 @@ test: $(VENV_STAMP)
 
 run: $(VENV_STAMP)
 	"$(PYTHON)" -m pitash
+
+# README demo GIF.  Records scripts/demo/demo.tape with VHS against a
+# throwaway HOME (scripts/demo/setup.sh), so no real history or config shows.
+demo: $(VENV_STAMP)
+	scripts/demo/setup.sh
+	PITASH="$(CURDIR)/$(VENV_BIN)/pitash" vhs scripts/demo/demo.tape
 
 install-launcher: $(VENV_STAMP)
 	"$(PYTHON)" scripts/install_launcher.py
