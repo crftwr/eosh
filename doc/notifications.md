@@ -157,8 +157,8 @@ pitash> var notify                    # → on
 
 `notify` accepts `on/true/yes/1/enabled` and `off/false/no/0/disabled`;
 anything else prints an error and leaves the setting alone, as does a
-non-numeric or negative threshold. `unset notify` disables;
-`unset notify_threshold` restores the 10-second default.
+non-numeric or negative threshold. `var notify=` disables;
+`var notify_threshold=` restores the 10-second default.
 
 Both variables declare no `env_keys`, so they are process-global rather than
 per-context: a context switch neither saves nor restores them. "Tell me when

@@ -81,7 +81,7 @@
 Entry point and orchestrator. Owns the REPL cycle: read input, parse, dispatch, repeat.
 
 - Uses a DIY raw-mode line editor (`lineedit.py`) — no external dependencies
-- Registers built-in commands: `cd`, `exit`, `reload`, `var`, `unset`, `help`, `context`
+- Registers built-in commands: `cd`, `exit`, `reload`, `var`, `alias`, `unalias`, `source-bash`, `help`, `context`
 - Loads user configuration at startup; `reload` re-loads without restarting the shell
 - Falls back to PTY subprocess (`process.py`) for unrecognized commands
 - Executes pipelines (`|`), sequences (`;`, `&&`, `||`), and redirections (`>`, `>>`, `<`, `2>`, `2>&1`)

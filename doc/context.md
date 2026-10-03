@@ -97,8 +97,9 @@ Sends SIGTERM to the running process in the named context. The context itself is
 
 ```
 var KEY=VALUE [KEY=VALUE ...]    # set one or more context variables
+var KEY                          # print the current value of KEY
+var KEY= [KEY= ...]              # remove variables from context and os.environ
 var                              # list all current environment variables
-unset KEY [KEY ...]              # remove variables from context and os.environ
 ```
 
 `var` sets variables on the **current context** and immediately exports them to `os.environ`. They will be re-applied whenever this context is switched to.

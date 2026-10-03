@@ -73,12 +73,37 @@ pitash
 | `cd [path]` | Change directory (default: home) |
 | `help [command]` | Show help for a command or list all commands |
 | `context` | Manage contexts (see below) |
-| `var [KEY=VALUE ...]` | Set context variables, or list all env vars |
-| `unset KEY [KEY ...]` | Unset context variables |
+| `var [NAME[=VALUE] ...]` | List variables, print one (`var NAME`), set (`var NAME=VALUE`), or unset (`var NAME=`) |
+| `alias [NAME[=EXPANSION] ...]` | List aliases, show one, or define a shorthand for a command |
+| `unalias NAME [NAME ...]` | Remove aliases |
+| `source-bash [FILE [ARG ...]]` | Run a bash script (or a pasted block) and import its variables and cwd |
 | `reload` | Reload `~/.pitash/config.py` without restarting |
 | `exit` | Exit the shell |
 
 Any command not listed above is passed through to the system shell (e.g., `ls`, `git`, `grep`).
+
+### Aliases
+
+An alias replaces the first word of a command line. Quote the expansion when it contains spaces:
+
+```
+pitash> alias hp='awsut sagemaker hyperpod'
+pitash> hp list                  # runs: awsut sagemaker hyperpod list
+pitash> alias                    # list all aliases
+pitash> unalias hp
+```
+
+### Importing Variables from Bash
+
+`source-bash` runs a script in a real `bash` — so `export`, `$(…)`, loops, heredocs and conditionals all work — and imports the environment and working directory it leaves behind, the way bash's own `source` would:
+
+```
+pitash> source-bash              # paste `export KEY=VALUE` lines, end with a blank line or Ctrl+D
+pitash> source-bash setup.sh s3  # source a file with arguments
+pitash> source-bash -c 'export A=$(date +%s)'
+```
+
+`--no-cd` keeps the current directory and `-q` suppresses the summary of imported variable names. Shell functions, aliases and shell options can't be imported.
 
 ### Contexts
 
