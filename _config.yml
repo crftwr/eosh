@@ -1,0 +1,3 @@
+theme: jekyll-theme-primer
+title: "Pitash"
+description: "A lightweight but powerful terminal shell in Python — rich TAB completion and context switching"

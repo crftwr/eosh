@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img"
+     aria-label="Pitash — terminal shell with rich TAB completion and context switching">
+  <title>Pitash — terminal shell with rich TAB completion and context switching</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#0d1626"/>
+    </linearGradient>
+    <linearGradient id="wm" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3fb950"/>
+      <stop offset="1" stop-color="#7ce3f2"/>
+    </linearGradient>
+    <filter id="soft" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="34"/>
+    </filter>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="7" stdDeviation="12" flood-color="#01040a" flood-opacity="0.55"/>
+    </filter>
+    <clipPath id="clip">
+      <rect width="1200" height="300" rx="14"/>
+    </clipPath>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="12" cy="12" r="1.1" fill="#e6edf3" opacity="0.05"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="300" rx="14" fill="url(#bg)"/>
+  <g clip-path="url(#clip)">
+    <rect width="1200" height="300" fill="url(#dots)"/>
+    <ellipse cx="210" cy="152" rx="180" ry="100" fill="#238636" opacity="0.15" filter="url(#soft)"/>
+    <ellipse cx="990" cy="152" rx="180" ry="100" fill="#39c5cf" opacity="0.13" filter="url(#soft)"/>
+  </g>
+  <rect x="0.5" y="0.5" width="1199" height="299" rx="13.5" fill="none" stroke="#30363d"/>
+
+  <g font-family="ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace" font-size="12.5">
+    <!-- Left: TAB completion with an inline picker and descriptions -->
+    <rect x="58" y="64" width="304" height="174" rx="8" fill="#040b10" stroke="#21262d" filter="url(#drop)"/>
+    <text x="74" y="92"><tspan fill="#3fb950">~/src</tspan><tspan fill="#6e7681"> 10:42</tspan><tspan fill="#c9d1d9">&gt; git c</tspan></text>
+    <rect x="218" y="81" width="7.5" height="15" fill="#c9d1d9" opacity="0.85"/>
+    <rect x="70" y="104" width="280" height="122" fill="none" stroke="#2d4a3a"/>
+    <rect x="71" y="132" width="278" height="22" fill="#1f6f43"/>
+    <text x="80" y="124" fill="#c9d1d9">checkout</text>
+    <text x="184" y="124" fill="#768390">Switch branches</text>
+    <text x="80" y="148" fill="#ffffff" font-weight="600">cherry-pick</text>
+    <text x="184" y="148" fill="#d2f4dc">Apply commits</text>
+    <text x="80" y="172" fill="#c9d1d9">clean</text>
+    <text x="184" y="172" fill="#768390">Remove untracked</text>
+    <text x="80" y="196" fill="#c9d1d9">clone</text>
+    <text x="184" y="196" fill="#768390">Clone a repo</text>
+    <text x="80" y="220" fill="#c9d1d9">commit</text>
+    <text x="184" y="220" fill="#768390">Record changes</text>
+    <rect x="343" y="110" width="4" height="40" rx="2" fill="#3b5b49"/>
+
+    <!-- Right: Ctrl+] context switcher with a live-process preview -->
+    <rect x="838" y="64" width="304" height="174" rx="8" fill="#040b10" stroke="#21262d" filter="url(#drop)"/>
+    <text x="854" y="92"><tspan fill="#d2a8ff">[prod]</tspan><tspan fill="#3fb950"> ~/api</tspan><tspan fill="#c9d1d9">&gt; </tspan><tspan fill="#6e7681">Ctrl+]</tspan></text>
+    <rect x="850" y="104" width="280" height="76" fill="none" stroke="#2a4752"/>
+    <rect x="851" y="130" width="278" height="22" fill="#1b5e6b"/>
+    <text x="860" y="122" fill="#c9d1d9">default</text>
+    <text x="948" y="122" fill="#768390">~/src</text>
+    <text x="860" y="146" fill="#ffffff" font-weight="600">build</text>
+    <text x="948" y="146" fill="#d6f6fa">make -j8</text>
+    <text x="1062" y="146" fill="#7ee787">● run</text>
+    <text x="860" y="170" fill="#c9d1d9">prod</text>
+    <text x="948" y="170" fill="#768390">~/api</text>
+    <text x="860" y="200" fill="#6e7681">  CC   src/lexer.o</text>
+    <text x="860" y="220" fill="#6e7681">  CC   src/parser.o</text>
+  </g>
+
+  <!-- Wordmark -->
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" text-anchor="middle">
+    <text x="600" y="136" font-size="68" font-weight="700" letter-spacing="-1.5" fill="url(#wm)">Pitash</text>
+    <text x="600" y="178" font-size="18" fill="#9aa4b2">Rich TAB completion and context switching</text>
+    <rect x="502" y="196" width="196" height="28" rx="14" fill="#161b22" stroke="#30363d"/>
+    <text x="600" y="215" font-size="14.5" fill="#8b949e"
+          font-family="ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace"><tspan fill="#79c0ff">$</tspan> pip install pitash</text>
+  </g>
+</svg>
