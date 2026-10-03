@@ -36,7 +36,7 @@
     <!-- Left: TAB completion with an inline picker and descriptions -->
     <rect x="58" y="64" width="304" height="174" rx="8" fill="#040b10" stroke="#21262d" filter="url(#drop)"/>
     <text x="74" y="92"><tspan fill="#3fb950">~/src</tspan><tspan fill="#6e7681"> 10:42</tspan><tspan fill="#c9d1d9">&gt; git c</tspan></text>
-    <rect x="218" y="81" width="7.5" height="15" fill="#c9d1d9" opacity="0.85"/>
+    <rect x="211" y="81" width="7.5" height="15" fill="#c9d1d9" opacity="0.85"/>
     <rect x="70" y="104" width="280" height="122" fill="none" stroke="#2d4a3a"/>
     <rect x="71" y="132" width="278" height="22" fill="#1f6f43"/>
     <text x="80" y="124" fill="#c9d1d9">checkout</text>

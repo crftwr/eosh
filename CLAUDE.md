@@ -981,6 +981,8 @@ pitash/
 │   ├── bump_version.py         # used by `make tag`
 │   ├── release_preflight.py    # refuses a release from a dirty/stale checkout
 │   ├── gen_pypi_readme.py      # README.md → README.pypi.md (absolute links)
+│   ├── render_banner.py        # `make banner`: doc/images/banner.svg →
+│   │                           # banner.jpg + banner-og.jpg (Pages / og:image)
 │   └── demo/                   # `make demo`: setup.sh (throwaway HOME) +
 │                               # demo.tape (VHS) → doc/images/demo.gif
 ├── src/

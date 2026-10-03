@@ -27,7 +27,7 @@ endif
 
 $(info Using Python bootstrap: $(PYTHON_BOOTSTRAP))
 
-.PHONY: help install test clean run demo install-launcher build publish-testpypi tag release-github release-whl release-status
+.PHONY: help install test clean run demo banner install-launcher build publish-testpypi tag release-github release-whl release-status
 
 help:
 	@echo "Pitash utility commands:"
@@ -36,6 +36,7 @@ help:
 	@echo "  make run              - run pitash from the venv"
 	@echo "  make install-launcher - put a pitash launcher on PATH"
 	@echo "  make demo             - re-record doc/images/demo.gif (needs vhs)"
+	@echo "  make banner           - render doc/images/banner.svg to the Pages JPEGs (needs Chrome)"
 	@echo "  make clean            - remove the venv, build artifacts and caches"
 	@echo ""
 	@echo "Release (run in this order):"
@@ -66,6 +67,11 @@ run: $(VENV_STAMP)
 demo: $(VENV_STAMP)
 	scripts/demo/setup.sh
 	PITASH="$(CURDIR)/$(VENV_BIN)/pitash" vhs scripts/demo/demo.tape
+
+# GitHub Pages banner.  banner.svg is the source; link previews ignore SVG in
+# og:image, so the site serves JPEGs rendered from it (headless Chrome + sips).
+banner:
+	python3 scripts/render_banner.py
 
 install-launcher: $(VENV_STAMP)
 	"$(PYTHON)" scripts/install_launcher.py
