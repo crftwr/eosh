@@ -15,8 +15,7 @@ from .variables import Var, EnvVar, registry as var_registry
 #: Single source of truth for the version string -- the ONLY place the literal
 #: appears in this repo. pyproject.toml derives it via its dynamic ``version``
 #: (``attr = "pitash.__version__"``), and ``make tag`` rewrites this line.
-__version__ = "0.1.0.dev0"
-
+__version__ = "0.1.0"
 __all__ = [
     "arg",
     "CmdParser",
