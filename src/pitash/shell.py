@@ -2093,7 +2093,9 @@ class Shell:
 
         @self.registry.command(name="reload", help="Reload ~/.pitash/config.py.")
         def reload_config():
+            from . import recipes
             self.registry.clear_user_commands()
+            recipes.skipped_recipes.clear()
             var_registry.clear_user_vars()
             set_prompt(None)
             self._load_user_config()

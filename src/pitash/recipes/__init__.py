@@ -56,6 +56,7 @@ automatically by the cobra-protocol fallback — no recipe needed.  See
 from __future__ import annotations
 
 import importlib.util
+import sys
 from importlib import import_module
 from pathlib import Path
 
@@ -100,6 +101,12 @@ def enable(*recipe_names: str) -> None:
     in :data:`skipped_recipes` instead of aborting the whole call — the same
     "absent tool is a no-op" rule as a recipe whose command is not on
     ``PATH``.  Naming such a recipe explicitly still raises.
+
+    Skipping is not silent at the point of use, though: unless it would
+    shadow a real executable, a placeholder command named after the recipe is
+    registered, and running it explains what is missing and prints the
+    install command for *this* environment (``uv tool``, ``pipx`` or pip —
+    see :mod:`pitash.recipes._missing`).  It also shows up in ``help``.
     """
     wildcard = "*" in recipe_names
     names = _discover_all_recipes() if wildcard else recipe_names
@@ -109,14 +116,44 @@ def enable(*recipe_names: str) -> None:
         except ModuleNotFoundError as e:
             if not wildcard:
                 raise
-            skipped_recipes[name] = e.name or str(e)
+            missing = e.name or str(e)
+            skipped_recipes[name] = missing
+            _register_unavailable(name, missing)
             continue
+        skipped_recipes.pop(name, None)
         module.register()
 
 
 # Recipes ``enable("*")`` skipped because a dependency could not be imported:
 # recipe name → missing module name (e.g. ``{"awsut": "boto3"}``).
 skipped_recipes: dict[str, str] = {}
+
+
+def _register_unavailable(name: str, missing: str) -> None:
+    """Register a placeholder ``name`` command that explains the skip.
+
+    Typing ``awsut`` would otherwise fall through to the system and end in a
+    bare "command not found", with nothing pointing at the missing extra.
+
+    The placeholder is only a guess at the command's name — a recipe file may
+    register a differently-named command (``my_tool.py`` → ``my-tool``) — so
+    it steps aside whenever the name means something already: a registered
+    command, or an executable on ``PATH``.  A recipe that only adds completion
+    to ``git`` must leave ``git`` itself runnable when its dependency is gone.
+    """
+    import shutil
+    from ..commands import registry
+
+    if registry.has(name) or shutil.which(name):
+        return
+
+    from ._missing import missing_message
+
+    def unavailable(*_args: str) -> None:
+        print(missing_message(name, missing), file=sys.stderr)
+        raise SystemExit(127)
+
+    registry.command(name, help=f"(unavailable: needs {missing!r} — run it for how to install)")(unavailable)
 
 
 def _discover_all_recipes() -> list[str]:

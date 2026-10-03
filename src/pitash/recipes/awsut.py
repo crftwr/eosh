@@ -71,8 +71,10 @@ try:
     import botocore.exceptions
 except ModuleNotFoundError as e:
     # Keep ``e.name`` so ``enable("*")`` still recognises a missing dependency.
+    from ._missing import install_command
     raise ModuleNotFoundError(
-        f"awsut needs {e.name}: pip install 'pitash[aws]'", name=e.name
+        f"awsut needs {e.name} (the [aws] extra): {install_command(extra='aws')}",
+        name=e.name,
     ) from e
 
 from ..commands import registry as command_registry, arg

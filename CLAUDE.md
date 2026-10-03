@@ -820,6 +820,19 @@ enable("my_tool")      # found in ~/.pitash/recipes/ or /team/shared/recipes/
 
 `recipe_search_path` is a plain `list[Path]` and can be read or manipulated directly when finer control is needed.
 
+**Missing dependencies.** Under `enable("*")`, a recipe whose import fails
+with `ModuleNotFoundError` (`awsut` without the `[aws]` extra, a user recipe
+importing `requests`) is skipped, recorded in `recipes.skipped_recipes`, and
+replaced by a placeholder command of the same name — unless that name is
+already registered or on `PATH`, so a completion-only recipe never shadows
+the real executable. Running the placeholder prints the missing module and
+an install command for *this* environment (`recipes/_missing.py`): for a
+`uv tool` venv it rebuilds `uv tool install … --with …` from
+`uv-receipt.toml` (because `--with` replaces rather than appends), for pipx
+it's `pipx inject`, otherwise `<sys.executable> -m pip install`. Built-in
+recipes backed by a pitash extra are listed in `_missing.RECIPE_EXTRAS` so
+the hint names `pitash[<extra>]` rather than the bare module.
+
 ### decorators/ — Pipeline Decorators
 
 A **decorator** is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how that pipeline is run. The leading `@` makes the syntax visually distinct from regular commands so parsing priority is unambiguous and the construct doesn't collide with POSIX command names.
@@ -1009,6 +1022,8 @@ pitash/
 │       ├── tui.py              # InlinePicker, InlineMultiPicker, InlineArgPrompt
 │       ├── recipes/
 │       │   ├── __init__.py     # enable(*names) helper
+│       │   ├── _missing.py     # install hint for a recipe's missing dependency
+│       │   │                   # (uv tool / pipx / pip aware)
 │       │   ├── aws.py
 │       │   ├── awsut.py
 │       │   ├── _awsut_common.py   # the output contract for the whole `awsut`
@@ -1080,6 +1095,7 @@ pitash/
     ├── test_parsing.py
     ├── test_pipeline.py
     ├── test_process.py
+    ├── test_recipe_missing.py
     ├── test_recipes.py
     ├── test_shell_continuation.py
     ├── test_user_config.py

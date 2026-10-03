@@ -34,13 +34,21 @@ A lightweight but powerful terminal shell environment with rich tab completion a
 Requires Python 3.12+. The core has no dependencies beyond the standard library.
 
 ```bash
-pip install pitash            # or: pipx install pitash
-pip install "pitash[aws]"     # + the `awsut` recipe (boto3, pexpect)
+pip install pitash               # or: pipx install pitash / uv tool install pitash
+pip install "pitash[aws]"        # + the `awsut` recipe (boto3, pexpect)
+uv tool install "pitash[aws]"    # same, as an isolated uv tool
 ```
 
 On first launch `pitash` writes a starter `~/.pitash/config.py` that enables
 every built-in recipe. Without the `[aws]` extra, `awsut` is skipped and
-everything else loads normally.
+everything else loads normally; running `awsut` then prints the install
+command for the environment pitash lives in (`uv tool`, `pipx`, or pip).
+
+`uv tool` and `pipx` install pitash into its own virtualenv, so a
+`pip install boto3` in another shell does not reach it — add packages with
+`uv tool install pitash --with <pkg>` or `pipx inject pitash <pkg>`. With
+`uv tool`, `--with` *replaces* the previous list, so repeat any earlier
+entries (`uv tool list --show-with` shows them).
 
 ### From source
 
@@ -499,6 +507,14 @@ Lookup order for every `enable()` call:
 3. Additional paths in the order they were added via `add_recipe_path()`
 
 You can also read or modify `recipe_search_path` directly (it is a plain `list[Path]`).
+
+A recipe may import third-party packages, but they must be installed in
+pitash's own environment (see [Installation](#installation) for `uv tool` /
+`pipx`). When one is missing, `enable("*")` skips that recipe instead of
+failing the whole config and registers a placeholder command under the
+recipe's name (unless that name is already a command or an executable on
+`PATH`); running it says which module is missing and how to install it.
+Naming the recipe explicitly — `enable("my_tool")` — still raises.
 
 ### Writing a Custom Completer
 
