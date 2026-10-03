@@ -2,6 +2,14 @@
 
 A lightweight but powerful terminal shell environment with rich tab completion and context switching.
 
+<!-- pypi-exclude-start -->
+<p>
+  <a href="https://pypi.org/project/pitash/">
+    <img src="doc/images/install-pypi.svg" alt="Install Pitash from PyPI with pip" />
+  </a>
+</p>
+<!-- pypi-exclude-end -->
+
 ![Pitash demo: TAB completion with descriptions, the multi-select flag picker, and switching contexts while a build keeps running](doc/images/demo.gif)
 
 ## Features
