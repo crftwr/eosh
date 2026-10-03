@@ -1,4 +1,4 @@
-"""AWS utility commands ported from the legacy cshell.
+"""AWS utility commands.
 
 Provides the ``awsut`` command tree:
 

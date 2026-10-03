@@ -69,7 +69,7 @@ SKIP_COMMANDS: set[str] = {
     # remote sessions & multiplexers
     "ssh", "mosh", "telnet", "tmux", "screen", "zellij",
     # shells (an interactive sub-shell is a session, not a job)
-    "sh", "bash", "zsh", "fish", "dash", "csh", "tcsh", "pitash", "cshell2",
+    "sh", "bash", "zsh", "fish", "dash", "csh", "tcsh", "pitash",
     # leaving the shell is not an event worth a popup
     "exit",
 }

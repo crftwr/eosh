@@ -6,7 +6,7 @@ A HyperPod cluster is a SageMaker resource, so the group hangs off
 once, by an alias (``alias hp='awsut sagemaker hyperpod'``); the wrong path was
 paid every time someone read the tree.
 
-Ported from the legacy cshell, this module used to print with instruments of its
+This module used to print with instruments of its
 own — colon-separated one-liners where its neighbours printed tables — so the
 same question answered about two SageMaker resources came back in two formats.
 It now renders through :mod:`render` (i.e. :mod:`.._awsut_common`) like the rest

@@ -1163,7 +1163,7 @@ The thread-local routing (`_ThreadLocalStdin` / `_ThreadLocalStdout` / `_ThreadL
 
 ## Packaging & Release
 
-Published to PyPI as **`pitash`** (formerly the working title `cshell2`).
+Published to PyPI as **`pitash`**.
 Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 `license = "MIT"`, and Makefile + twine with tokens from `~/.pypirc` — no CI.
 
