@@ -5,13 +5,13 @@ line that wraps the rest of the line as a pipeline.  See
 ``doc/decorators.md`` for the full design.
 
 Built-in decorators are siblings of this module (e.g.
-``cshell2.decorators.watch``).  Each module exposes ``register()`` which
+``pitash.decorators.watch``).  Each module exposes ``register()`` which
 calls ``decorator_registry.decorator(...)``.
 
 Public API::
 
-    from cshell2.decorators import registry as decorator_registry
-    from cshell2.commands import arg
+    from pitash.decorators import registry as decorator_registry
+    from pitash.commands import arg
 
     @decorator_registry.decorator(
         name="watch",
@@ -40,6 +40,7 @@ from ..commands import (
     _effective_description,
 )
 from ..completion import Completer
+from ..paths import config_dir
 from ..pipeline import Pipeline, set_decorator_value_flag_lookup
 
 
@@ -83,7 +84,7 @@ class Decorator:
 class DecoratorRegistry:
     """Registry of pipeline decorators.
 
-    Mirrors :class:`cshell2.commands.CommandRegistry` but flat — decorators
+    Mirrors :class:`pitash.commands.CommandRegistry` but flat — decorators
     don't have subcommands or aliases.
     """
 
@@ -199,10 +200,10 @@ def parse_decorator_args(deco: Decorator, tokens: list[str]) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Built-in / user decorator loading (mirrors cshell2.recipes.enable)
+# Built-in / user decorator loading (mirrors pitash.recipes.enable)
 # ---------------------------------------------------------------------------
 
-decorator_search_path: list[Path] = [Path.home() / ".cshell2" / "decorators"]
+decorator_search_path: list[Path] = [config_dir() / "decorators"]
 
 
 def add_decorator_path(path: str | Path) -> None:
@@ -250,7 +251,7 @@ def _load_decorator(name: str):
         candidate = Path(directory) / f"{name}.py"
         if candidate.exists():
             spec = importlib.util.spec_from_file_location(
-                f"cshell2_user_decorator_{name}", candidate
+                f"pitash_user_decorator_{name}", candidate
             )
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

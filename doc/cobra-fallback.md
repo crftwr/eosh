@@ -2,18 +2,18 @@
 
 ## Status
 
-Implemented. See [src/cshell2/completion.py](../src/cshell2/completion.py) (`CobraCompleter`) and [tests/test_cobra_completion.py](../tests/test_cobra_completion.py).
+Implemented. See [src/pitash/completion.py](../src/pitash/completion.py) (`CobraCompleter`) and [tests/test_cobra_completion.py](../tests/test_cobra_completion.py).
 
 ## Motivation
 
-cshell2 provides TAB completion through two paths:
+pitash provides TAB completion through two paths:
 
 1. Python commands registered with `@registry.command(params=[arg(...)])`.
-2. External completer recipes in [src/cshell2/recipes/](../src/cshell2/recipes/).
+2. External completer recipes in [src/pitash/recipes/](../src/pitash/recipes/).
 
 Anything outside those falls through to `FileCompleter` only — fine for many cases but a long tail of useful tools (kubectl, helm, gh, argocd, k9s, doctl, linkerd, …) get no smart completions until someone writes a recipe.
 
-A huge fraction of these tools are built on the [spf13/cobra](https://github.com/spf13/cobra) framework, which exposes a hidden `__complete` subcommand. That subcommand is the same thing cobra's bash/zsh completion scripts call internally. Driving it directly skips bash entirely, returns richer data than bash-completion (descriptions per candidate), and works on any host that has the tool installed — **zero install dependency on cshell2's side.**
+A huge fraction of these tools are built on the [spf13/cobra](https://github.com/spf13/cobra) framework, which exposes a hidden `__complete` subcommand. That subcommand is the same thing cobra's bash/zsh completion scripts call internally. Driving it directly skips bash entirely, returns richer data than bash-completion (descriptions per candidate), and works on any host that has the tool installed — **zero install dependency on pitash's side.**
 
 ## Goals
 
@@ -49,7 +49,7 @@ Completion ended with directive: ShellCompDirectiveNoFileComp
 | `:N` | trailing directive byte (4 = nofile, 2 = nospace, …) |
 | `Completion ended …` | trace line emitted by some cobra builds |
 
-cshell2's parser keeps the candidate lines, drops the directive and trace.
+pitash's parser keeps the candidate lines, drops the directive and trace.
 
 ## Detection
 
@@ -83,7 +83,7 @@ Non-cobra tools (e.g. `git`, `ls`) emit a different error and are cached as not-
 ## API
 
 ```python
-from cshell2.completion import (
+from pitash.completion import (
     enable_cobra_fallback,
     disable_cobra_fallback,
     get_cobra_fallback,
@@ -93,7 +93,7 @@ from cshell2.completion import (
 # Default: enabled. To override the timeout (default 1.5s):
 enable_cobra_fallback(timeout=3.0)
 
-# To turn it off entirely (e.g. in ~/.cshell2/config.py):
+# To turn it off entirely (e.g. in ~/.pitash/config.py):
 disable_cobra_fallback()
 ```
 
@@ -120,9 +120,9 @@ bash-completion was the obvious-looking choice but adds a system dependency (the
 
 The remaining long tail is covered by:
 
-- The `aws` recipe drives `aws_completer` (AWS CLI v2's protocol — different from cobra; see [recipes/aws.py](../src/cshell2/recipes/aws.py))
+- The `aws` recipe drives `aws_completer` (AWS CLI v2's protocol — different from cobra; see [recipes/aws.py](../src/pitash/recipes/aws.py))
 - [argcomplete-fallback.md](argcomplete-fallback.md) for Python CLIs (pipx, conda, pre-commit, tox, …)
-- cshell2's own recipes for shell-only completion (`git`, `ssh`, `ls`, `make`, …)
+- pitash's own recipes for shell-only completion (`git`, `ssh`, `ls`, `make`, …)
 
 ## Future work
 

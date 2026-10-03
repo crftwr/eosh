@@ -1,7 +1,7 @@
 """TTL-based cache for completer fetches that hit external services.
 
 TAB completion fires every keystroke while the picker is open
-(``refresh_fn`` in :mod:`cshell2.lineedit` re-runs the completer on every
+(``refresh_fn`` in :mod:`pitash.lineedit` re-runs the completer on every
 typed char). Completers that call AWS APIs would otherwise re-fetch the
 same data four or five times for a single typed token.
 

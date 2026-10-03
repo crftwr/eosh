@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .paths import config_dir
+
 
 class History:
     def __init__(self, path: str | Path | None = None):
         if path is None:
-            path = Path.home() / ".cshell2" / "history"
+            path = config_dir() / "history"
         self.path = Path(path)
         self.entries: list[str] = []
         self._load()

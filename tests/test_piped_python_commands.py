@@ -12,8 +12,8 @@ import tempfile
 
 import pytest
 
-from cshell2.commands import registry
-from cshell2.shell import Shell, _in_pipeline, passthrough_input, passthrough_run
+from pitash.commands import registry
+from pitash.shell import Shell, _in_pipeline, passthrough_input, passthrough_run
 
 
 # All tests in this module exercise the in-process pipeline whose worker
@@ -213,7 +213,7 @@ def test_passthrough_run_refuses_inside_pipeline_thread():
 
 # ---------------------------------------------------------------------------
 # Stateful built-ins: the in-process model lets these mutate the parent
-# (POSIX shells discard them; cshell2 does not — documented in
+# (POSIX shells discard them; pitash does not — documented in
 # doc/limitations.md as accepted behaviour).
 # ---------------------------------------------------------------------------
 

@@ -7,7 +7,7 @@ every context.
 
 from pathlib import Path
 
-from cshell2.lineedit import History, LineEditor, _norm_dir
+from pitash.lineedit import History, LineEditor, _norm_dir
 
 
 def _make_editor(history, local_list):
@@ -133,7 +133,7 @@ def test_a_repeated_line_records_the_new_directory(tmp_path):
 
 
 def test_directory_list_per_line_is_capped(tmp_path):
-    from cshell2.lineedit import MAX_DIRS_PER_LINE
+    from pitash.lineedit import MAX_DIRS_PER_LINE
 
     hist = History(tmp_path / "history")
     for i in range(MAX_DIRS_PER_LINE + 5):

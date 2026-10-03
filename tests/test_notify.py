@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from cshell2 import notify
-from cshell2.process import ExitCallbackMixin
+from pitash import notify
+from pitash.process import ExitCallbackMixin
 
 
 @pytest.fixture(autouse=True)
@@ -125,7 +125,7 @@ class TestCommandDone:
         assert notify.command_done("make -j8", 83.0, 0) is True
         _wait_for(posted)
         title, message = posted[0]
-        assert title == "✓ cshell2 — 1m 23s"
+        assert title == "✓ Pitash — 1m 23s"
         assert message == "make -j8"
 
     def test_failure_title_carries_the_exit_code(self, posted):
@@ -133,7 +133,7 @@ class TestCommandDone:
         notify.command_done("make", 20.0, 2)
         _wait_for(posted)
         title, _ = posted[0]
-        assert title.startswith("✗ cshell2 — exit 2")
+        assert title.startswith("✗ Pitash — exit 2")
         assert "20.0s" in title
 
     def test_context_prefixes_the_message(self, posted):
@@ -213,7 +213,7 @@ class TestBackendSelection:
         """The chosen backend, not just an override, gets title and message."""
         calls: list[list[str]] = []
         monkeypatch.setattr(notify, "_run_quiet", lambda argv: calls.append(argv))
-        notify._notify_macos("✓ cshell2 — 1m 23s", 'make "all"')
+        notify._notify_macos("✓ Pitash — 1m 23s", 'make "all"')
         assert calls[0][0] == "osascript"
         script = calls[0][2]
         # Quotes in the command must not break out of the AppleScript literal.
@@ -242,7 +242,7 @@ class TestVars:
         notify.register_vars()
 
     def _var(self, name):
-        from cshell2.variables import registry as var_registry
+        from pitash.variables import registry as var_registry
         var = var_registry.get(name)
         assert var is not None, f"{name} not registered"
         return var
@@ -379,7 +379,7 @@ class TestExitCallbackMixin:
 class TestShellHooks:
     @pytest.fixture
     def shell(self):
-        from cshell2.shell import Shell
+        from pitash.shell import Shell
         notify.set_threshold(0)
         return Shell()
 
@@ -387,14 +387,14 @@ class TestShellHooks:
         monkeypatch.setattr(shell, "_execute_pipeline", lambda p, **kw: 0)
         shell._execute("make -j8")
         _wait_for(posted)
-        assert posted[0][0].startswith("✓ cshell2")
+        assert posted[0][0].startswith("✓ Pitash")
         assert posted[0][1] == "make -j8"
 
     def test_the_lines_exit_code_reaches_the_title(self, shell, monkeypatch, posted):
         monkeypatch.setattr(shell, "_execute_pipeline", lambda p, **kw: 2)
         shell._execute("make")
         _wait_for(posted)
-        assert posted[0][0].startswith("✗ cshell2 — exit 2")
+        assert posted[0][0].startswith("✗ Pitash — exit 2")
 
     def test_a_backgrounded_line_stays_quiet(self, shell, monkeypatch, posted):
         """Ctrl+] / @bg return early, so the line's own duration is meaningless —
@@ -430,7 +430,7 @@ class TestShellHooks:
 class TestSlotDoneNotification:
     @pytest.fixture
     def shell(self):
-        from cshell2.shell import Shell
+        from pitash.shell import Shell
         notify.set_threshold(0)
         return Shell()
 
@@ -470,7 +470,7 @@ class TestSlotDoneNotification:
         self._park(shell, "bg-test", slot)
         shell._notify_slot_done(slot)
         _wait_for(posted)
-        assert posted[0][0].startswith("✗ cshell2 — exit 1")
+        assert posted[0][0].startswith("✗ Pitash — exit 1")
 
     def test_arming_wires_the_slots_own_exit(self, shell, posted):
         slot = _FakeSlot(["sleep", "600"])

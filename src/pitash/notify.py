@@ -31,13 +31,13 @@ couldn't be delivered would be far worse than a missed notification.
    looking at something else.
 
 **Configuration** — at the prompt via two registered variables, or from
-``~/.cshell2/config.py`` via :func:`configure`::
+``~/.pitash/config.py`` via :func:`configure`::
 
     var notify=off              # disable entirely
     var notify_threshold=30     # only notify for commands ≥ 30s
 
-    # ~/.cshell2/config.py
-    from cshell2 import notify
+    # ~/.pitash/config.py
+    from pitash import notify
     notify.configure(threshold=30)
     notify.SKIP_COMMANDS.add("psql")
     notify.set_notifier(lambda title, msg: my_own_backend(title, msg))
@@ -69,7 +69,7 @@ SKIP_COMMANDS: set[str] = {
     # remote sessions & multiplexers
     "ssh", "mosh", "telnet", "tmux", "screen", "zellij",
     # shells (an interactive sub-shell is a session, not a job)
-    "sh", "bash", "zsh", "fish", "dash", "csh", "tcsh", "cshell2",
+    "sh", "bash", "zsh", "fish", "dash", "csh", "tcsh", "pitash", "cshell2",
     # leaving the shell is not an event worth a popup
     "exit",
 }
@@ -191,9 +191,9 @@ def command_done(
 
     duration = fmt_duration(elapsed)
     if exit_code == 0:
-        title = f"✓ cshell2 — {duration}"
+        title = f"✓ Pitash — {duration}"
     else:
-        title = f"✗ cshell2 — exit {exit_code} ({duration})"
+        title = f"✗ Pitash — exit {exit_code} ({duration})"
 
     if len(command) > _MAX_MESSAGE_CHARS:
         command = command[: _MAX_MESSAGE_CHARS - 1] + "…"
@@ -218,7 +218,7 @@ def notify(title: str, message: str) -> None:
         except Exception:
             pass  # a failed notification must never disturb the shell
 
-    threading.Thread(target=_deliver, name="cshell2-notify", daemon=True).start()
+    threading.Thread(target=_deliver, name="pitash-notify", daemon=True).start()
 
 
 def _get_backend() -> Callable[[str, str], None]:
@@ -272,7 +272,7 @@ def _notify_macos(title: str, message: str) -> None:
 
 
 def _notify_linux(title: str, message: str) -> None:
-    _run_quiet(["notify-send", "-a", "cshell2", title, message])
+    _run_quiet(["notify-send", "-a", "Pitash", title, message])
 
 
 def _notify_windows(title: str, message: str) -> None:

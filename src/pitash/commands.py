@@ -16,7 +16,7 @@ class _HelpOrError(Exception):
 
 
 class CmdParser(argparse.ArgumentParser):
-    """ArgumentParser that is safe to use inside cshell2 commands.
+    """ArgumentParser that is safe to use inside pitash commands.
 
     Standard ``ArgumentParser`` calls ``sys.exit()`` on ``--help`` and on
     parse errors, which would terminate the shell.  ``CmdParser`` intercepts
@@ -24,7 +24,7 @@ class CmdParser(argparse.ArgumentParser):
     the help or error message exactly as argparse normally would.
 
     Argparse handles combined short boolean flags automatically (``-nv`` is
-    treated as ``-n -v``), so commands that expose cshell2's multi-select
+    treated as ``-n -v``), so commands that expose pitash's multi-select
     option TUI work without any extra effort.
 
     Typical usage inside a command function::
@@ -65,7 +65,7 @@ class Arg:
 
     Created with :func:`arg`.  ``kwargs`` are forwarded verbatim to
     ``argparse.ArgumentParser.add_argument()``; ``completer`` is a
-    cshell2-specific completion hint that is consumed by the registry and
+    pitash-specific completion hint that is consumed by the registry and
     never passed to argparse.
     """
     names: tuple[str, ...]
@@ -77,10 +77,10 @@ def arg(*names: str, completer: Completer | None = None, **kwargs) -> Arg:
     """Declare one positional argument or flag for a ``params=`` command.
 
     Keyword arguments mirror ``argparse.add_argument()`` exactly, plus one
-    extra cshell2-specific keyword:
+    extra pitash-specific keyword:
 
     ``completer``
-        A :class:`~cshell2.completion.Completer` instance used for TAB
+        A :class:`~pitash.completion.Completer` instance used for TAB
         completion of this argument's *value*.
 
         - For a **positional arg**, it completes the arg itself.  If omitted

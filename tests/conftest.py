@@ -1,7 +1,7 @@
 """Test-suite-wide pytest hooks.
 
 Provides the ``requires_real_stdio`` marker for tests that exercise
-cshell2's in-process pipeline (``_start_python_stage_thread``).  Those
+pitash's in-process pipeline (``_start_python_stage_thread``).  Those
 workers route a Python stage's ``print()`` through a thread-local
 override on ``sys.stdout``; pytest's per-test stdio capture replaces
 ``sys.stdout`` with its own ``EncodedFile`` between the ``shell``
@@ -30,7 +30,7 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def _no_user_config(monkeypatch):
-    """Keep ``Shell()`` from exec'ing the developer's own ``~/.cshell2/config.py``.
+    """Keep ``Shell()`` from exec'ing the developer's own ``~/.pitash/config.py``.
 
     A config file is arbitrary Python run at startup: it registers commands and
     aliases, replaces the prompt, and can assign to any module global (a real
@@ -41,7 +41,7 @@ def _no_user_config(monkeypatch):
     Tests that mean to exercise config loading should call
     ``Shell._load_user_config`` explicitly against a path they control.
     """
-    monkeypatch.setattr("cshell2.shell.Shell._load_user_config",
+    monkeypatch.setattr("pitash.shell.Shell._load_user_config",
                         lambda self: None)
 
 
@@ -49,7 +49,7 @@ def _no_user_config(monkeypatch):
 def _clear_completion_cache():
     """The completion cache is process-global; tests that exercise
     cached completers must start from a clean slate."""
-    from cshell2 import completion_cache
+    from pitash import completion_cache
     completion_cache.invalidate_all()
     yield
     completion_cache.invalidate_all()
@@ -81,7 +81,7 @@ def pytest_pyfunc_call(pyfuncitem):
         yield
         return
     import sys
-    from cshell2.shell import _ThreadLocalStdin, _ThreadLocalStdout, _ThreadLocalStderr
+    from pitash.shell import _ThreadLocalStdin, _ThreadLocalStdout, _ThreadLocalStderr
 
     capman.suspend_global_capture(in_=True)
     saved = (sys.stdin, sys.stdout, sys.stderr)

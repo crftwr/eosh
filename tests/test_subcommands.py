@@ -1,6 +1,6 @@
 """Tests for the sub-command tree mechanism."""
 
-from cshell2.commands import CommandRegistry, arg
+from pitash.commands import CommandRegistry, arg
 
 
 # ── Tree construction ────────────────────────────────────────────────────────

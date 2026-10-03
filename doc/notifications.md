@@ -2,22 +2,22 @@
 
 A command that runs for longer than ten seconds is one you have almost
 certainly stopped watching — you switched to a browser, a chat window,
-another terminal. cshell2 posts an OS desktop notification the moment such
+another terminal. pitash posts an OS desktop notification the moment such
 a command finishes, so the shell tells you it is done instead of you
 polling it.
 
 ```
-~/projects/cshell2 13:18:03> make -j8 release
+~/projects/pitash 13:18:03> make -j8 release
 ...
                             ┌──────────────────────────────┐
-                            │ ✓ cshell2 — 1m 23s           │
+                            │ ✓ pitash — 1m 23s           │
                             │ make -j8 release             │
                             └──────────────────────────────┘
 ```
 
-Everything lives in [`src/cshell2/notify.py`](../src/cshell2/notify.py);
+Everything lives in [`src/pitash/notify.py`](../src/pitash/notify.py);
 the shell contributes only the two hook sites described below and the
-one-shot exit callback in [`process.py`](../src/cshell2/process.py).
+one-shot exit callback in [`process.py`](../src/pitash/process.py).
 
 **Status:** shipped. Foreground lines, `Ctrl+]`-backgrounded processes and
 `@bg` bodies all report; macOS / Linux / Windows backends with a terminal-bell
@@ -25,7 +25,7 @@ fallback; two shell variables for runtime control.
 
 ## Zero dependencies
 
-`notify-py` and friends were considered and rejected: cshell2's
+`notify-py` and friends were considered and rejected: pitash's
 `pyproject.toml` declares `dependencies = []` and the whole notification
 feature is one subprocess spawn per event. Every backend is a program the
 platform already ships, probed once and cached in `_backend_cache`:
@@ -33,7 +33,7 @@ platform already ships, probed once and cached in `_backend_cache`:
 | Platform | Backend |
 |---|---|
 | macOS | `osascript -e 'display notification … with title …'` |
-| Linux / BSD | `notify-send -a cshell2 …` (libnotify), when on `PATH` |
+| Linux / BSD | `notify-send -a pitash …` (libnotify), when on `PATH` |
 | Windows | a PowerShell WinRT toast (`ToastTemplateType::ToastText02`) |
 | fallback | the terminal bell (`\a`) — audible, always available |
 
@@ -57,7 +57,7 @@ Two details worth keeping:
 
 ## Delivery is off the shell's thread, and never raises
 
-`notify()` hands the backend to a daemon thread named `cshell2-notify`:
+`notify()` hands the backend to a daemon thread named `pitash-notify`:
 `osascript` takes tens of milliseconds and PowerShell far longer, and the
 prompt must not wait for either. The delivery body is wrapped in
 `except Exception: pass`, as is the slot-side callback invocation. A shell
@@ -149,10 +149,10 @@ At the prompt, through two registered `Var`s (`notify.register_vars()`,
 called from `Shell._register_builtins`):
 
 ```
-cshell2> var notify=off                # disable entirely
-cshell2> var notify_threshold=30       # only notify for commands ≥ 30s
-cshell2> var notify_threshold=<TAB>    # 5, 10, 30, 60, 300
-cshell2> var notify                    # → on
+pitash> var notify=off                # disable entirely
+pitash> var notify_threshold=30       # only notify for commands ≥ 30s
+pitash> var notify_threshold=<TAB>    # 5, 10, 30, 60, 300
+pitash> var notify                    # → on
 ```
 
 `notify` accepts `on/true/yes/1/enabled` and `off/false/no/0/disabled`;
@@ -165,10 +165,10 @@ per-context: a context switch neither saves nor restores them. "Tell me when
 things finish" is a property of the person at the keyboard, not of the AWS
 account they happen to be pointing at.
 
-From `~/.cshell2/config.py`:
+From `~/.pitash/config.py`:
 
 ```python
-from cshell2 import notify
+from pitash import notify
 
 notify.configure(enabled=True, threshold=30)
 notify.SKIP_COMMANDS.add("psql")        # add to the defaults
@@ -184,9 +184,9 @@ uses this hook to capture notifications instead of posting them.
 ## Message format
 
 ```
-✓ cshell2 — 1m 23s              make -j8 release
-✗ cshell2 — exit 2 (20.0s)      make
-✓ cshell2 — 1h 05m              [bg-1] terraform apply
+✓ pitash — 1m 23s              make -j8 release
+✗ pitash — exit 2 (20.0s)      make
+✓ pitash — 1h 05m              [bg-1] terraform apply
 ```
 
 The title carries the verdict and the duration (`fmt_duration`:

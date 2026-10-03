@@ -10,19 +10,19 @@ import os
 
 import pytest
 
-from cshell2.commands import arg, registry as command_registry
-from cshell2.decorators import (
+from pitash.commands import arg, registry as command_registry
+from pitash.decorators import (
     parse_decorator_args,
     registry as decorator_registry,
 )
-from cshell2.pipeline import (
+from pitash.pipeline import (
     DecoratorParseError,
     Pipeline,
     Stage,
     parse_line,
     set_pipeline_executor,
 )
-from cshell2.shell import Shell
+from pitash.shell import Shell
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +338,7 @@ def test_pipeline_run_with_shell_routes_to_executor(tmp_path):
         print("ok")
 
     out = tmp_path / "out"
-    from cshell2.pipeline import Redirect
+    from pitash.pipeline import Redirect
     Pipeline(
         stages=[Stage(text="_t_capture_arg", redirects=[Redirect(kind=">", target=str(out))])],
     ).run()
@@ -401,7 +401,7 @@ def test_compose_decorator_pipes_body_output_through_next_stage(tmp_path):
     """``@_t_emit {body} | grep`` should run the decorator's body with
     its stdout wired to the next stage's stdin.  The decorator runs the
     body once (no looping) so we get a deterministic single capture."""
-    from cshell2.commands import registry as command_registry
+    from pitash.commands import registry as command_registry
 
     sh = Shell()
 
@@ -425,7 +425,7 @@ def test_compose_decorator_pipes_body_output_through_next_stage(tmp_path):
 def test_compose_decorator_runs_body_inside_outer_pipe(tmp_path):
     """A bare-body decorator (no braces) under composition still runs
     the wrapped command and feeds the next stage."""
-    from cshell2.commands import registry as command_registry
+    from pitash.commands import registry as command_registry
 
     sh = Shell()
 
@@ -522,7 +522,7 @@ def test_stdout_isatty_visible_to_decorator_body():
     False unconditionally.
     """
     import sys as _sys
-    from cshell2.shell import _StdoutProxy
+    from pitash.shell import _StdoutProxy
 
     proxy = _StdoutProxy(_sys.__stdout__)
     assert proxy.isatty() == _sys.__stdout__.isatty()
@@ -533,7 +533,7 @@ def test_watch_split_to_lines_strips_ansi_and_normalises_endings():
     even when stdout is redirected (TTY-autodetection is not reliable).
     ``_split_to_lines`` must strip them so footer line counts are real
     and lines never render in a leftover SGR state."""
-    from cshell2.decorators.watch import _split_to_lines
+    from pitash.decorators.watch import _split_to_lines
 
     # SGR colour around content — both ends should be removed, and the
     # visible width should be only the content itself.
@@ -552,7 +552,7 @@ def test_watch_split_to_lines_strips_ansi_and_normalises_endings():
 def test_watch_apply_scroll_key_clamps_to_range():
     """Scroll deltas must clamp to ``[0, max]`` so the user can't navigate
     past the start or end of the buffered output."""
-    from cshell2.decorators.watch import (
+    from pitash.decorators.watch import (
         _KEY_DOWN, _KEY_END, _KEY_HOME, _KEY_PAGE_DOWN, _KEY_PAGE_UP, _KEY_UP,
         _apply_scroll_key,
     )
@@ -574,8 +574,8 @@ def test_watch_apply_scroll_key_clamps_to_range():
 
 def test_watch_render_scrollbar_thumb_size_and_position():
     """Scrollbar thumb is proportional to visible/total and slides as we scroll."""
-    from cshell2.colors import _bg, get_color_scheme
-    from cshell2.decorators.watch import _render_scrollbar
+    from pitash.colors import _bg, get_color_scheme
+    from pitash.decorators.watch import _render_scrollbar
 
     s = get_color_scheme()
     thumb_sgr = _bg(*s.scroll_thumb)
@@ -602,7 +602,7 @@ def test_watch_render_scrollbar_thumb_size_and_position():
 def test_watch_slice_for_render_pads_and_trims():
     """The visible window is body_rows tall, body_cols wide, padded with
     blanks when the buffered output is shorter than the body."""
-    from cshell2.decorators.watch import _slice_for_render
+    from pitash.decorators.watch import _slice_for_render
 
     lines = ["aaa", "bbbb", "cc"]
     out = _slice_for_render(lines, scroll_y=0, scroll_x=0, body_rows=5, body_cols=3)
@@ -623,8 +623,8 @@ def test_watch_pipeline_redirected_to_helper():
     helper that builds the redirected Pipeline must leave the original
     AST untouched (subsequent iterations re-run the user's pipeline as
     written) and override prior stdout redirects on the last stage."""
-    from cshell2.decorators.watch import _pipeline_redirected_to
-    from cshell2.pipeline import Pipeline, Redirect, Stage
+    from pitash.decorators.watch import _pipeline_redirected_to
+    from pitash.pipeline import Pipeline, Redirect, Stage
 
     original = Pipeline(stages=[
         Stage(text="echo hi"),
@@ -649,7 +649,7 @@ def test_python_command_slot_poll_key_returns_buffered_bytes():
     """The slot's stdin keybuf collects bytes the main forwarding loop
     received while no PTY subprocess is active, so a Python command body
     can poll for keystrokes (e.g. ``q`` to quit ``@watch``)."""
-    from cshell2.shell import PythonCommandSlot
+    from pitash.shell import PythonCommandSlot
 
     class _DummyCmd:
         name = "_dummy"
@@ -674,7 +674,7 @@ def test_thread_local_stdout_isatty_falls_through(monkeypatch):
     real stream (no override) or the thread-local override — not return
     the io.TextIOBase default of ``False``."""
     import sys as _sys
-    from cshell2.shell import _ThreadLocalStdout, _StdoutProxy
+    from pitash.shell import _ThreadLocalStdout, _StdoutProxy
 
     tls = _ThreadLocalStdout(_sys.__stdout__)
     # No override: reflect the real stream.
@@ -701,7 +701,7 @@ def _enable_builtin(name: str) -> None:
     Tests that just need the decorator registered (parsing / arg checks)
     can call this and rely on the autouse fixture to pop it again.
     """
-    from cshell2.decorators import enable as enable_decorators
+    from pitash.decorators import enable as enable_decorators
     enable_decorators(name)
 
 
@@ -712,7 +712,7 @@ def _make_recording_pipeline(callback):
     through ``_execute`` (which under pytest needs a real terminal for the
     Python-command forwarding path).
     """
-    from cshell2.pipeline import Pipeline as _P, Stage as _S
+    from pitash.pipeline import Pipeline as _P, Stage as _S
 
     class _RecordingPipeline(_P):
         def run(self, stdin=None, stdout=None, stderr=None):
@@ -800,8 +800,8 @@ def test_retry_invalid_attempts(capsys):
 
 def test_quiet_silenced_helper_appends_redirect():
     _enable_builtin("quiet")
-    from cshell2.decorators.quiet import _silenced
-    from cshell2.pipeline import Pipeline, Redirect, Stage
+    from pitash.decorators.quiet import _silenced
+    from pitash.pipeline import Pipeline, Redirect, Stage
 
     original = Pipeline(stages=[Stage(text="echo hi"), Stage(text="grep h")])
     silenced = _silenced(original, also_stderr=False)
@@ -912,7 +912,7 @@ def test_bg_decorator_function_calls_runner(capsys):
     return code without spinning up a real Shell."""
     _enable_builtin("bg")
     deco = decorator_registry.get("bg")
-    from cshell2.decorators import set_background_runner
+    from pitash.decorators import set_background_runner
 
     received = {}
 
@@ -931,7 +931,7 @@ def test_bg_decorator_function_calls_runner(capsys):
         assert "started in context 'explicit'" in capsys.readouterr().err
     finally:
         # Restore the shell's runner if one was registered before this test.
-        from cshell2.shell import Shell as _Shell  # noqa: F401
+        from pitash.shell import Shell as _Shell  # noqa: F401
         # Simplest restore: register None; subsequent Shell() calls re-wire.
         set_background_runner(None)
 
@@ -940,7 +940,7 @@ def test_bg_pipeline_slot_is_python_command_slot_subclass():
     """run() loop's resume path branches on isinstance(slot, PythonCommandSlot).
     PipelineSlot must subclass it so backgrounded pipelines take the
     Python-command resume path (proxy buffering, no PTY)."""
-    from cshell2.shell import PipelineSlot, PythonCommandSlot
+    from pitash.shell import PipelineSlot, PythonCommandSlot
 
     assert issubclass(PipelineSlot, PythonCommandSlot)
 
@@ -951,7 +951,7 @@ def test_bg_refuses_outer_pipeline_composition(capsys):
     _enable_builtin("bg")
     sh = Shell()
     import threading
-    from cshell2.shell import _in_pipeline
+    from pitash.shell import _in_pipeline
 
     @command_registry.command(name="_t_bg_pipe_body")
     def _body():
@@ -980,7 +980,7 @@ def test_bg_external_body_uses_process_slot(capfd):
     """
     import time
 
-    from cshell2.process import ProcessSlot
+    from pitash.process import ProcessSlot
 
     _enable_builtin("bg")
     sh = Shell()
@@ -1016,7 +1016,7 @@ def test_bg_python_body_uses_python_command_slot(capfd):
     buffered through the slot's ``_StdoutProxy`` until the user switches
     in.
     """
-    from cshell2.shell import PythonCommandSlot, PipelineSlot
+    from pitash.shell import PythonCommandSlot, PipelineSlot
 
     _enable_builtin("bg")
     sh = Shell()
@@ -1045,7 +1045,7 @@ def test_bg_python_body_uses_python_command_slot(capfd):
 def test_bg_multi_stage_body_uses_pipeline_slot():
     """A multi-stage pipeline body falls through to :class:`PipelineSlot`
     (OS pipe + Popen)."""
-    from cshell2.shell import PipelineSlot
+    from pitash.shell import PipelineSlot
 
     _enable_builtin("bg")
     sh = Shell()

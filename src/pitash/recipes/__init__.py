@@ -1,9 +1,9 @@
 """Completion recipes for external commands.
 
 Recipes provide TAB completion for system commands. Enable them in
-~/.cshell2/config.py:
+~/.pitash/config.py:
 
-    from cshell2.recipes import enable
+    from pitash.recipes import enable
     enable("*")              # all built-in + user recipes
     enable("make", "git")    # or pick specific ones
 
@@ -50,7 +50,7 @@ host without ``tar`` is a no-op rather than a hard failure.
 
 Tools built on cobra (docker, kubectl, helm, gh, …) are handled
 automatically by the cobra-protocol fallback — no recipe needed.  See
-``CobraCompleter`` in ``cshell2.completion``.
+``CobraCompleter`` in ``pitash.completion``.
 """
 
 from __future__ import annotations
@@ -59,10 +59,12 @@ import importlib.util
 from importlib import import_module
 from pathlib import Path
 
+from ..paths import config_dir
+
 # Directories searched in order when a recipe is not found in the built-in
 # package.  The default entry covers the conventional user recipe location;
 # call add_recipe_path() to register additional directories.
-recipe_search_path: list[Path] = [Path.home() / ".cshell2" / "recipes"]
+recipe_search_path: list[Path] = [config_dir() / "recipes"]
 
 
 def add_recipe_path(path: str | Path) -> None:
@@ -71,11 +73,11 @@ def add_recipe_path(path: str | Path) -> None:
     Recipes in directories added earlier in the list take priority over those
     added later.  The built-in package always has the highest priority.
 
-    Example (in ~/.cshell2/config.py)::
+    Example (in ~/.pitash/config.py)::
 
-        from cshell2.recipes import add_recipe_path, enable
+        from pitash.recipes import add_recipe_path, enable
         add_recipe_path("/team/shared/recipes")
-        enable("my_tool")   # found in ~/.cshell2/recipes/ or /team/shared/recipes/
+        enable("my_tool")   # found in ~/.pitash/recipes/ or /team/shared/recipes/
     """
     recipe_search_path.append(Path(path))
 
@@ -87,18 +89,34 @@ def enable(*recipe_names: str) -> None:
 
     Lookup order for each name:
 
-    1. Built-in package (``cshell2.recipes.<name>``).
+    1. Built-in package (``pitash.recipes.<name>``).
     2. Each directory in :data:`recipe_search_path` in order
-       (default: ``~/.cshell2/recipes/``).
+       (default: ``~/.pitash/recipes/``).
 
     Raises ``ImportError`` if the recipe is not found anywhere.
+
+    With ``"*"``, a recipe whose *dependency* is missing (``awsut`` without
+    boto3, i.e. installed without the ``[aws]`` extra) is skipped and recorded
+    in :data:`skipped_recipes` instead of aborting the whole call — the same
+    "absent tool is a no-op" rule as a recipe whose command is not on
+    ``PATH``.  Naming such a recipe explicitly still raises.
     """
-    names = recipe_names
-    if "*" in names:
-        names = _discover_all_recipes()
+    wildcard = "*" in recipe_names
+    names = _discover_all_recipes() if wildcard else recipe_names
     for name in names:
-        module = _load_recipe(name)
+        try:
+            module = _load_recipe(name)
+        except ModuleNotFoundError as e:
+            if not wildcard:
+                raise
+            skipped_recipes[name] = e.name or str(e)
+            continue
         module.register()
+
+
+# Recipes ``enable("*")`` skipped because a dependency could not be imported:
+# recipe name → missing module name (e.g. ``{"awsut": "boto3"}``).
+skipped_recipes: dict[str, str] = {}
 
 
 def _discover_all_recipes() -> list[str]:
@@ -140,7 +158,7 @@ def _load_recipe(name: str):
         candidate = Path(directory) / f"{name}.py"
         if candidate.exists():
             spec = importlib.util.spec_from_file_location(
-                f"cshell2_user_recipe_{name}", candidate
+                f"pitash_user_recipe_{name}", candidate
             )
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

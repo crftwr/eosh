@@ -1,7 +1,7 @@
 import os
 import tempfile
 
-from cshell2.completion import (
+from pitash.completion import (
     ChoiceCompleter,
     CommandNameCompleter,
     CompletionContext,
@@ -9,8 +9,8 @@ from cshell2.completion import (
     FileCompleter,
     OptionsCompleter,
 )
-from cshell2.context import Context
-from cshell2.shell import _positional_index
+from pitash.context import Context
+from pitash.shell import _positional_index
 
 
 def make_ctx(prefix="", args=None, command="test"):

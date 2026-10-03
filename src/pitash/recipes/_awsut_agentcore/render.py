@@ -9,7 +9,7 @@ same service.
 The output contract — table shape, header line, note policy, ``error:`` lines —
 and the service-agnostic instruments (pagination, the YAML-ish JSON renderer,
 the watch heartbeat, model introspection, the completion-context flag readers)
-are two levels up in :mod:`cshell2.recipes._awsut_common`, and re-exported here
+are two levels up in :mod:`pitash.recipes._awsut_common`, and re-exported here
 so a module in this package reads every instrument off ``render``.  That is the
 same arrangement ``_awsut_sagemaker.render`` uses.
 
@@ -27,7 +27,7 @@ Two things are worth knowing before adding a group here:
   calls may simply not exist in the installed botocore, so every leaf goes
   through :func:`require_operation` first — a missing operation is a
   botocore-vintage problem, and a bare ``AttributeError`` would read like a
-  cshell2 bug.  For the same reason status words are read out of the loaded
+  pitash bug.  For the same reason status words are read out of the loaded
   model where possible (:func:`statuses`) rather than hard-coded, and nothing
   validates a user-typed status against them.
 
@@ -135,7 +135,7 @@ def require_operation(client, method: str, api: str) -> None:
 
     AgentCore ships operations faster than a pinned botocore picks them up, and
     a bare ``AttributeError`` on ``client.list_harnesses`` would read like a
-    cshell2 bug rather than a model-vintage one.  The installed version is in
+    pitash bug rather than a model-vintage one.  The installed version is in
     the message because upgrading it is the fix.
 
     The service is read off the *client* rather than passed in, so a data-plane

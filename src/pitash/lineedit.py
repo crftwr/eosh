@@ -153,14 +153,14 @@ def _pending_wrap_col(char_count: int, cols: int) -> int:
     return rem if rem != 0 else cols - 1
 
 
-# ── Debug logging (opt-in via CSHELL2_RESIZE_DEBUG=/path/to/log) ──────────────
+# ── Debug logging (opt-in via PITASH_RESIZE_DEBUG=/path/to/log) ──────────────
 
 
-_RESIZE_DEBUG_PATH = os.environ.get("CSHELL2_RESIZE_DEBUG")
+_RESIZE_DEBUG_PATH = os.environ.get("PITASH_RESIZE_DEBUG")
 
 
 def _resize_debug(msg: str) -> None:
-    """Append *msg* to ``$CSHELL2_RESIZE_DEBUG`` if set; otherwise no-op.
+    """Append *msg* to ``$PITASH_RESIZE_DEBUG`` if set; otherwise no-op.
 
     Used to instrument SIGWINCH handling in the wild without polluting
     stdout (which would corrupt the line editor's render).
@@ -194,7 +194,7 @@ def _norm_dir(path: str) -> str:
 class History:
     """The global on-disk command history, plus where each line was run.
 
-    Two files, both under ``~/.cshell2/``:
+    Two files, both under ``~/.pitash/``:
 
     ``history``
         One command line per entry, in the order they were run — appended to as

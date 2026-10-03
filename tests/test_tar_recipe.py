@@ -7,8 +7,8 @@ import tempfile
 
 import pytest
 
-from cshell2.completion import CompletionContext
-from cshell2.recipes.tar import (
+from pitash.completion import CompletionContext
+from pitash.recipes.tar import (
     TarArchiveCompleter,
     _TarPositionalCompleter,
 )
@@ -117,8 +117,8 @@ class TestDescribeSlot:
 class TestRegistration:
     def test_register_wires_smart_completer(self):
         """The recipe registers a wildcard positional + flag arg() declarations."""
-        from cshell2.commands import registry as command_registry, WILDCARD, get_positional_completer
-        from cshell2.recipes import tar as tar_recipe
+        from pitash.commands import registry as command_registry, WILDCARD, get_positional_completer
+        from pitash.recipes import tar as tar_recipe
 
         if not _which("tar"):
             pytest.skip("tar not on PATH")

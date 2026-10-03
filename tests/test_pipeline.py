@@ -1,7 +1,7 @@
 """Tests for pipeline.py — operator parsing, redirect extraction, glob expansion."""
 
 import pytest
-from cshell2.pipeline import (
+from pitash.pipeline import (
     Redirect,
     Stage,
     Pipeline,

@@ -3,8 +3,8 @@
 import os
 from unittest.mock import patch
 
-from cshell2.completion import ChoiceCompleter, CompletionContext
-from cshell2.variables import (
+from pitash.completion import ChoiceCompleter, CompletionContext
+from pitash.variables import (
     EnvVar,
     Var,
     VarCompleter,
@@ -127,13 +127,13 @@ class TestVarCompleter:
         reg = VarRegistry()
         completer = VarCompleter()
         # Monkey-patch the module-level registry used inside VarCompleter.
-        import cshell2.variables as _vmod
+        import pitash.variables as _vmod
         self._original_registry = _vmod.registry
         _vmod.registry = reg
         return reg, completer
 
     def teardown_method(self):
-        import cshell2.variables as _vmod
+        import pitash.variables as _vmod
         if hasattr(self, "_original_registry"):
             _vmod.registry = self._original_registry
 

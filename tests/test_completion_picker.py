@@ -15,9 +15,9 @@ Three rules are pinned here:
 
 import re
 
-from cshell2.completion import Completion
-from cshell2.lineedit import History, LineEditor
-from cshell2.tui import (InlineMultiPicker, InlinePicker, _compose_meta,
+from pitash.completion import Completion
+from pitash.lineedit import History, LineEditor
+from pitash.tui import (InlineMultiPicker, InlinePicker, _compose_meta,
                          _meta_col_widths)
 
 
@@ -297,7 +297,7 @@ class _StubPicker:
 
 
 def _editor(monkeypatch, tmp_path, completions_for):
-    import cshell2.tui as tui
+    import pitash.tui as tui
 
     monkeypatch.setattr(tui, "InlinePicker", _StubPicker)
     _StubPicker.instances = []

@@ -2,7 +2,7 @@
 
 Terraform uses HashiCorp's mitchellh/cli + posener/complete framework, not
 cobra, and its bash completion is just a thin ``COMP_LINE``/``COMP_POINT``
-shim — neither is picked up by cshell2's cobra or argcomplete fallbacks.
+shim — neither is picked up by pitash's cobra or argcomplete fallbacks.
 This recipe models the surface area as a static subcommand tree (mirroring
 ``git.py``), with dynamic completion for workspaces and ``.tfvars`` files.
 """

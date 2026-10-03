@@ -51,7 +51,7 @@ class ExitCallbackMixin:
     A slot's work ends on a thread the shell isn't watching — ``ProcessSlot``'s
     reader thread, ``PythonCommandSlot``'s command thread — so anything that
     should happen at that moment (today: the desktop notification in
-    :mod:`cshell2.notify`) needs a hook there rather than a poll.
+    :mod:`pitash.notify`) needs a hook there rather than a poll.
 
     :meth:`arm_exit_callback` closes the race the shell can't otherwise avoid:
     a slot is armed only *after* the code that owns it decides it went to the

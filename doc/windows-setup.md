@@ -1,6 +1,6 @@
 # Setting Up a Windows Development Environment
 
-cshell2 runs natively on Windows (see "Platform support" in `CLAUDE.md`), but the
+pitash runs natively on Windows (see "Platform support" in `CLAUDE.md`), but the
 *build* tooling — Python, `make`, POSIX utilities — isn't preinstalled the way it
 is on Linux/macOS. This doc covers getting a working dev environment from a clean
 Windows machine.
@@ -78,10 +78,10 @@ cause — check for a bare `2>nul` in `Makefile`.
 ## POSIX utilities (`rm`, `grep`, …)
 
 Native Windows `cmd.exe` doesn't have `rm`, `grep`, etc. — those are Unix
-commands. cshell2 falls through unrecognized commands to the system shell, so
+commands. pitash falls through unrecognized commands to the system shell, so
 once a POSIX toolset is on `PATH` (MSYS2's `usr\bin`, or Git for Windows'
 `usr\bin` at `C:\Program Files\Git\usr\bin`), commands like `rm -rf` work
-transparently inside cshell2 too. Windows-native equivalents (`del`,
+transparently inside pitash too. Windows-native equivalents (`del`,
 `rmdir /s /q`) work without any extra setup if you'd rather not rely on that.
 
 ## Verifying the toolchain
@@ -90,9 +90,9 @@ From the repo root, in a **new** terminal (so the `PATH` changes above are
 picked up):
 
 ```
-make install   # bootstraps .venv, installs cshell2 + pytest
+make install   # bootstraps .venv, installs pitash + pytest
 make test      # runs the test suite
-make run       # launches cshell2 itself
+make run       # launches pitash itself
 ```
 
 ## Known quirks

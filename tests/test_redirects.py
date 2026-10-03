@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from cshell2.shell import Shell
+from pitash.shell import Shell
 
 
 @pytest.fixture

@@ -1,8 +1,8 @@
 """Tests for alias expansion in command-line tokenization and completion."""
 
-from cshell2.commands import CommandRegistry
-from cshell2.completion import CommandNameCompleter, CompletionContext
-from cshell2.shell import Shell
+from pitash.commands import CommandRegistry
+from pitash.completion import CommandNameCompleter, CompletionContext
+from pitash.shell import Shell
 
 
 def _expand(reg: CommandRegistry, tokens: list[str]) -> list[str]:
@@ -84,7 +84,7 @@ def test_alias_listed_in_command_name_completion():
 
 def test_arg_info_on_alias_command_name_shows_expansion():
     """Caret on the alias name itself shows its expansion."""
-    from cshell2.commands import arg
+    from pitash.commands import arg
     sh = Shell()
     sh.registry.alias("_t_hp", "_t_awsut hyperpod")
 
@@ -108,7 +108,7 @@ def test_arg_info_on_alias_command_name_shows_expansion():
 def test_arg_info_after_alias_resolves_to_expansion_target():
     """Caret on a positional after `hp` should describe the expanded
     command's positional, not return None."""
-    from cshell2.commands import arg
+    from pitash.commands import arg
     sh = Shell()
     sh.registry.alias("_t_hp", "_t_awsut hyperpod")
     sh.registry.command(

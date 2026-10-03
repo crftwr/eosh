@@ -2,7 +2,7 @@ import os
 import tempfile
 
 import pytest
-from cshell2.context import ContextManager
+from pitash.context import ContextManager
 
 
 def test_create_and_current():
@@ -138,63 +138,63 @@ def test_set_get_variable():
 
 def test_set_variable_updates_env():
     cm = ContextManager()
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    os.environ.pop("PITASH_TEST_VAR", None)
     cm.create("prod")
-    cm.set_variable("CSHELL2_TEST_VAR", "hello")
-    assert os.environ.get("CSHELL2_TEST_VAR") == "hello"
+    cm.set_variable("PITASH_TEST_VAR", "hello")
+    assert os.environ.get("PITASH_TEST_VAR") == "hello"
     cm.remove("prod")
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    os.environ.pop("PITASH_TEST_VAR", None)
 
 
 def test_unset_variable():
     cm = ContextManager()
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    os.environ.pop("PITASH_TEST_VAR", None)
     cm.create("prod")
-    cm.set_variable("CSHELL2_TEST_VAR", "hello")
-    cm.unset_variable("CSHELL2_TEST_VAR")
-    assert cm.get_variable("CSHELL2_TEST_VAR") is None
-    assert os.environ.get("CSHELL2_TEST_VAR") is None
+    cm.set_variable("PITASH_TEST_VAR", "hello")
+    cm.unset_variable("PITASH_TEST_VAR")
+    assert cm.get_variable("PITASH_TEST_VAR") is None
+    assert os.environ.get("PITASH_TEST_VAR") is None
 
 
 def test_variables_saved_and_restored_on_switch():
     cm = ContextManager()
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    os.environ.pop("PITASH_TEST_VAR", None)
     cm.create("prod")
-    cm.set_variable("CSHELL2_TEST_VAR", "prod_val")
+    cm.set_variable("PITASH_TEST_VAR", "prod_val")
     cm.create("staging")
     cm.switch("staging")
-    assert os.environ.get("CSHELL2_TEST_VAR") is None
-    cm.set_variable("CSHELL2_TEST_VAR", "staging_val")
+    assert os.environ.get("PITASH_TEST_VAR") is None
+    cm.set_variable("PITASH_TEST_VAR", "staging_val")
     cm.switch("prod")
-    assert os.environ.get("CSHELL2_TEST_VAR") == "prod_val"
+    assert os.environ.get("PITASH_TEST_VAR") == "prod_val"
     cm.switch("staging")
-    assert os.environ.get("CSHELL2_TEST_VAR") == "staging_val"
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    assert os.environ.get("PITASH_TEST_VAR") == "staging_val"
+    os.environ.pop("PITASH_TEST_VAR", None)
 
 
 def test_variables_saved_and_restored_on_push_pop():
     cm = ContextManager()
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    os.environ.pop("PITASH_TEST_VAR", None)
     cm.create("base")
-    cm.set_variable("CSHELL2_TEST_VAR", "base_val")
+    cm.set_variable("PITASH_TEST_VAR", "base_val")
     cm.create("child")
     cm.push("child")
-    assert os.environ.get("CSHELL2_TEST_VAR") is None
+    assert os.environ.get("PITASH_TEST_VAR") is None
     cm.pop()
-    assert os.environ.get("CSHELL2_TEST_VAR") == "base_val"
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    assert os.environ.get("PITASH_TEST_VAR") == "base_val"
+    os.environ.pop("PITASH_TEST_VAR", None)
 
 
 def test_push_inherits_parent_variables():
     cm = ContextManager()
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    os.environ.pop("PITASH_TEST_VAR", None)
     cm.create("base")
-    cm.set_variable("CSHELL2_TEST_VAR", "base_val")
+    cm.set_variable("PITASH_TEST_VAR", "base_val")
     cm.create("child", variables=dict(cm.current().variables))
     cm.push("child")
-    assert cm.current().variables.get("CSHELL2_TEST_VAR") == "base_val"
-    assert os.environ.get("CSHELL2_TEST_VAR") == "base_val"
-    os.environ.pop("CSHELL2_TEST_VAR", None)
+    assert cm.current().variables.get("PITASH_TEST_VAR") == "base_val"
+    assert os.environ.get("PITASH_TEST_VAR") == "base_val"
+    os.environ.pop("PITASH_TEST_VAR", None)
 
 
 def test_cwd_saved_and_restored_on_switch():

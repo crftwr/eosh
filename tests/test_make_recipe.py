@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from cshell2.completion import CompletionContext
-from cshell2.recipes.make import (
+from pitash.completion import CompletionContext
+from pitash.recipes.make import (
     MakeTargetCompleter,
     _looks_like_path,
     _parse_targets,

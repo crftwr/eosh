@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from cshell2.shell import Shell
+from pitash.shell import Shell
 
 
 @pytest.fixture
@@ -62,37 +62,37 @@ def test_split_env_prefix_empty_value(shell):
 
 def test_external_command_receives_env_prefix(shell, tmp_path):
     out = tmp_path / "out.txt"
-    marker = "cshell2_env_prefix_marker"
+    marker = "pitash_env_prefix_marker"
     assert marker not in os.environ  # sanity
-    shell._execute(f"CSHELL2_TEST_VAR={marker} sh -c 'echo $CSHELL2_TEST_VAR' > {out}")
+    shell._execute(f"PITASH_TEST_VAR={marker} sh -c 'echo $PITASH_TEST_VAR' > {out}")
     assert out.read_text().strip() == marker
 
 
 def test_env_prefix_does_not_persist_in_shell(shell, tmp_path):
     out = tmp_path / "out.txt"
-    shell._execute(f"CSHELL2_TEST_ONESHOT=xyz sh -c 'echo hi' > {out}")
+    shell._execute(f"PITASH_TEST_ONESHOT=xyz sh -c 'echo hi' > {out}")
     # The prefix applied to the child only — the shell's own environ is clean.
-    assert "CSHELL2_TEST_ONESHOT" not in os.environ
+    assert "PITASH_TEST_ONESHOT" not in os.environ
 
 
 def test_env_prefix_restores_prior_value(shell, tmp_path):
     """A prefix that shadows an existing env var restores it afterward."""
-    os.environ["CSHELL2_TEST_PRESET"] = "original"
+    os.environ["PITASH_TEST_PRESET"] = "original"
     try:
         out = tmp_path / "out.txt"
         shell._execute(
-            f"CSHELL2_TEST_PRESET=temporary sh -c 'echo $CSHELL2_TEST_PRESET' > {out}"
+            f"PITASH_TEST_PRESET=temporary sh -c 'echo $PITASH_TEST_PRESET' > {out}"
         )
         assert out.read_text().strip() == "temporary"
-        assert os.environ["CSHELL2_TEST_PRESET"] == "original"
+        assert os.environ["PITASH_TEST_PRESET"] == "original"
     finally:
-        os.environ.pop("CSHELL2_TEST_PRESET", None)
+        os.environ.pop("PITASH_TEST_PRESET", None)
 
 
 def test_env_prefix_in_pipeline_stage(shell, tmp_path):
     out = tmp_path / "out.txt"
     shell._execute(
-        f"CSHELL2_TEST_PIPE=piped sh -c 'echo $CSHELL2_TEST_PIPE' | cat > {out}"
+        f"PITASH_TEST_PIPE=piped sh -c 'echo $PITASH_TEST_PIPE' | cat > {out}"
     )
     assert out.read_text().strip() == "piped"
-    assert "CSHELL2_TEST_PIPE" not in os.environ
+    assert "PITASH_TEST_PIPE" not in os.environ

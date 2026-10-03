@@ -203,7 +203,7 @@ verbatim, so a newline would submit the line on insert.
 
 **Directory scoping.** `ran_here_fn(entry)` answers "was this line run in the
 current directory?" — the shell passes `History.ran_here`, backed by the
-`~/.cshell2/history.dirs` side table (see below). Only entries that answer True
+`~/.pitash/history.dirs` side table (see below). Only entries that answer True
 are offered, so a `make deploy prod` from another checkout stays out of the way in
 this one. There is **no fallback**: a directory you have never run a matching line
 in contributes no history rows, and the picker shows only the ordinary candidates.
@@ -219,8 +219,8 @@ Two consequences worth knowing:
   into a subdirectory of a repo and the root's entries drop out.
 
 **Where the directories come from.** `lineedit.History` appends each executed
-line to `~/.cshell2/history` as before, and records the cwd it was typed in
-against that line in `~/.cshell2/history.dirs` — a JSON map of line → recent
+line to `~/.pitash/history` as before, and records the cwd it was typed in
+against that line in `~/.pitash/history.dirs` — a JSON map of line → recent
 directories (most recent last, capped at `MAX_DIRS_PER_LINE`). It is a *side*
 table so the main history file's format, and every reader of `History.entries`
 (`Ctrl+R`, the `default` context's seed), stay untouched. A consecutive duplicate
@@ -240,7 +240,7 @@ Because a history entry spans several arguments, it can suggest things no
 per-argument completer could produce:
 
 ```
-cshell2> git commit <TAB>
+pitash> git commit <TAB>
 ┌────────────────────────────────────────────────┐
 │ -m "fix typo"                      history     │
 │ --amend --no-edit                  history     │
@@ -424,8 +424,8 @@ The **fallback to `FileCompleter`** only triggers when **no completer** is regis
 Python commands declare arguments via a single `params=[arg(...)]` list. Each `arg()` configures argparse (validation, type coercion, defaults, action) **and** TAB completion in one place — `completer=` on a positional drives completion of the value at that position; `completer=` on a value-taking flag drives completion of the value typed after the flag. The registry derives the underlying `{arg_index: Completer, None: OptionsCompleter}` dict automatically.
 
 ```python
-from cshell2.commands import registry, arg
-from cshell2.completion import ChoiceCompleter
+from pitash.commands import registry, arg
+from pitash.completion import ChoiceCompleter
 
 @registry.command(
     name="deploy",
@@ -456,8 +456,8 @@ This design means:
 External recipes use the same `params=[arg(...)]` form, registered without a handler. The dispatch path treats handler-less Commands as external recipes and falls through to the system-command path:
 
 ```python
-from cshell2.commands import arg, registry as command_registry
-from cshell2.completion import FileCompleter
+from pitash.commands import arg, registry as command_registry
+from pitash.completion import FileCompleter
 
 command_registry.command(
     "rsync",

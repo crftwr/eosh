@@ -379,7 +379,7 @@ def _ssm_run(
     """
     import pexpect
 
-    sentinel = "__cshell2_ssm_done_aef36c__"
+    sentinel = "__pitash_ssm_done_aef36c__"
     head = sentinel[: len(sentinel) // 2]
     tail = sentinel[len(sentinel) // 2 :]
     initial_patterns = [*_SSM_PROMPT_PATTERNS, pexpect.TIMEOUT]

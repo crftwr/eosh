@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from cshell2.shell import (
+from pitash.shell import (
     Shell,
     _bash_env_ignored,
     _parse_bash_env_dump,
@@ -68,66 +68,66 @@ def test_bookkeeping_keys_are_ignored():
 
 def test_run_bash_script_reports_exports_and_cwd(sh, tmp_path):
     code, cwd, env = sh._run_bash_script(
-        f"export CSHELL2_TEST_A=hello\ncd {tmp_path}\n"
+        f"export PITASH_TEST_A=hello\ncd {tmp_path}\n"
     )
     assert code == 0
     assert os.path.realpath(cwd) == os.path.realpath(str(tmp_path))
-    assert env["CSHELL2_TEST_A"] == "hello"
+    assert env["PITASH_TEST_A"] == "hello"
 
 
 def test_run_bash_script_dumps_even_when_the_script_exits_nonzero(sh):
     """The dump runs from an EXIT trap, so `exit 3` still hands the env back."""
-    code, cwd, env = sh._run_bash_script("export CSHELL2_TEST_B=bee\nexit 3\n")
+    code, cwd, env = sh._run_bash_script("export PITASH_TEST_B=bee\nexit 3\n")
     assert code == 3
     assert cwd is not None
-    assert env["CSHELL2_TEST_B"] == "bee"
+    assert env["PITASH_TEST_B"] == "bee"
 
 
 def test_run_bash_script_dumps_after_set_e_failure(sh):
     code, cwd, env = sh._run_bash_script(
-        "set -e\nexport CSHELL2_TEST_C=cee\nfalse\nexport CSHELL2_TEST_D=dee\n"
+        "set -e\nexport PITASH_TEST_C=cee\nfalse\nexport PITASH_TEST_D=dee\n"
     )
     assert code != 0
-    assert env["CSHELL2_TEST_C"] == "cee"
-    assert "CSHELL2_TEST_D" not in env
+    assert env["PITASH_TEST_C"] == "cee"
+    assert "PITASH_TEST_D" not in env
 
 
 def test_run_bash_script_handles_bash_only_syntax(sh):
-    """The point of delegating: `$(…)` and loops that cshell2 cannot parse."""
+    """The point of delegating: `$(…)` and loops that pitash cannot parse."""
     code, _, env = sh._run_bash_script(
-        'export CSHELL2_TEST_SUB="$(echo sub)"\n'
-        'for i in 1 2 3; do export CSHELL2_TEST_LOOP="$i"; done\n'
+        'export PITASH_TEST_SUB="$(echo sub)"\n'
+        'for i in 1 2 3; do export PITASH_TEST_LOOP="$i"; done\n'
     )
     assert code == 0
-    assert env["CSHELL2_TEST_SUB"] == "sub"
-    assert env["CSHELL2_TEST_LOOP"] == "3"
+    assert env["PITASH_TEST_SUB"] == "sub"
+    assert env["PITASH_TEST_LOOP"] == "3"
 
 
 # ── importing the dump into the shell ──────────────────────────────────────
 
 def test_apply_sets_new_and_changed_vars(sh):
-    os.environ["CSHELL2_TEST_OLD"] = "before"
+    os.environ["PITASH_TEST_OLD"] = "before"
     env = dict(os.environ)
-    env["CSHELL2_TEST_OLD"] = "after"
-    env["CSHELL2_TEST_NEW"] = "fresh"
+    env["PITASH_TEST_OLD"] = "after"
+    env["PITASH_TEST_NEW"] = "fresh"
 
     changed, removed, new_cwd = sh._apply_bash_env(os.getcwd(), env)
 
-    assert os.environ["CSHELL2_TEST_OLD"] == "after"
-    assert os.environ["CSHELL2_TEST_NEW"] == "fresh"
-    assert changed == ["CSHELL2_TEST_NEW", "CSHELL2_TEST_OLD"]
+    assert os.environ["PITASH_TEST_OLD"] == "after"
+    assert os.environ["PITASH_TEST_NEW"] == "fresh"
+    assert changed == ["PITASH_TEST_NEW", "PITASH_TEST_OLD"]
     assert removed == []
     assert new_cwd is None
 
 
 def test_apply_unsets_what_the_script_unset(sh):
-    os.environ["CSHELL2_TEST_GONE"] = "x"
-    env = {k: v for k, v in os.environ.items() if k != "CSHELL2_TEST_GONE"}
+    os.environ["PITASH_TEST_GONE"] = "x"
+    env = {k: v for k, v in os.environ.items() if k != "PITASH_TEST_GONE"}
 
     changed, removed, _ = sh._apply_bash_env(os.getcwd(), env)
 
-    assert "CSHELL2_TEST_GONE" not in os.environ
-    assert removed == ["CSHELL2_TEST_GONE"]
+    assert "PITASH_TEST_GONE" not in os.environ
+    assert removed == ["PITASH_TEST_GONE"]
     assert changed == []
 
 
@@ -176,24 +176,24 @@ def test_apply_leaves_non_identifier_keys_alone(sh):
 
 def test_command_sources_a_file_with_arguments(sh, tmp_path, capfd):
     script = tmp_path / "setup.sh"
-    script.write_text('export CSHELL2_TEST_ARG="$1"\n')
+    script.write_text('export PITASH_TEST_ARG="$1"\n')
 
     sh.registry.get("source-bash").invoke([str(script), "s3"])
 
-    assert os.environ["CSHELL2_TEST_ARG"] == "s3"
+    assert os.environ["PITASH_TEST_ARG"] == "s3"
     out = capfd.readouterr().out
-    assert "CSHELL2_TEST_ARG" in out
+    assert "PITASH_TEST_ARG" in out
 
 
 def test_command_c_flag_runs_inline_script(sh):
-    sh.registry.get("source-bash").invoke(["-c", "export CSHELL2_TEST_INLINE=yes", "-q"])
-    assert os.environ["CSHELL2_TEST_INLINE"] == "yes"
+    sh.registry.get("source-bash").invoke(["-c", "export PITASH_TEST_INLINE=yes", "-q"])
+    assert os.environ["PITASH_TEST_INLINE"] == "yes"
 
 
 def test_command_summary_never_prints_values(sh, capfd):
-    sh.registry.get("source-bash").invoke(["-c", "export CSHELL2_TEST_SECRET=hunter2"])
+    sh.registry.get("source-bash").invoke(["-c", "export PITASH_TEST_SECRET=hunter2"])
     out = capfd.readouterr().out
-    assert "CSHELL2_TEST_SECRET" in out
+    assert "PITASH_TEST_SECRET" in out
     assert "hunter2" not in out
 
 
@@ -209,21 +209,21 @@ def test_command_rejects_c_together_with_a_file(sh, capfd):
 
 def test_command_reads_a_pasted_block(sh, monkeypatch, capfd):
     """Paste mode: the block reader supplies the script body."""
-    import cshell2.shell as shell_mod
+    import pitash.shell as shell_mod
 
     monkeypatch.setattr(
         shell_mod, "passthrough_input_block",
-        lambda prompt="": 'export CSHELL2_TEST_PASTE_A="s3"\n'
-                          'export CSHELL2_TEST_PASTE_B="us-east-1"\n',
+        lambda prompt="": 'export PITASH_TEST_PASTE_A="s3"\n'
+                          'export PITASH_TEST_PASTE_B="us-east-1"\n',
     )
     sh.registry.get("source-bash").invoke([])
 
-    assert os.environ["CSHELL2_TEST_PASTE_A"] == "s3"
-    assert os.environ["CSHELL2_TEST_PASTE_B"] == "us-east-1"
+    assert os.environ["PITASH_TEST_PASTE_A"] == "s3"
+    assert os.environ["PITASH_TEST_PASTE_B"] == "us-east-1"
 
 
 def test_command_reports_empty_paste(sh, monkeypatch, capfd):
-    import cshell2.shell as shell_mod
+    import pitash.shell as shell_mod
 
     monkeypatch.setattr(shell_mod, "passthrough_input_block", lambda prompt="": "  \n")
     sh.registry.get("source-bash").invoke([])

@@ -1,4 +1,4 @@
-# cshell2
+# Pitash
 
 A lightweight but powerful terminal shell environment with rich tab completion and context switching.
 
@@ -21,16 +21,31 @@ A lightweight but powerful terminal shell environment with rich tab completion a
 
 ## Installation
 
-Requires Python 3.12+.
+Requires Python 3.12+. The core has no dependencies beyond the standard library.
 
 ```bash
-pip install -e .
+pip install pitash            # or: pipx install pitash
+pip install "pitash[aws]"     # + the `awsut` recipe (boto3, pexpect)
+```
+
+On first launch `pitash` writes a starter `~/.pitash/config.py` that enables
+every built-in recipe. Without the `[aws]` extra, `awsut` is skipped and
+everything else loads normally.
+
+### From source
+
+```bash
+git clone https://github.com/crftwr/pitash
+cd pitash
+make install      # .venv/ with `pip install -e ".[dev]"`
+make test
+make run
 ```
 
 ## Usage
 
 ```bash
-cshell2
+pitash
 ```
 
 ### Built-in Commands
@@ -42,7 +57,7 @@ cshell2
 | `context` | Manage contexts (see below) |
 | `var [KEY=VALUE ...]` | Set context variables, or list all env vars |
 | `unset KEY [KEY ...]` | Unset context variables |
-| `reload` | Reload `~/.cshell2/config.py` without restarting |
+| `reload` | Reload `~/.pitash/config.py` without restarting |
 | `exit` | Exit the shell |
 
 Any command not listed above is passed through to the system shell (e.g., `ls`, `git`, `grep`).
@@ -52,15 +67,15 @@ Any command not listed above is passed through to the system shell (e.g., `ls`, 
 Contexts let you define named environments with variables that are exported to `os.environ` and a remembered working directory.
 
 ```
-cshell2> context push prod
+pitash> context push prod
 Pushed context 'prod'
-[prod] cshell2> var ACCOUNT=123456 REGION=us-east-1
-[prod] cshell2> context push staging
+[prod] pitash> var ACCOUNT=123456 REGION=us-east-1
+[prod] pitash> context push staging
 Pushed context 'staging'
-[staging] cshell2> var ACCOUNT=789012 REGION=us-west-2
-[staging] cshell2> context pop
+[staging] pitash> var ACCOUNT=789012 REGION=us-west-2
+[staging] pitash> context pop
 Popped 'staging', now in 'prod'
-[prod] cshell2> context list
+[prod] pitash> context list
   * prod {'ACCOUNT': '123456', 'REGION': 'us-east-1'}
     staging {'ACCOUNT': '789012', 'REGION': 'us-west-2'}
 ```
@@ -99,7 +114,7 @@ what you've typed so far. Only the part that would be *added* is listed, like
 any other candidate, tagged `history` and shown first:
 
 ```
-cshell2> git commit <TAB>
+pitash> git commit <TAB>
 ┌────────────────────────────────────────────────┐
 │ -m "fix typo"                      history     │
 │ --amend --no-edit                  history     │
@@ -115,8 +130,8 @@ history, the same list `↑`/`↓` walks (`Ctrl+R` searches every context). A
 history candidate is never inserted without being shown in the picker first, and
 a unique ordinary completion still applies on the first TAB as before.
 
-Candidates are also scoped to the **directory** you're in: cshell2 records where
-each command was run (`~/.cshell2/history.dirs`) and offers only the lines you ran
+Candidates are also scoped to the **directory** you're in: pitash records where
+each command was run (`~/.pitash/history.dirs`) and offers only the lines you ran
 here, so another checkout's `make deploy` stays out of the way. Nothing matching
 run here means no history rows — the picker just shows the ordinary candidates.
 `↑`/`↓` and `Ctrl+R` are not directory-scoped, so lines from elsewhere are still
@@ -130,7 +145,7 @@ one key away.
 
 ### Pipelines, Redirects, and Sequencing
 
-cshell2 supports the operators you'd expect from a POSIX shell:
+pitash supports the operators you'd expect from a POSIX shell:
 
 | Operator | Meaning |
 |----------|---------|
@@ -146,9 +161,9 @@ cshell2 supports the operators you'd expect from a POSIX shell:
 | `\` at end of line | Continue command on the next line (one history entry) |
 
 ```
-cshell2> ls *.py | grep test | wc -l
-cshell2> make 2>&1 | tee build.log
-cshell2> echo hello > out.txt && cat out.txt
+pitash> ls *.py | grep test | wc -l
+pitash> make 2>&1 | tee build.log
+pitash> echo hello > out.txt && cat out.txt
 ```
 
 Both registered Python commands and external programs work seamlessly inside pipelines.
@@ -182,13 +197,13 @@ See the [Custom Decorators](#custom-decorators) section below for authoring your
 
 ## Customization
 
-Create `~/.cshell2/config.py` to define custom commands and completers. This file is plain Python that imports from cshell2. Use `reload` to apply changes without restarting.
+Create `~/.pitash/config.py` to define custom commands and completers. This file is plain Python that imports from pitash. Use `reload` to apply changes without restarting.
 
 ```python
-# ~/.cshell2/config.py
-from cshell2.commands import registry, arg
-from cshell2.completion import Completer, Completion, ChoiceCompleter
-from cshell2.recipes import enable
+# ~/.pitash/config.py
+from pitash.commands import registry, arg
+from pitash.completion import Completer, Completion, ChoiceCompleter
+from pitash.recipes import enable
 
 # Enable TAB completion for system commands
 enable("make", "git", "ssh")
@@ -218,10 +233,10 @@ def connect(account, region, instance_id):
 A `Var` subclass mirrors the `CommandRegistry` pattern: subclass `Var`, register an instance with `var_registry`, and the built-in `var` command (and bare `NAME=VALUE` assignment) dispatches through your class. `$NAME` / `${NAME}` expansion uses the same lookup, so a Python-backed variable is read- and write-symmetric with `os.environ`.
 
 ```python
-# ~/.cshell2/config.py
+# ~/.pitash/config.py
 import os
-from cshell2 import Var, EnvVar, var_registry
-from cshell2.completion import ChoiceCompleter, CallbackCompleter
+from pitash import Var, EnvVar, var_registry
+from pitash.completion import ChoiceCompleter, CallbackCompleter
 
 class AwsRegionVar(Var):
     name = "aws_region"
@@ -248,10 +263,10 @@ var_registry.register(
 Use `EnvVar(name, env_var, completer=...)` for a single-key passthrough; subclass `Var` directly when one logical name needs to drive multiple `os.environ` keys (or any other side effect). With the variables above:
 
 ```
-cshell2> var aws_region=us-west-2
-cshell2> echo $AWS_REGION
+pitash> var aws_region=us-west-2
+pitash> echo $AWS_REGION
 us-west-2
-cshell2> aws ec2 describe-instances --region $aws_region
+pitash> aws ec2 describe-instances --region $aws_region
 ```
 
 ### Custom Decorators
@@ -259,12 +274,12 @@ cshell2> aws ec2 describe-instances --region $aws_region
 To author your own decorator, decorate a function with `decorator_registry.decorator(...)`. The function receives the wrapped `Pipeline` as its first positional argument and the parsed flag namespace as kwargs; call `pipeline.run()` to execute the body and return the exit code.
 
 ```python
-# ~/.cshell2/config.py
+# ~/.pitash/config.py
 import sys
 import time
-from cshell2.commands import arg
-from cshell2.decorators import registry as decorator_registry
-from cshell2.pipeline import Pipeline
+from pitash.commands import arg
+from pitash.decorators import registry as decorator_registry
+from pitash.pipeline import Pipeline
 
 @decorator_registry.decorator(
     name="repeat",
@@ -291,18 +306,18 @@ def repeat(pipeline: Pipeline, *, count: int, delay: float) -> int:
 Usage:
 
 ```
-cshell2> @repeat -n 5 --delay 1 ls
-cshell2> @repeat -n 3 {make && ./run-tests}
+pitash> @repeat -n 5 --delay 1 ls
+pitash> @repeat -n 3 {make && ./run-tests}
 ```
 
-To share decorators across machines or teammates, drop a module under `~/.cshell2/decorators/<name>.py` that defines `register()` (same shape as the built-ins) and call `enable()` from `config.py`:
+To share decorators across machines or teammates, drop a module under `~/.pitash/decorators/<name>.py` that defines `register()` (same shape as the built-ins) and call `enable()` from `config.py`:
 
 ```python
-# ~/.cshell2/config.py
-from cshell2.decorators import add_decorator_path, enable as enable_decorators
+# ~/.pitash/config.py
+from pitash.decorators import add_decorator_path, enable as enable_decorators
 
 add_decorator_path("/team/shared/decorators")   # optional extra directory
-enable_decorators("repeat")                     # found in ~/.cshell2/decorators/
+enable_decorators("repeat")                     # found in ~/.pitash/decorators/
                                                 # or /team/shared/decorators/
 ```
 
@@ -311,7 +326,7 @@ enable_decorators("repeat")                     # found in ~/.cshell2/decorators
 If a custom command needs to spawn a subprocess that reads from the user (SSH-like sessions, TUIs, MFA prompts, anything that calls `getpass`), wrap the call with `passthrough_run` — *not* `subprocess.run`:
 
 ```python
-from cshell2 import passthrough_run
+from pitash import passthrough_run
 
 @registry.command(name="my_ssm", ...)
 def my_ssm():
@@ -323,7 +338,7 @@ Plain `subprocess.run` would have the main shell thread and the subprocess both 
 For reading a single line of input back from the user, use `passthrough_input(prompt)` instead of plain `input()`:
 
 ```python
-from cshell2 import passthrough_input
+from pitash import passthrough_input
 
 answer = passthrough_input("Continue? [y/N] ")
 ```
@@ -332,12 +347,12 @@ Outside a Python command thread, both helpers fall back to the obvious thing (`s
 
 ### Desktop Notifications
 
-When a command runs for at least 10 seconds, cshell2 posts an OS notification as it finishes — by then you've probably switched to a browser:
+When a command runs for at least 10 seconds, pitash posts an OS notification as it finishes — by then you've probably switched to a browser:
 
 ```
-✓ cshell2 — 1m 23s          make -j8 release
-✗ cshell2 — exit 2 (20.0s)  make
-✓ cshell2 — 1h 05m          [bg-1] terraform apply
+✓ pitash — 1m 23s          make -j8 release
+✗ pitash — exit 2 (20.0s)  make
+✓ pitash — 1h 05m          [bg-1] terraform apply
 ```
 
 Commands running in a context you backgrounded with `Ctrl+]` (or with `@bg`) notify too, tagged with the context name. Interactive programs — editors, pagers, `top`, `ssh`, `tmux`, sub-shells — are skipped, since sitting in them for an hour isn't work finishing.
@@ -347,15 +362,15 @@ Backends are whatever the platform already ships: `osascript` on macOS, `notify-
 Control it at the prompt:
 
 ```
-cshell2> var notify=off              # disable for this session
-cshell2> var notify_threshold=30     # only notify for commands ≥ 30s
+pitash> var notify=off              # disable for this session
+pitash> var notify_threshold=30     # only notify for commands ≥ 30s
 ```
 
 Or from your config:
 
 ```python
-# ~/.cshell2/config.py
-from cshell2 import notify
+# ~/.pitash/config.py
+from pitash import notify
 
 notify.configure(threshold=30)
 notify.SKIP_COMMANDS.add("psql")
@@ -371,16 +386,16 @@ See [doc/notifications.md](doc/notifications.md) for the design and the known li
 The prompt is generated by a Python function you can override with `set_prompt()`. The default prompt shows the context name (if not `"default"`), current directory (up to 2 levels), a timestamp, and `[bg:N]` when N other contexts have running processes:
 
 ```
-[prod] projects/cshell2 14:32:07>
+[prod] projects/pitash 14:32:07>
 ```
 
 To customize, define a function that takes a `ContextManager` and returns a string:
 
 ```python
-# ~/.cshell2/config.py
+# ~/.pitash/config.py
 import os
 from datetime import datetime
-from cshell2 import set_prompt
+from pitash import set_prompt
 
 def my_prompt(context_manager):
     ctx = context_manager.current()
@@ -408,10 +423,10 @@ The function is called each time the prompt is displayed, so it reflects dynamic
 
 ### Completion Recipes
 
-Built-in recipes add TAB completion for common system commands. Enable them in `~/.cshell2/config.py`:
+Built-in recipes add TAB completion for common system commands. Enable them in `~/.pitash/config.py`:
 
 ```python
-from cshell2.recipes import enable
+from pitash.recipes import enable
 enable("git", "make", "ssh", "kill", "ls", "grep", "find", "du", "df", "tail", "aws")
 ```
 
@@ -424,20 +439,20 @@ Two protocol fallbacks activate automatically — no recipe needed:
 
 #### User-Defined Recipes
 
-You can write your own recipes and place them in `~/.cshell2/recipes/` (or any directory you add to the search path). `enable()` checks the search path automatically after the built-ins, so the call site in `config.py` is identical:
+You can write your own recipes and place them in `~/.pitash/recipes/` (or any directory you add to the search path). `enable()` checks the search path automatically after the built-ins, so the call site in `config.py` is identical:
 
 ```python
-from cshell2.recipes import enable
+from pitash.recipes import enable
 enable("git")          # built-in
-enable("my_tool")      # found in ~/.cshell2/recipes/my_tool.py
+enable("my_tool")      # found in ~/.pitash/recipes/my_tool.py
 ```
 
 A recipe file must define a `register()` function:
 
 ```python
-# ~/.cshell2/recipes/my_tool.py
-from cshell2.commands import arg, registry
-from cshell2.completion import CallbackCompleter, ChoiceCompleter
+# ~/.pitash/recipes/my_tool.py
+from pitash.commands import arg, registry
+from pitash.completion import CallbackCompleter, ChoiceCompleter
 
 def register():
     registry.command(
@@ -458,19 +473,19 @@ def _list_targets():
 
 #### Recipe Search Path
 
-The default search path contains only `~/.cshell2/recipes/`. Call `add_recipe_path()` to add more directories — useful for sharing recipes across a team:
+The default search path contains only `~/.pitash/recipes/`. Call `add_recipe_path()` to add more directories — useful for sharing recipes across a team:
 
 ```python
-from cshell2.recipes import add_recipe_path, enable
+from pitash.recipes import add_recipe_path, enable
 
-add_recipe_path("/team/shared/recipes")   # checked after ~/.cshell2/recipes/
+add_recipe_path("/team/shared/recipes")   # checked after ~/.pitash/recipes/
 enable("my_tool")   # found in whichever directory contains my_tool.py first
 ```
 
 Lookup order for every `enable()` call:
 
-1. Built-in package (`cshell2.recipes.<name>`) — always highest priority
-2. `~/.cshell2/recipes/<name>.py` — personal recipes
+1. Built-in package (`pitash.recipes.<name>`) — always highest priority
+2. `~/.pitash/recipes/<name>.py` — personal recipes
 3. Additional paths in the order they were added via `add_recipe_path()`
 
 You can also read or modify `recipe_search_path` directly (it is a plain `list[Path]`).
@@ -488,8 +503,8 @@ Subclass `Completer` and implement `complete()`. The `CompletionContext` gives y
 To add completion to a system command without wrapping it, register a handler-less command — execution falls through to the real binary:
 
 ```python
-from cshell2.commands import arg, registry
-from cshell2.completion import FileCompleter
+from pitash.commands import arg, registry
+from pitash.completion import FileCompleter
 
 registry.command(
     "mytools",
@@ -523,14 +538,18 @@ registry.command(
 
 | Path | Purpose |
 |------|---------|
-| `~/.cshell2/config.py` | User configuration |
-| `~/.cshell2/history` | Command history |
-| `~/.cshell2/history.dirs` | Directories each history line was run in (scopes history TAB candidates) |
-| `~/.cshell2/recipes/<name>.py` | User-defined completion recipes (loaded by `enable("<name>")`) |
-| `~/.cshell2/decorators/<name>.py` | User-defined pipeline decorators (loaded by `enable("<name>")`) |
+| `~/.pitash/config.py` | User configuration |
+| `~/.pitash/history` | Command history |
+| `~/.pitash/history.dirs` | Directories each history line was run in (scopes history TAB candidates) |
+| `~/.pitash/recipes/<name>.py` | User-defined completion recipes (loaded by `enable("<name>")`) |
+| `~/.pitash/decorators/<name>.py` | User-defined pipeline decorators (loaded by `enable("<name>")`) |
 
 ## Platform Support
 
 The interactive shell — line editing, completion, all TUI pickers, history, pipelines, redirects, built-ins, decorators, and `Ctrl+]` context switching at the prompt — runs natively on both POSIX and Windows. Path separators are normalized to `/` on every platform (Git-Bash style) so a path can never be mistaken for a `\`-line-continuation.
 
 The one POSIX-only feature is **PTY-backed multiplexing of a live external process**: backgrounding a *running* native program with `Ctrl+]` and resuming it later. On Windows, external commands run on the real console with inherited stdio.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

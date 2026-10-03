@@ -7,7 +7,7 @@ import textwrap
 
 import pytest
 
-from cshell2.recipes.awsut import (
+from pitash.recipes.awsut import (
     parse_credential_exports,
     write_credentials_profile,
 )

@@ -63,8 +63,8 @@ Creates a new context named `prod` with variables inherited from the current con
 
 > **Note:** Variables are not set at push time. Use the `var` command after pushing:
 > ```
-> cshell2> context push prod
-> [prod] cshell2> var ACCOUNT=123456 REGION=us-east-1
+> pitash> context push prod
+> [prod] pitash> var ACCOUNT=123456 REGION=us-east-1
 > ```
 
 ### Switch
@@ -219,7 +219,7 @@ A pure stack forces linear navigation — you must pop through intermediates to 
 
 **Why export to os.environ?**
 
-Subprocess commands (the system fallback) need to see context variables without cshell2-specific wiring. Exporting to `os.environ` means `aws`, `kubectl`, `ssh`, and other tools pick up the right account/region/cluster automatically.
+Subprocess commands (the system fallback) need to see context variables without pitash-specific wiring. Exporting to `os.environ` means `aws`, `kubectl`, `ssh`, and other tools pick up the right account/region/cluster automatically.
 
 **Why save cwd per context?**
 

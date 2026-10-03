@@ -1,9 +1,9 @@
 import pytest
-from cshell2.commands import (
+from pitash.commands import (
     Command, CommandRegistry, CmdParser, arg,
     _build_completers, _build_usage, _build_help_text,
 )
-from cshell2.completion import ChoiceCompleter, OptionsCompleter
+from pitash.completion import ChoiceCompleter, OptionsCompleter
 
 
 def test_register_and_get():
@@ -85,7 +85,7 @@ def test_cmd_parser_normal_parse():
 
 
 def test_cmd_parser_combined_short_flags():
-    """Argparse must expand -nv into -n -v (matches cshell2 TUI output)."""
+    """Argparse must expand -nv into -n -v (matches pitash TUI output)."""
     ns = _make_deploy_parser().parse_args(("staging", "-nv"))
     assert ns is not None
     assert ns.dry_run is True

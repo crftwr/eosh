@@ -12,7 +12,7 @@ def _lookup_var(name: str) -> str | None:
     :class:`Var` wins over a same-named env key.  Returns None when neither
     source has a value, which the caller renders as an empty string.
 
-    Imported lazily so ``parsing`` stays free of import-time cshell2 deps.
+    Imported lazily so ``parsing`` stays free of import-time pitash deps.
     """
     from .variables import registry as var_registry
 

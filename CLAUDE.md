@@ -1,4 +1,4 @@
-# cshell2
+# Pitash
 
 A lightweight but powerful terminal shell environment implemented in Python.
 
@@ -23,7 +23,7 @@ change.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    cshell2                           │
+│                    pitash                           │
 ├─────────────────────────────────────────────────────┤
 │  Shell Loop (shell.py)                              │
 │  ├── Input handling (lineedit.py — DIY raw editor)  │
@@ -86,7 +86,7 @@ change.
 │  ├── @name [flags] body — wrap pipeline at runtime │
 │  └── Built-ins: @watch, @time, @retry, @quiet, @bg │
 ├─────────────────────────────────────────────────────┤
-│  User Config (~/.cshell2/config.py)                 │
+│  User Config (~/.pitash/config.py)                 │
 │  ├── Custom command definitions                    │
 │  └── Custom completer definitions                  │
 └─────────────────────────────────────────────────────┘
@@ -102,7 +102,7 @@ Entry point. Reads input, parses lines, dispatches commands.
 - Supports `Ctrl+R` history search (via inline picker) — searches the
   **global** history (every command from every context)
 - Supports `Ctrl+]` to open an inline context-switch picker
-- Maintains a global command history in `~/.cshell2/history` (every executed
+- Maintains a global command history in `~/.pitash/history` (every executed
   command, across all contexts). **Up/Down navigation is scoped per context**
   (each `Context` carries an in-memory `history` list); the global file backs
   `Ctrl+R` and seeds the `default` context's Up/Down list at startup. A newly
@@ -111,7 +111,7 @@ Entry point. Reads input, parses lines, dispatches commands.
   per-context list also feeds **history TAB completion** (`HistoryCompleter`),
   so TAB recall and Up/Down recall share one scope — with one extra filter on
   the TAB side: candidates are narrowed to the lines that were run in the
-  current directory (`~/.cshell2/history.dirs`; see `HistoryCompleter`).
+  current directory (`~/.pitash/history.dirs`; see `HistoryCompleter`).
 - Runs external commands in PTY-backed subprocess slots (`process.py`)
 - Executes pipelines (`|`), sequences (`;`, `&&`, `||`), and redirections (`>`, `>>`, `<`, `2>`, `2>&1`)
 
@@ -119,7 +119,7 @@ Entry point. Reads input, parses lines, dispatches commands.
 (`var NAME=` unsets; there is no separate `unset`.)
 
 **`source-bash` — run a bash script, import what it left behind.** The escape
-hatch for anything bash can express and cshell2 can't (`$(…)`, `for`, heredocs,
+hatch for anything bash can express and pitash can't (`$(…)`, `for`, heredocs,
 `if`) and for the common case of *pasting* a block of `export KEY=VALUE` lines:
 
 ```
@@ -143,14 +143,14 @@ removal is limited to plain-identifier keys, and the summary line prints
 variable **names only** — a sourced script is exactly where an
 `AWS_SESSION_TOKEN` comes from. `--no-cd` keeps the current directory, `-q`
 suppresses the summary. Shell functions, aliases and shell options cannot come
-back (cshell2 has no equivalent) — see `doc/limitations.md`.
+back (pitash has no equivalent) — see `doc/limitations.md`.
 
 **Ctrl+] context switching:** The user can press `Ctrl+]` at the shell prompt (or during a running process) to open a TUI picker listing all contexts. Selecting a context with a live process resumes it immediately. While the picker is open, the focused context's last few lines of buffered output are previewed below the list, and the following action keys mutate the context list in place: `Ctrl+N` creates a new context (inheriting the current context's variables), `Ctrl+D` deletes the focused context (including the current one — the manager picks the next current automatically), `Ctrl+R` renames the focused context. Action keys refuse to delete a context with a live process or to leave fewer than one context. The shell tracks processes across context switches via `ProcessSlot` (see `process.py`).
 
 ### commands.py — Command Registry
 
 ```python
-from cshell2.commands import registry, arg
+from pitash.commands import registry, arg
 
 @registry.command(
     name="hello",
@@ -222,8 +222,8 @@ When a variable needs to write multiple env keys (e.g. `AWS_REGION` + `AWS_DEFAU
 The module-level singleton is named `registry` inside `variables.py` (mirroring `commands.py`). Importers typically alias it as `var_registry` to disambiguate from the command registry:
 
 ```python
-from cshell2.variables import registry as var_registry
-# or, equivalently, `from cshell2 import var_registry`
+from pitash.variables import registry as var_registry
+# or, equivalently, `from pitash import var_registry`
 
 # Methods:
 var_registry.register(var: Var) -> None
@@ -283,7 +283,7 @@ class AwsRegionVar(Var):
 var_registry.register(AwsRegionVar())
 ```
 
-#### Registering Vars from `~/.cshell2/config.py`
+#### Registering Vars from `~/.pitash/config.py`
 
 `Var` subclasses are plain Python — register them directly from the user
 config (or any module the config imports). `EnvVar(name, env_var,
@@ -292,9 +292,9 @@ when a logical name needs to drive multiple `os.environ` keys, subclass
 `Var` directly:
 
 ```python
-# ~/.cshell2/config.py
-from cshell2.completion import CallbackCompleter, ChoiceCompleter
-from cshell2 import Var, EnvVar, var_registry
+# ~/.pitash/config.py
+from pitash.completion import CallbackCompleter, ChoiceCompleter
+from pitash import Var, EnvVar, var_registry
 
 class AwsRegionVar(Var):
     name = "aws_region"
@@ -481,9 +481,9 @@ checkout's `make deploy prod` stays out of the way. The scope is strict — ther
 no fallback to entries from elsewhere, so a directory you've never run a matching
 line in simply contributes no history rows; Up/Down and `Ctrl+R` stay unscoped for
 when you do want to reach across directories. The directories come from a JSON
-side table (`~/.cshell2/history.dirs`, line → recent dirs, capped at
+side table (`~/.pitash/history.dirs`, line → recent dirs, capped at
 `lineedit.MAX_DIRS_PER_LINE`) that `History.add` maintains next to the plain
-`~/.cshell2/history` file; a re-run of the same line after a `cd` records the new
+`~/.pitash/history` file; a re-run of the same line after a `cd` records the new
 directory even though the line itself is a duplicate, and every write prunes
 lines the history file no longer holds. Missing or corrupt side table → no
 directory is known for any line, so history contributes no TAB candidates at all
@@ -585,17 +585,17 @@ class ContextManager:
 
 Context switching (shell commands):
 ```
-cshell2> context push prod
+pitash> context push prod
 Pushed context 'prod'
-[prod] cshell2> var ACCOUNT=123456 REGION=us-east-1
-[prod] cshell2> context push staging
+[prod] pitash> var ACCOUNT=123456 REGION=us-east-1
+[prod] pitash> context push staging
 Pushed context 'staging'
-[staging] cshell2> var ACCOUNT=789012 REGION=us-west-2
-[staging] cshell2> context pop
+[staging] pitash> var ACCOUNT=789012 REGION=us-west-2
+[staging] pitash> context pop
 Popped 'staging', now in 'prod'
-[prod] cshell2> context switch staging   # switch directly, prod still on stack
-[staging] cshell2> context list          # show all: staging*, prod
-[staging] cshell2> context kill prod     # send SIGTERM to running process in 'prod'
+[prod] pitash> context switch staging   # switch directly, prod still on stack
+[staging] pitash> context list          # show all: staging*, prod
+[staging] pitash> context kill prod     # send SIGTERM to running process in 'prod'
 ```
 
 Completers can use `ctx.shell_context` to adapt:
@@ -662,10 +662,10 @@ A Python `@registry.command` runs in a background thread inside a `PythonCommand
 
 External commands typed at the prompt (e.g. plain `aws ssm start-session`) don't have this problem because they're routed through `ProcessSlot`, which gives them a dedicated PTY pair. The main thread is the *only* reader of real stdin; it copies bytes into the PTY master.
 
-The fix for Python commands is the same shape: spawn the subprocess against a slot-owned PTY and let the existing forwarding loop do its job. Use `cshell2.passthrough_run`:
+The fix for Python commands is the same shape: spawn the subprocess against a slot-owned PTY and let the existing forwarding loop do its job. Use `pitash.passthrough_run`:
 
 ```python
-from cshell2 import passthrough_run
+from pitash import passthrough_run
 
 @registry.command(name="my_ssm", ...)
 def my_ssm():
@@ -676,9 +676,9 @@ def my_ssm():
 
 Outside a Python command thread (e.g. inside a synchronous handler that doesn't run on a slot), `passthrough_run` falls through to plain `subprocess.run`.
 
-**Reading a line of input from the user.** `input()` from a Python command body has the same race as `subprocess.run` — the main thread is also reading stdin in raw mode, so most keystrokes are lost and Enter arrives as `\r` with no echo. Use `cshell2.passthrough_input(prompt)` instead: the slot signals the main loop to restore cooked terminal mode and stop reading stdin for the duration of the call, then takes it back. Built-in commands like `exit`'s "Exit anyway? [y/N]" confirmation use this. Outside a Python command thread, `passthrough_input` falls through to plain `input()`.
+**Reading a line of input from the user.** `input()` from a Python command body has the same race as `subprocess.run` — the main thread is also reading stdin in raw mode, so most keystrokes are lost and Enter arrives as `\r` with no echo. Use `pitash.passthrough_input(prompt)` instead: the slot signals the main loop to restore cooked terminal mode and stop reading stdin for the duration of the call, then takes it back. Built-in commands like `exit`'s "Exit anyway? [y/N]" confirmation use this. Outside a Python command thread, `passthrough_input` falls through to plain `input()`.
 
-**Reading a pasted block.** `cshell2.passthrough_input_block(prompt)` reads lines until a blank line or Ctrl+D and returns them joined by `\n`. `awsut credentials set` uses it to take `export AWS_ACCESS_KEY_ID=…` lines pasted from a console.
+**Reading a pasted block.** `pitash.passthrough_input_block(prompt)` reads lines until a blank line or Ctrl+D and returns them joined by `\n`. `awsut credentials set` uses it to take `export AWS_ACCESS_KEY_ID=…` lines pasted from a console.
 
 It does *not* go through cooked mode, and that is the whole point. Two things rule that out: looping over `passthrough_input` loses the tail of a paste (between calls the main loop takes stdin back into raw mode, so bytes still in the tty buffer are read as keystrokes), and the kernel's canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. So `_run_input_block` reads off the raw key stream the forwarding loop already feeds (`slot.poll_key`) and does the echo, CRLF folding, backspace, and blank-line detection itself. `passthrough_input` keeps the cooked-mode path: short answers never approach `MAX_CANON`, and the kernel's line editing is free there.
 
@@ -709,7 +709,7 @@ has almost certainly switched to another window, and the shell should say
 **Zero dependencies.** Every backend is a program the platform already ships,
 probed once and cached: `osascript` on macOS, `notify-send` on Linux/BSD, a
 PowerShell WinRT toast on Windows, and the terminal bell (`\a`) as a last
-resort. Delivery happens on a daemon thread (`cshell2-notify`) and every
+resort. Delivery happens on a daemon thread (`pitash-notify`) and every
 failure is swallowed — a shell must not die because a notification couldn't
 be posted, and the callback runs on a reader/worker thread so it never touches
 the terminal.
@@ -760,14 +760,14 @@ best-effort nature of delivery.
 
 ### recipes/ — Completion Recipes for External Commands
 
-Opt-in completion recipes for system commands. Enable in `~/.cshell2/config.py`:
+Opt-in completion recipes for system commands. Enable in `~/.pitash/config.py`:
 
 ```python
-from cshell2.recipes import enable
+from pitash.recipes import enable
 enable("make", "git", "ssh", "kill", "tail", "ls", "grep", "find", "du", "df", "aws")
 ```
 
-Available built-in recipes: `aws`, `awsut`, `chmod`, `chown`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/cshell2/recipes/__init__.py` for descriptions). Use `enable("*")` to load all built-ins plus user recipes.
+Available built-in recipes: `aws`, `awsut`, `chmod`, `chown`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/pitash/recipes/__init__.py` for descriptions). Use `enable("*")` to load all built-ins plus user recipes.
 
 **Protocol fallbacks** — auto-activate after recipes, no `enable()` required:
 
@@ -778,20 +778,20 @@ Each recipe calls `registry.command(name, help=..., params=[...])` (with no hand
 
 #### User-Defined Recipes
 
-`enable()` searches `recipe_search_path` (a `list[Path]`) when no built-in recipe matches. The default list contains only `~/.cshell2/recipes/`; call `add_recipe_path()` to append more directories. The call site in `config.py` is unchanged.
+`enable()` searches `recipe_search_path` (a `list[Path]`) when no built-in recipe matches. The default list contains only `~/.pitash/recipes/`; call `add_recipe_path()` to append more directories. The call site in `config.py` is unchanged.
 
 Lookup order for every `enable()` call:
 
-1. Built-in package (`cshell2.recipes.<name>`) — always highest priority.
+1. Built-in package (`pitash.recipes.<name>`) — always highest priority.
 2. Each directory in `recipe_search_path` in order — first match wins.
 3. `ImportError` with the searched directories listed if nothing is found.
 
 A user recipe file must define a `register()` function with the same shape as built-in recipes:
 
 ```python
-# ~/.cshell2/recipes/my_tool.py
-from cshell2.commands import arg, registry
-from cshell2.completion import CallbackCompleter, ChoiceCompleter
+# ~/.pitash/recipes/my_tool.py
+from pitash.commands import arg, registry
+from pitash.completion import CallbackCompleter, ChoiceCompleter
 
 def register():
     registry.command(
@@ -810,12 +810,12 @@ def _list_targets():
 ```
 
 ```python
-# ~/.cshell2/config.py
-from cshell2.recipes import add_recipe_path, enable
+# ~/.pitash/config.py
+from pitash.recipes import add_recipe_path, enable
 
 add_recipe_path("/team/shared/recipes")  # optional extra directory
 enable("git")          # built-in
-enable("my_tool")      # found in ~/.cshell2/recipes/ or /team/shared/recipes/
+enable("my_tool")      # found in ~/.pitash/recipes/ or /team/shared/recipes/
 ```
 
 `recipe_search_path` is a plain `list[Path]` and can be read or manipulated directly when finer control is needed.
@@ -842,8 +842,8 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 **Authoring a decorator:**
 
 ```python
-from cshell2.commands import arg
-from cshell2.decorators import registry as decorator_registry
+from pitash.commands import arg
+from pitash.decorators import registry as decorator_registry
 
 @decorator_registry.decorator(
     name="watch",
@@ -863,25 +863,25 @@ def watch(pipeline, *, interval, no_clear):
 
 The decorator function receives a `Pipeline` (the parsed AST of the wrapped body) and the parsed flag namespace as kwargs. `pipeline.run()` re-enters `Shell._execute_pipeline` so redirects, pipes, and Python-stage routing all work the same as at the top level.
 
-**Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet`, `@bg` (each in its own `cshell2/decorators/<name>.py`).
+**Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet`, `@bg` (each in its own `pitash/decorators/<name>.py`).
 
-**Loading:** `Shell._register_builtins` calls `enable_decorators("watch", "time", "retry", "quiet", "bg")` on construction. The `enable("*")` helper, search-path mechanism, and `add_decorator_path()` mirror `cshell2/recipes/`.
+**Loading:** `Shell._register_builtins` calls `enable_decorators("watch", "time", "retry", "quiet", "bg")` on construction. The `enable("*")` helper, search-path mechanism, and `add_decorator_path()` mirror `pitash/recipes/`.
 
-**`@bg` and slot infrastructure.** `@bg` runs its body on a `PipelineSlot` — a subclass of `PythonCommandSlot` whose work unit is a `Pipeline.run()` call instead of a single Python command. It registers itself as the new context's `process_slot`, so the run-loop's existing resume path (proxy buffering, `Ctrl+]` switching, `_compute_exit_code`) handles it without further wiring. The decorator-side hook is `set_background_runner()` in `cshell2.decorators` (parallel to `set_pipeline_executor`); `Shell.__init__` registers `_run_in_background` against it.
+**`@bg` and slot infrastructure.** `@bg` runs its body on a `PipelineSlot` — a subclass of `PythonCommandSlot` whose work unit is a `Pipeline.run()` call instead of a single Python command. It registers itself as the new context's `process_slot`, so the run-loop's existing resume path (proxy buffering, `Ctrl+]` switching, `_compute_exit_code`) handles it without further wiring. The decorator-side hook is `set_background_runner()` in `pitash.decorators` (parallel to `set_pipeline_executor`); `Shell.__init__` registers `_run_in_background` against it.
 
 **Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `passthrough_run`/`passthrough_input` raise `RuntimeError` from a piped decorator.
 
 See [doc/decorators.md](doc/decorators.md) for the full design rationale, IPython-magic precedent, parser/executor walkthrough, and resolved UX questions; remaining follow-ups (stacking, more built-ins, …) are in [doc/enhancements.md](doc/enhancements.md).
 
-### User Config (~/.cshell2/config.py)
+### User Config (~/.pitash/config.py)
 
 Users define custom commands and completers here. Loaded at shell startup; reloadable with the `reload` command.
 
 ```python
-# ~/.cshell2/config.py
-from cshell2.commands import registry, arg
-from cshell2.completion import Completer, Completion, ChoiceCompleter
-from cshell2.recipes import enable
+# ~/.pitash/config.py
+from pitash.commands import registry, arg
+from pitash.completion import Completer, Completion, ChoiceCompleter
+from pitash.recipes import enable
 
 # Enable recipes for system commands
 enable("make", "git")
@@ -909,19 +909,19 @@ def connect(account, region, instance_id):
 #### Custom Decorators
 
 Custom decorators register the same way commands do — import
-`cshell2.decorators.registry` and decorate a function. The function
+`pitash.decorators.registry` and decorate a function. The function
 receives the wrapped `Pipeline` as its first positional argument and the
 parsed flag namespace as kwargs; call `pipeline.run()` to execute the
 body. Return the int exit code (or let the return value of `pipeline.run()`
 propagate).
 
 ```python
-# ~/.cshell2/config.py
+# ~/.pitash/config.py
 import sys
 import time
-from cshell2.commands import arg
-from cshell2.decorators import registry as decorator_registry
-from cshell2.pipeline import Pipeline
+from pitash.commands import arg
+from pitash.decorators import registry as decorator_registry
+from pitash.pipeline import Pipeline
 
 @decorator_registry.decorator(
     name="repeat",
@@ -949,34 +949,43 @@ Usage at the prompt — the brace form is required when the body contains
 pipeline operators:
 
 ```
-cshell2> @repeat -n 5 --delay 1 ls
-cshell2> @repeat -n 3 {make && ./run-tests}
+pitash> @repeat -n 5 --delay 1 ls
+pitash> @repeat -n 3 {make && ./run-tests}
 ```
 
 For decorators shared across machines or teammates, drop a module under
-`~/.cshell2/decorators/<name>.py` that defines `register()` (same shape
+`~/.pitash/decorators/<name>.py` that defines `register()` (same shape
 as the built-ins) and call `enable()` from `config.py`:
 
 ```python
-# ~/.cshell2/config.py
-from cshell2.decorators import add_decorator_path, enable as enable_decorators
+# ~/.pitash/config.py
+from pitash.decorators import add_decorator_path, enable as enable_decorators
 
 add_decorator_path("/team/shared/decorators")   # optional extra directory
-enable_decorators("repeat")                     # found in ~/.cshell2/decorators/
+enable_decorators("repeat")                     # found in ~/.pitash/decorators/
                                                 # or /team/shared/decorators/
 ```
 
 ## File Layout
 
 ```
-cshell2/
+pitash/
 ├── CLAUDE.md
 ├── README.md
-├── pyproject.toml
+├── LICENSE                     # MIT
+├── Makefile                    # install/test/run + build and release targets
+├── pyproject.toml              # version + readme are dynamic (see Packaging & Release)
+├── scripts/
+│   ├── install_launcher.py     # put a `pitash` launcher on PATH
+│   ├── _version_source.py      # read/rewrite the single __version__ literal
+│   ├── bump_version.py         # used by `make tag`
+│   ├── release_preflight.py    # refuses a release from a dirty/stale checkout
+│   └── gen_pypi_readme.py      # README.md → README.pypi.md (absolute links)
 ├── src/
-│   └── cshell2/
-│       ├── __init__.py         # exports set_prompt
-│       ├── __main__.py         # entry point
+│   └── pitash/
+│       ├── __init__.py         # public API exports + __version__ (single source)
+│       ├── __main__.py         # entry point (`pitash`, `pitash --version`)
+│       ├── paths.py            # config_dir() — the one place naming ~/.pitash
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
 │       ├── commands.py         # command registry, @command decorator
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
@@ -1069,9 +1078,10 @@ cshell2/
     ├── test_process.py
     ├── test_recipes.py
     ├── test_shell_continuation.py
+    ├── test_user_config.py
     └── test_variables.py
 
-~/.cshell2/
+~/.pitash/
 ├── config.py           # user configuration (commands, completers, recipes)
 ├── history             # persistent command history
 ├── history.dirs        # JSON: which directories each history line was run in
@@ -1096,7 +1106,7 @@ cshell2/
 - Stderr redirect `2>` `2>>` `2>&1` ✅
 - Backslash line continuation `\` ✅ — handled in `shell.py` before execution; continuation lines collected with `"> "` prompt; full joined command stored as one history entry
 - Per-command env prefix `FOO=bar cmd args` ✅ — leading `KEY=VALUE` tokens apply only to that command's environment (`Shell._split_env_prefix`). External children get an explicit `env=`; Python `@registry.command`s get a temporary `os.environ` overlay via `Shell._temp_environ` (see the in-process caveat in that method's docstring). A line that is *only* assignments is still a permanent set; `make FOO=bar` keeps `FOO=bar` as an argument (scan stops at the command name).
-- Command substitution `$(…)` ❌ — not yet implemented at the cshell2 prompt;
+- Command substitution `$(…)` ❌ — not yet implemented at the pitash prompt;
   `source-bash` runs a body containing it in a real bash and imports the
   resulting variables, which covers the pasted-snippet case
 
@@ -1131,6 +1141,27 @@ Two execution modes in `shell.py`:
 
 The thread-local routing (`_ThreadLocalStdin` / `_ThreadLocalStdout` / `_ThreadLocalStderr` in `shell.py`) is what lets multiple Python pipeline stages run concurrently without trampling each other or the main thread's terminal. Caveats — most importantly that nested `subprocess` from inside a piped Python command bypasses the thread-local rebinding because it reads the real fd 1 — are documented in `doc/limitations.md` under "Python commands in pipelines — caveats of the in-process model."
 
+## Packaging & Release
+
+Published to PyPI as **`pitash`** (formerly the working title `cshell2`).
+Conventions follow the author's other packages (puikit): setuptools ≥ 77,
+`license = "MIT"`, and Makefile + twine with tokens from `~/.pypirc` — no CI.
+
+- **Version** lives only in `src/pitash/__init__.py`'s `__version__`;
+  `pyproject.toml` reads it via `dynamic = ["version"]`. Between releases it
+  carries a `.devN` suffix (`0.1.0.dev0`), so `make tag VERSION=0.1.0` is
+  "ahead" of it for `release_preflight.py`.
+- **Extras**: the core is stdlib-only. `[aws]` (boto3, pexpect) powers
+  `awsut`; without it `enable("*")` skips `awsut` and records it in
+  `recipes.skipped_recipes`. `[dev]` = pytest + `[aws]`.
+- **PyPI readme** is `README.pypi.md`, generated by `make build` from
+  `README.md` with relative links pinned to the version tag; gitignored.
+- **Release**, in order: `make tag VERSION=x.y.z` (preflight, tests, bump,
+  commit, annotated tag `vX.Y.Z`, build gate, push) → `make release-github`
+  → `make release-whl` (twine upload of the exact tagged sdist + wheel, also
+  attached to the GitHub Release) → `make release-status`.
+  `make publish-testpypi` is the no-commitment rehearsal.
+
 ## Key Design Decisions
 
 1. **DIY raw-mode line editor** — `lineedit.py` drives the terminal directly with `termios`/`tty`/`select`. This avoids external dependencies, keeps the codebase self-contained, and gives full control over the completion UI and resize handling.
@@ -1143,9 +1174,9 @@ The thread-local routing (`_ThreadLocalStdin` / `_ThreadLocalStdout` / `_ThreadL
 
 5. **PTY process multiplexing** — each context can hold a `ProcessSlot` with a live subprocess. `Ctrl+]` switches between contexts without killing the running process. The slot buffers output while inactive and replays it on return.
 
-6. **Config as Python** — `config.py` is just Python that imports cshell2 APIs. No DSL to learn; full language power for defining completers with caching, API calls, etc. The `reload` command reloads the config without restarting the shell.
+6. **Config as Python** — `config.py` is just Python that imports pitash APIs. No DSL to learn; full language power for defining completers with caching, API calls, etc. The `reload` command reloads the config without restarting the shell.
 
-7. **System command fallback** — anything not registered as a Python command is passed to the system shell via PTY, so cshell2 is a drop-in replacement for daily use.
+7. **System command fallback** — anything not registered as a Python command is passed to the system shell via PTY, so pitash is a drop-in replacement for daily use.
 
 8. **Python-backed variables mirror the command registry pattern** — `Var` subclasses handle `get`/`set` logic; a single logical name (e.g. `aws_region`) can drive multiple `os.environ` keys or arbitrary side effects. The `var` command and bare `NAME=VALUE` assignment dispatch through `VarRegistry` before falling back to plain env writes, and `$NAME` / `${NAME}` expansion does the same lookup in reverse — so registered Vars are read- and write-symmetric with `os.environ` and a Python-backed variable behaves transparently like an OS variable on the command line. `VarCompleter` handles `=`-split completion locally without touching the global tokenizer.
 

@@ -46,6 +46,7 @@ from .variables import registry as var_registry, VarCompleter
 from .context import ContextManager, ContextState
 from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor, SWITCH_SENTINEL
 from .parsing import expand_vars, split_for_completion, tokenize
+from .paths import config_dir
 from .pipeline import (
     DecoratorParseError,
     Redirect,
@@ -1444,8 +1445,8 @@ class PipelineSlot(PythonCommandSlot):
 # than a trailing line so a script that ends in `exit 1` — or dies under
 # `set -e` — still hands its environment back.
 _BASH_ENV_DUMP_WRAPPER = """\
-__cshell2_dump() {{ {{ printf '%s\\0' "$PWD"; env -0; }} > {dump} 2>/dev/null; }}
-trap __cshell2_dump EXIT
+__pitash_dump() {{ {{ printf '%s\\0' "$PWD"; env -0; }} > {dump} 2>/dev/null; }}
+trap __pitash_dump EXIT
 {body}
 """
 
@@ -1518,7 +1519,7 @@ class Shell:
         if not isinstance(sys.stderr, _ThreadLocalStderr):
             sys.stderr = _ThreadLocalStderr(sys.stderr)
 
-        history_path = Path.home() / ".cshell2" / "history"
+        history_path = config_dir() / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
 
         history = History(history_path)
@@ -2090,7 +2091,7 @@ class Shell:
                 return
             raise SystemExit(0)
 
-        @self.registry.command(name="reload", help="Reload ~/.cshell2/config.py.")
+        @self.registry.command(name="reload", help="Reload ~/.pitash/config.py.")
         def reload_config():
             self.registry.clear_user_commands()
             var_registry.clear_user_vars()
@@ -2158,7 +2159,7 @@ class Shell:
                 "final environment and working directory are imported back here,\n"
                 "the way bash's own `source` leaves them in the calling shell.\n\n"
                 "Shell functions, aliases and shell options cannot be imported\n"
-                "(cshell2 has no equivalent); only variables and the cwd come back."
+                "(pitash has no equivalent); only variables and the cwd come back."
             ),
             params=[
                 arg("script", nargs="*", metavar="FILE|ARG", completer=FileCompleter()),
@@ -2422,18 +2423,19 @@ class Shell:
         notify.register_vars()
 
     def _load_user_config(self) -> None:
-        config_path = Path.home() / ".cshell2" / "config.py"
+        config_path = config_dir() / "config.py"
         if not config_path.exists():
+            # First launch: write the starter config, then load it like any
+            # other — a fresh install should not need a restart to get recipes.
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(_DEFAULT_CONFIG_PATH.read_text())
-            return
 
         import importlib.util
-        sys.modules.pop("cshell2_user_config", None)
-        spec = importlib.util.spec_from_file_location("cshell2_user_config", config_path)
+        sys.modules.pop("pitash_user_config", None)
+        spec = importlib.util.spec_from_file_location("pitash_user_config", config_path)
         if spec and spec.loader:
             module = importlib.util.module_from_spec(spec)
-            sys.modules["cshell2_user_config"] = module
+            sys.modules["pitash_user_config"] = module
             try:
                 spec.loader.exec_module(module)
             except KeyboardInterrupt:
@@ -2441,7 +2443,7 @@ class Shell:
                 # right after opening a terminal (to clear any in-progress input
                 # before auto-activating a venv). If that lands during config
                 # load — typically inside a slow import like boto3 — exit
-                # cleanly so the user can re-run cshell2 once the terminal has
+                # cleanly so the user can re-run pitash once the terminal has
                 # finished its startup dance, instead of crashing with a
                 # traceback or starting up half-configured.
                 print("Config load interrupted by Ctrl+C; exiting.", file=sys.stderr)
@@ -2563,7 +2565,7 @@ class Shell:
             print("source-bash: no 'bash' on PATH")
             return 127, None, {}
 
-        fd, dump_path = tempfile.mkstemp(prefix="cshell2-env-")
+        fd, dump_path = tempfile.mkstemp(prefix="pitash-env-")
         os.close(fd)
         try:
             script = _BASH_ENV_DUMP_WRAPPER.format(
@@ -2625,7 +2627,7 @@ class Shell:
         try:
             seq = parse_line(expand_vars(line))
         except DecoratorParseError as e:
-            print(f"cshell2: {e}", file=sys.stderr)
+            print(f"pitash: {e}", file=sys.stderr)
             return
         last_exit = 0
         started = time.monotonic()
@@ -2823,10 +2825,10 @@ class Shell:
                 try:
                     slot.start(argv=argv, env=self._merged_env(env_prefix), cwd=os.getcwd())
                 except FileNotFoundError:
-                    print(f"cshell2: command not found: {argv[0]}")
+                    print(f"pitash: command not found: {argv[0]}")
                     return None
                 except OSError as e:
-                    print(f"cshell2: {e}")
+                    print(f"pitash: {e}")
                     return None
                 return slot
 
@@ -3008,7 +3010,7 @@ class Shell:
                         stderr_dst = subprocess.STDOUT
                 except OSError as e:
                     print(
-                        f"cshell2: {redir.target}: {e.strerror or e}",
+                        f"pitash: {redir.target}: {e.strerror or e}",
                         file=sys.stderr,
                     )
                     redirect_error = True
@@ -3045,9 +3047,9 @@ class Shell:
                         cwd=os.getcwd(),
                     )
                 except FileNotFoundError:
-                    print(f"cshell2: command not found: {tokens[0]}")
+                    print(f"pitash: command not found: {tokens[0]}")
                 except OSError as e:
-                    print(f"cshell2: {e}")
+                    print(f"pitash: {e}")
 
             if worker is not None:
                 workers.append(worker)
@@ -3291,7 +3293,7 @@ class Shell:
 
                 if deco is None:
                     print(
-                        f"cshell2: unknown decorator: @{decorator_call.name}",
+                        f"pitash: unknown decorator: @{decorator_call.name}",
                         file=sys.stderr,
                     )
                     handle.exit_code = 127
@@ -3353,7 +3355,7 @@ class Shell:
         deco_call = stage.decorator
         deco = decorator_registry.get(deco_call.name)
         if deco is None:
-            print(f"cshell2: unknown decorator: @{deco_call.name}", file=sys.stderr)
+            print(f"pitash: unknown decorator: @{deco_call.name}", file=sys.stderr)
             return 127
 
         kwargs = parse_decorator_args(deco, deco_call.flag_tokens)
@@ -3418,7 +3420,7 @@ class Shell:
                     stderr_override = "stdout"
         except OSError as e:
             print(
-                f"cshell2: {redir.target}: {e.strerror or e}",
+                f"pitash: {redir.target}: {e.strerror or e}",
                 file=sys.stderr,
             )
             for f in (stdin_override, stdout_override):
@@ -3542,10 +3544,10 @@ class Shell:
                     cwd=os.getcwd(),
                 )
             except FileNotFoundError:
-                print(f"cshell2: command not found: {command_name}")
+                print(f"pitash: command not found: {command_name}")
                 return 127
             except OSError as e:
-                print(f"cshell2: {e}")
+                print(f"pitash: {e}")
                 return 1
             finally:
                 for f in (stdin_override, stdout_override):
@@ -3599,13 +3601,13 @@ class Shell:
             try:
                 return subprocess.run(["cmd", "/c", *argv], env=env, cwd=cwd).returncode
             except FileNotFoundError:
-                print(f"cshell2: command not found: {command_name}")
+                print(f"pitash: command not found: {command_name}")
                 return 127
             except OSError as e:
-                print(f"cshell2: {e}")
+                print(f"pitash: {e}")
                 return 1
         except OSError as e:
-            print(f"cshell2: {e}")
+            print(f"pitash: {e}")
             return 1
 
     def _execute_external(
@@ -3624,10 +3626,10 @@ class Shell:
                 cwd=os.getcwd(),
             )
         except FileNotFoundError:
-            print(f"cshell2: command not found: {command_name}")
+            print(f"pitash: command not found: {command_name}")
             return 127
         except OSError as e:
-            print(f"cshell2: {e}")
+            print(f"pitash: {e}")
             return 1
 
         slot.activate()
@@ -4121,7 +4123,7 @@ class Shell:
 
     def run(self) -> None:
         self._install_sigwinch_handler()
-        print("cshell2 — type 'help' for available commands, 'exit' to quit.")
+        print("Pitash — type 'help' for available commands, 'exit' to quit.")
         while True:
             try:
                 ctx = self.context_manager.current()

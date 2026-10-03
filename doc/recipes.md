@@ -1,8 +1,8 @@
 # Writing Completion Recipes
 
-A **recipe** adds TAB completion to an external (system) command — one that runs as a subprocess rather than a Python function registered with `@registry.command`. Recipes live in `src/cshell2/recipes/` and are activated in the user's config with `enable("name")`.
+A **recipe** adds TAB completion to an external (system) command — one that runs as a subprocess rather than a Python function registered with `@registry.command`. Recipes live in `src/pitash/recipes/` and are activated in the user's config with `enable("name")`.
 
-> **Before you write a recipe, check the protocol fallbacks.** cshell2 ships two automatic fallbacks that handle large families of tools without any per-command code:
+> **Before you write a recipe, check the protocol fallbacks.** pitash ships two automatic fallbacks that handle large families of tools without any per-command code:
 >
 > - **Cobra** — covers Go-based CLIs that expose a `__complete` subcommand: `docker`, `kubectl`, `helm`, `gh`, `argocd`, `k9s`, `doctl`, `linkerd`, `istioctl`, `hcloud`, `op`, `hugo`, `oras`, `gitleaks`, … See [cobra-fallback.md](cobra-fallback.md).
 > - **argcomplete** — covers Python CLIs that ship completions via the [argcomplete](https://kislyuk.github.io/argcomplete/) library: `pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, `nox`, `virtualenv`, … See [argcomplete-fallback.md](argcomplete-fallback.md).
@@ -14,7 +14,7 @@ A **recipe** adds TAB completion to an external (system) command — one that ru
 Every recipe file must expose a single `register()` function (no arguments). `enable("name")` imports the module and calls it; the recipe imports the module-level `registry` singleton directly and calls `registry.command(name, params=[...])` with **no handler** — the shell's dispatch path treats handler-less Commands as external recipes and falls through to the system-command path:
 
 ```python
-# src/cshell2/recipes/mytool.py
+# src/pitash/recipes/mytool.py
 
 from ..commands import arg, registry as command_registry
 from ..completion import FileCompleter
@@ -231,7 +231,7 @@ carry Python handlers instead and print resource listings themselves (`awsut`
 and its `sagemaker` / `bedrock-agentcore` subtrees are the built-in examples).
 Those share one output
 contract, defined and documented in
-[`src/cshell2/recipes/_awsut_common.py`](../src/cshell2/recipes/_awsut_common.py).
+[`src/pitash/recipes/_awsut_common.py`](../src/pitash/recipes/_awsut_common.py).
 Read that module's docstring before adding a leaf; the shape in brief:
 
 | Element | Helper | Rule |
@@ -263,19 +263,25 @@ Three consequences worth stating, because each is easy to get wrong:
   discovers recipes by globbing `*.py` and calls `register()` on each hit, so a
   support module without one would break config loading for every `enable("*")`
   user. `_discover_all_recipes()` skips any stem starting with `_` — that is the
-  whole convention, and it applies to your own `~/.cshell2/recipes/_shared.py`
+  whole convention, and it applies to your own `~/.pitash/recipes/_shared.py`
   just as much as to `_awsut_common.py`.
+- **Import third-party packages at top level and declare them in an extra.**
+  When a recipe's import raises `ModuleNotFoundError` for a dependency,
+  `enable("*")` skips that recipe and records it in `recipes.skipped_recipes`
+  (`{"awsut": "boto3"}`) instead of aborting the rest of the config; naming the
+  recipe explicitly still raises. `awsut` re-raises its boto3 failure with the
+  `pip install 'pitash[aws]'` hint, keeping `name=` so the skip still applies.
 
 ## Checklist for a New Recipe
 
-1. **Create `src/cshell2/recipes/<name>.py`** with a `register()` function (no arguments — import `arg` and `registry` from `..commands`).
-2. **Update the `Available recipes:` block** in `src/cshell2/recipes/__init__.py` so `enable("*")` users see what they got.
+1. **Create `src/pitash/recipes/<name>.py`** with a `register()` function (no arguments — import `arg` and `registry` from `..commands`).
+2. **Update the `Available recipes:` block** in `src/pitash/recipes/__init__.py` so `enable("*")` users see what they got.
 3. **Cover common flags** with `arg(...)` entries. Include both long and short forms where both exist (`arg("-f", "--force", ...)`).
 4. **Use `metavar=` and `completer=` for value-taking flags** — `metavar="N"` alone for numerics/free-text, `metavar="FILE", completer=FileCompleter()` when a picker is useful.
 5. **Use `nargs="*"` (or `"+"`)** on a positional to make one completer serve every trailing slot — no need to register each index.
 6. **Protect subprocess calls** with `timeout` and catch `OSError`/`TimeoutExpired`.
 7. **Don't cache at module level** (module is imported once per `enable()` call). Cache inside completer instances or use a module-level dict keyed by the relevant state.
-8. **Test it** by enabling it in `~/.cshell2/config.py` and exercising TAB at each argument position.
+8. **Test it** by enabling it in `~/.pitash/config.py` and exercising TAB at each argument position.
 
 ## Completers Available for Recipes
 

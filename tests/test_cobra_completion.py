@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from cshell2 import completion as completion_mod
-from cshell2.completion import (
+from pitash import completion as completion_mod
+from pitash.completion import (
     CobraCompleter,
     Completion,
     CompletionContext,
@@ -75,14 +75,14 @@ def test_probe_recognizes_cobra_help_via_phrase():
         "Cobra command \"__complete\"\n"
         "Generate the autocompletion script for the specified shell.\n"
     )
-    with patch("cshell2.completion.subprocess.run", return_value=_completed(help_text)):
+    with patch("pitash.completion.subprocess.run", return_value=_completed(help_text)):
         assert cc._probe("kubectl") is True
 
 
 def test_probe_recognizes_via_shellcompdirective():
     cc = CobraCompleter()
     help_text = "Usage: tool __complete\n\nReturns ShellCompDirective bytes.\n"
-    with patch("cshell2.completion.subprocess.run", return_value=_completed(help_text)):
+    with patch("pitash.completion.subprocess.run", return_value=_completed(help_text)):
         assert cc._probe("kubectl") is True
 
 
@@ -90,7 +90,7 @@ def test_probe_rejects_non_cobra_tool():
     cc = CobraCompleter()
     # A non-cobra tool sees __complete as an unknown subcommand.
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         return_value=_completed("error: unknown command 'completion-mode'\n", returncode=2),
     ):
         assert cc._probe("ls") is False
@@ -99,7 +99,7 @@ def test_probe_rejects_non_cobra_tool():
 def test_probe_rejects_on_timeout():
     cc = CobraCompleter(timeout=0.1)
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="x", timeout=0.1),
     ):
         assert cc._probe("hangs") is False
@@ -107,14 +107,14 @@ def test_probe_rejects_on_timeout():
 
 def test_probe_rejects_on_oserror():
     cc = CobraCompleter()
-    with patch("cshell2.completion.subprocess.run", side_effect=OSError("boom")):
+    with patch("pitash.completion.subprocess.run", side_effect=OSError("boom")):
         assert cc._probe("missing") is False
 
 
 def test_probe_cached_per_command():
     cc = CobraCompleter()
     help_text = "shell completion ShellCompDirective\n"
-    with patch("cshell2.completion.subprocess.run", return_value=_completed(help_text)) as run:
+    with patch("pitash.completion.subprocess.run", return_value=_completed(help_text)) as run:
         assert cc._is_cobra_command("kubectl") is True
         assert cc._is_cobra_command("kubectl") is True
     # Probe ran exactly once for kubectl.
@@ -129,7 +129,7 @@ def test_complete_calls_cmd_with_complete_args():
     cc = CobraCompleter()
     cc._is_cobra["kubectl"] = True  # short-circuit probe
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         return_value=_completed("pod\nservice\n:4\n"),
     ) as run:
         results = cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"]))
@@ -145,7 +145,7 @@ def test_complete_filters_by_prefix():
     cc = CobraCompleter()
     cc._is_cobra["kubectl"] = True
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         return_value=_completed("pod\tcore type\nservice\nclusterrole\n:4\n"),
     ):
         results = cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"]))
@@ -157,7 +157,7 @@ def test_complete_returns_descriptions():
     cc = CobraCompleter()
     cc._is_cobra["kubectl"] = True
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         return_value=_completed("pod\tretrieve pods\npods\t(alias)\n:0\n"),
     ):
         results = cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"]))
@@ -170,7 +170,7 @@ def test_complete_returns_descriptions():
 def test_complete_skips_when_not_cobra():
     cc = CobraCompleter()
     cc._is_cobra["ls"] = False
-    with patch("cshell2.completion.subprocess.run") as run:
+    with patch("pitash.completion.subprocess.run") as run:
         assert cc.complete(make_ctx("ls f", "f", "ls", [])) == []
     run.assert_not_called()
 
@@ -178,7 +178,7 @@ def test_complete_skips_when_not_cobra():
 def test_complete_handles_subprocess_failure():
     cc = CobraCompleter()
     cc._is_cobra["kubectl"] = True
-    with patch("cshell2.completion.subprocess.run", side_effect=OSError("boom")):
+    with patch("pitash.completion.subprocess.run", side_effect=OSError("boom")):
         assert cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"])) == []
 
 
@@ -186,7 +186,7 @@ def test_complete_handles_nonzero_exit():
     cc = CobraCompleter()
     cc._is_cobra["kubectl"] = True
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         return_value=_completed("ignored\n", returncode=1),
     ):
         assert cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"])) == []
@@ -196,7 +196,7 @@ def test_complete_handles_timeout():
     cc = CobraCompleter(timeout=0.1)
     cc._is_cobra["kubectl"] = True
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="x", timeout=0.1),
     ):
         assert cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"])) == []
@@ -208,7 +208,7 @@ def test_complete_handles_timeout():
 
 def test_should_activate_skips_unknown_command():
     cc = CobraCompleter()
-    with patch("cshell2.completion.shutil.which", return_value=None):
+    with patch("pitash.completion.shutil.which", return_value=None):
         assert cc.should_activate(make_ctx("doesnotexist x", "x", "doesnotexist")) is False
 
 
@@ -220,8 +220,8 @@ def test_should_activate_skips_when_no_command():
 
 def test_should_activate_runs_probe_for_known_command():
     cc = CobraCompleter()
-    with patch("cshell2.completion.shutil.which", return_value="/usr/local/bin/kubectl"), \
-         patch("cshell2.completion.subprocess.run", return_value=_completed("ShellCompDirective\n")):
+    with patch("pitash.completion.shutil.which", return_value="/usr/local/bin/kubectl"), \
+         patch("pitash.completion.subprocess.run", return_value=_completed("ShellCompDirective\n")):
         assert cc.should_activate(make_ctx("kubectl ", "", "kubectl")) is True
 
 
@@ -233,7 +233,7 @@ def test_results_cached_per_line():
     cc = CobraCompleter()
     cc._is_cobra["kubectl"] = True
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         return_value=_completed("pod\n:0\n"),
     ) as run:
         cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"]))
@@ -245,7 +245,7 @@ def test_results_recomputed_on_line_change():
     cc = CobraCompleter()
     cc._is_cobra["kubectl"] = True
     with patch(
-        "cshell2.completion.subprocess.run",
+        "pitash.completion.subprocess.run",
         return_value=_completed("pod\n:0\n"),
     ) as run:
         cc.complete(make_ctx("kubectl get po", "po", "kubectl", ["get"]))
