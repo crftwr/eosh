@@ -1,6 +1,6 @@
 """Tests for the sub-command tree mechanism."""
 
-from pitash.commands import CommandRegistry, arg
+from eosh.commands import CommandRegistry, arg
 
 
 # ── Tree construction ────────────────────────────────────────────────────────

@@ -7,8 +7,8 @@ import datetime
 import botocore.exceptions
 import pytest
 
-from pitash.commands import registry as command_registry
-from pitash.recipes import awsut, enable
+from eosh.commands import registry as command_registry
+from eosh.recipes import awsut, enable
 
 
 UTC = datetime.timezone.utc

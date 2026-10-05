@@ -7,8 +7,8 @@ inverts fg/bg, Unicode having no upper-block ladder to match. Ported from
 puikit's test_scrollbar_subcell.py.
 """
 
-from pitash.colors import _bg, _fg
-from pitash.scrollbar import (
+from eosh.colors import _bg, _fg
+from eosh.scrollbar import (
     _LOWER_BLOCKS,
     _SUBCELL,
     cell_ansi,

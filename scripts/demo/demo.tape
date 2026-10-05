@@ -15,7 +15,7 @@ Set TypingSpeed 60ms
 Set Theme "Catppuccin Mocha"
 
 Hide
-Type "export HOME=/private/tmp/pitash-demo PS1='$ ' && cd ~/webapp && clear && $PITASH"
+Type "export HOME=/private/tmp/eosh-demo PS1='$ ' && cd ~/webapp && clear && $EOSH"
 Enter
 Sleep 2s
 Ctrl+L

@@ -1,9 +1,9 @@
 """Completion recipes for external commands.
 
 Recipes provide TAB completion for system commands. Enable them in
-~/.pitash/config.py:
+~/.eosh/config.py:
 
-    from pitash.recipes import enable
+    from eosh.recipes import enable
     enable("*")              # all built-in + user recipes
     enable("make", "git")    # or pick specific ones
 
@@ -50,7 +50,7 @@ host without ``tar`` is a no-op rather than a hard failure.
 
 Tools built on cobra (docker, kubectl, helm, gh, …) are handled
 automatically by the cobra-protocol fallback — no recipe needed.  See
-``CobraCompleter`` in ``pitash.completion``.
+``CobraCompleter`` in ``eosh.completion``.
 """
 
 from __future__ import annotations
@@ -74,11 +74,11 @@ def add_recipe_path(path: str | Path) -> None:
     Recipes in directories added earlier in the list take priority over those
     added later.  The built-in package always has the highest priority.
 
-    Example (in ~/.pitash/config.py)::
+    Example (in ~/.eosh/config.py)::
 
-        from pitash.recipes import add_recipe_path, enable
+        from eosh.recipes import add_recipe_path, enable
         add_recipe_path("/team/shared/recipes")
-        enable("my_tool")   # found in ~/.pitash/recipes/ or /team/shared/recipes/
+        enable("my_tool")   # found in ~/.eosh/recipes/ or /team/shared/recipes/
     """
     recipe_search_path.append(Path(path))
 
@@ -90,9 +90,9 @@ def enable(*recipe_names: str) -> None:
 
     Lookup order for each name:
 
-    1. Built-in package (``pitash.recipes.<name>``).
+    1. Built-in package (``eosh.recipes.<name>``).
     2. Each directory in :data:`recipe_search_path` in order
-       (default: ``~/.pitash/recipes/``).
+       (default: ``~/.eosh/recipes/``).
 
     Raises ``ImportError`` if the recipe is not found anywhere.
 
@@ -106,7 +106,7 @@ def enable(*recipe_names: str) -> None:
     shadow a real executable, a placeholder command named after the recipe is
     registered, and running it explains what is missing and prints the
     install command for *this* environment (``uv tool``, ``pipx`` or pip —
-    see :mod:`pitash.recipes._missing`).  It also shows up in ``help``.
+    see :mod:`eosh.recipes._missing`).  It also shows up in ``help``.
     """
     wildcard = "*" in recipe_names
     names = _discover_all_recipes() if wildcard else recipe_names
@@ -195,7 +195,7 @@ def _load_recipe(name: str):
         candidate = Path(directory) / f"{name}.py"
         if candidate.exists():
             spec = importlib.util.spec_from_file_location(
-                f"pitash_user_recipe_{name}", candidate
+                f"eosh_user_recipe_{name}", candidate
             )
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

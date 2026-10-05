@@ -1,16 +1,16 @@
-# Pitash
+# Eolith Shell
 
-A lightweight but powerful terminal shell environment with rich tab completion and context switching.
+**Eolith Shell** (`eosh`) is a lightweight but powerful terminal shell environment with rich tab completion and context switching.
 
 <!-- pypi-exclude-start -->
 <p>
-  <a href="https://pypi.org/project/pitash/">
-    <img src="doc/images/install-pypi.svg" alt="Install Pitash from PyPI with pip" />
+  <a href="https://pypi.org/project/eosh/">
+    <img src="doc/images/install-pypi.svg" alt="Install Eolith Shell from PyPI with pip" />
   </a>
 </p>
 <!-- pypi-exclude-end -->
 
-![Pitash demo: TAB completion with descriptions, the multi-select flag picker, and switching contexts while a build keeps running](doc/images/demo.gif)
+![Eolith Shell demo: TAB completion with descriptions, the multi-select flag picker, and switching contexts while a build keeps running](doc/images/demo.gif)
 
 ## Features
 
@@ -34,27 +34,27 @@ A lightweight but powerful terminal shell environment with rich tab completion a
 Requires Python 3.12+. The core has no dependencies beyond the standard library.
 
 ```bash
-pip install pitash               # or: pipx install pitash / uv tool install pitash
-pip install "pitash[aws]"        # + the `awsut` recipe (boto3, pexpect)
-uv tool install "pitash[aws]"    # same, as an isolated uv tool
+pip install eosh               # or: pipx install eosh / uv tool install eosh
+pip install "eosh[aws]"        # + the `awsut` recipe (boto3, pexpect)
+uv tool install "eosh[aws]"    # same, as an isolated uv tool
 ```
 
-On first launch `pitash` writes a starter `~/.pitash/config.py` that enables
+On first launch `eosh` writes a starter `~/.eosh/config.py` that enables
 every built-in recipe. Without the `[aws]` extra, `awsut` is skipped and
 everything else loads normally; running `awsut` then prints the install
-command for the environment pitash lives in (`uv tool`, `pipx`, or pip).
+command for the environment eosh lives in (`uv tool`, `pipx`, or pip).
 
-`uv tool` and `pipx` install pitash into its own virtualenv, so a
+`uv tool` and `pipx` install eosh into its own virtualenv, so a
 `pip install boto3` in another shell does not reach it — add packages with
-`uv tool install pitash --with <pkg>` or `pipx inject pitash <pkg>`. With
+`uv tool install eosh --with <pkg>` or `pipx inject eosh <pkg>`. With
 `uv tool`, `--with` *replaces* the previous list, so repeat any earlier
 entries (`uv tool list --show-with` shows them).
 
 ### From source
 
 ```bash
-git clone https://github.com/crftwr/pitash
-cd pitash
+git clone https://github.com/crftwr/eosh
+cd eosh
 make install      # .venv/ with `pip install -e ".[dev]"`
 make test
 make run
@@ -63,7 +63,7 @@ make run
 ## Usage
 
 ```bash
-pitash
+eosh
 ```
 
 ### Built-in Commands
@@ -77,7 +77,7 @@ pitash
 | `alias [NAME[=EXPANSION] ...]` | List aliases, show one, or define a shorthand for a command |
 | `unalias NAME [NAME ...]` | Remove aliases |
 | `source-bash [FILE [ARG ...]]` | Run a bash script (or a pasted block) and import its variables and cwd |
-| `reload` | Reload `~/.pitash/config.py` without restarting |
+| `reload` | Reload `~/.eosh/config.py` without restarting |
 | `exit` | Exit the shell |
 
 Any command not listed above is passed through to the system shell (e.g., `ls`, `git`, `grep`).
@@ -87,10 +87,10 @@ Any command not listed above is passed through to the system shell (e.g., `ls`, 
 An alias replaces the first word of a command line. Quote the expansion when it contains spaces:
 
 ```
-pitash> alias hp='awsut sagemaker hyperpod'
-pitash> hp list                  # runs: awsut sagemaker hyperpod list
-pitash> alias                    # list all aliases
-pitash> unalias hp
+eosh> alias hp='awsut sagemaker hyperpod'
+eosh> hp list                  # runs: awsut sagemaker hyperpod list
+eosh> alias                    # list all aliases
+eosh> unalias hp
 ```
 
 ### Importing Variables from Bash
@@ -98,9 +98,9 @@ pitash> unalias hp
 `source-bash` runs a script in a real `bash` — so `export`, `$(…)`, loops, heredocs and conditionals all work — and imports the environment and working directory it leaves behind, the way bash's own `source` would:
 
 ```
-pitash> source-bash              # paste `export KEY=VALUE` lines, end with a blank line or Ctrl+D
-pitash> source-bash setup.sh s3  # source a file with arguments
-pitash> source-bash -c 'export A=$(date +%s)'
+eosh> source-bash              # paste `export KEY=VALUE` lines, end with a blank line or Ctrl+D
+eosh> source-bash setup.sh s3  # source a file with arguments
+eosh> source-bash -c 'export A=$(date +%s)'
 ```
 
 `--no-cd` keeps the current directory and `-q` suppresses the summary of imported variable names. Shell functions, aliases and shell options can't be imported.
@@ -110,15 +110,15 @@ pitash> source-bash -c 'export A=$(date +%s)'
 Contexts let you define named environments with variables that are exported to `os.environ` and a remembered working directory.
 
 ```
-pitash> context push prod
+eosh> context push prod
 Pushed context 'prod'
-[prod] pitash> var ACCOUNT=123456 REGION=us-east-1
-[prod] pitash> context push staging
+[prod] eosh> var ACCOUNT=123456 REGION=us-east-1
+[prod] eosh> context push staging
 Pushed context 'staging'
-[staging] pitash> var ACCOUNT=789012 REGION=us-west-2
-[staging] pitash> context pop
+[staging] eosh> var ACCOUNT=789012 REGION=us-west-2
+[staging] eosh> context pop
 Popped 'staging', now in 'prod'
-[prod] pitash> context list
+[prod] eosh> context list
   * prod {'ACCOUNT': '123456', 'REGION': 'us-east-1'}
     staging {'ACCOUNT': '789012', 'REGION': 'us-west-2'}
 ```
@@ -157,7 +157,7 @@ what you've typed so far. Only the part that would be *added* is listed, like
 any other candidate, tagged `history` and shown first:
 
 ```
-pitash> git commit <TAB>
+eosh> git commit <TAB>
 ┌────────────────────────────────────────────────┐
 │ -m "fix typo"                      history     │
 │ --amend --no-edit                  history     │
@@ -173,8 +173,8 @@ history, the same list `↑`/`↓` walks (`Ctrl+R` searches every context). A
 history candidate is never inserted without being shown in the picker first, and
 a unique ordinary completion still applies on the first TAB as before.
 
-Candidates are also scoped to the **directory** you're in: pitash records where
-each command was run (`~/.pitash/history.dirs`) and offers only the lines you ran
+Candidates are also scoped to the **directory** you're in: eosh records where
+each command was run (`~/.eosh/history.dirs`) and offers only the lines you ran
 here, so another checkout's `make deploy` stays out of the way. Nothing matching
 run here means no history rows — the picker just shows the ordinary candidates.
 `↑`/`↓` and `Ctrl+R` are not directory-scoped, so lines from elsewhere are still
@@ -188,7 +188,7 @@ one key away.
 
 ### Pipelines, Redirects, and Sequencing
 
-pitash supports the operators you'd expect from a POSIX shell:
+eosh supports the operators you'd expect from a POSIX shell:
 
 | Operator | Meaning |
 |----------|---------|
@@ -204,9 +204,9 @@ pitash supports the operators you'd expect from a POSIX shell:
 | `\` at end of line | Continue command on the next line (one history entry) |
 
 ```
-pitash> ls *.py | grep test | wc -l
-pitash> make 2>&1 | tee build.log
-pitash> echo hello > out.txt && cat out.txt
+eosh> ls *.py | grep test | wc -l
+eosh> make 2>&1 | tee build.log
+eosh> echo hello > out.txt && cat out.txt
 ```
 
 Both registered Python commands and external programs work seamlessly inside pipelines.
@@ -240,13 +240,13 @@ See the [Custom Decorators](#custom-decorators) section below for authoring your
 
 ## Customization
 
-Create `~/.pitash/config.py` to define custom commands and completers. This file is plain Python that imports from pitash. Use `reload` to apply changes without restarting.
+Create `~/.eosh/config.py` to define custom commands and completers. This file is plain Python that imports from eosh. Use `reload` to apply changes without restarting.
 
 ```python
-# ~/.pitash/config.py
-from pitash.commands import registry, arg
-from pitash.completion import Completer, Completion, ChoiceCompleter
-from pitash.recipes import enable
+# ~/.eosh/config.py
+from eosh.commands import registry, arg
+from eosh.completion import Completer, Completion, ChoiceCompleter
+from eosh.recipes import enable
 
 # Enable TAB completion for system commands
 enable("make", "git", "ssh")
@@ -276,10 +276,10 @@ def connect(account, region, instance_id):
 A `Var` subclass mirrors the `CommandRegistry` pattern: subclass `Var`, register an instance with `var_registry`, and the built-in `var` command (and bare `NAME=VALUE` assignment) dispatches through your class. `$NAME` / `${NAME}` expansion uses the same lookup, so a Python-backed variable is read- and write-symmetric with `os.environ`.
 
 ```python
-# ~/.pitash/config.py
+# ~/.eosh/config.py
 import os
-from pitash import Var, EnvVar, var_registry
-from pitash.completion import ChoiceCompleter, CallbackCompleter
+from eosh import Var, EnvVar, var_registry
+from eosh.completion import ChoiceCompleter, CallbackCompleter
 
 class AwsRegionVar(Var):
     name = "aws_region"
@@ -306,10 +306,10 @@ var_registry.register(
 Use `EnvVar(name, env_var, completer=...)` for a single-key passthrough; subclass `Var` directly when one logical name needs to drive multiple `os.environ` keys (or any other side effect). With the variables above:
 
 ```
-pitash> var aws_region=us-west-2
-pitash> echo $AWS_REGION
+eosh> var aws_region=us-west-2
+eosh> echo $AWS_REGION
 us-west-2
-pitash> aws ec2 describe-instances --region $aws_region
+eosh> aws ec2 describe-instances --region $aws_region
 ```
 
 ### Custom Decorators
@@ -317,12 +317,12 @@ pitash> aws ec2 describe-instances --region $aws_region
 To author your own decorator, decorate a function with `decorator_registry.decorator(...)`. The function receives the wrapped `Pipeline` as its first positional argument and the parsed flag namespace as kwargs; call `pipeline.run()` to execute the body and return the exit code.
 
 ```python
-# ~/.pitash/config.py
+# ~/.eosh/config.py
 import sys
 import time
-from pitash.commands import arg
-from pitash.decorators import registry as decorator_registry
-from pitash.pipeline import Pipeline
+from eosh.commands import arg
+from eosh.decorators import registry as decorator_registry
+from eosh.pipeline import Pipeline
 
 @decorator_registry.decorator(
     name="repeat",
@@ -349,18 +349,18 @@ def repeat(pipeline: Pipeline, *, count: int, delay: float) -> int:
 Usage:
 
 ```
-pitash> @repeat -n 5 --delay 1 ls
-pitash> @repeat -n 3 {make && ./run-tests}
+eosh> @repeat -n 5 --delay 1 ls
+eosh> @repeat -n 3 {make && ./run-tests}
 ```
 
-To share decorators across machines or teammates, drop a module under `~/.pitash/decorators/<name>.py` that defines `register()` (same shape as the built-ins) and call `enable()` from `config.py`:
+To share decorators across machines or teammates, drop a module under `~/.eosh/decorators/<name>.py` that defines `register()` (same shape as the built-ins) and call `enable()` from `config.py`:
 
 ```python
-# ~/.pitash/config.py
-from pitash.decorators import add_decorator_path, enable as enable_decorators
+# ~/.eosh/config.py
+from eosh.decorators import add_decorator_path, enable as enable_decorators
 
 add_decorator_path("/team/shared/decorators")   # optional extra directory
-enable_decorators("repeat")                     # found in ~/.pitash/decorators/
+enable_decorators("repeat")                     # found in ~/.eosh/decorators/
                                                 # or /team/shared/decorators/
 ```
 
@@ -369,7 +369,7 @@ enable_decorators("repeat")                     # found in ~/.pitash/decorators/
 If a custom command needs to spawn a subprocess that reads from the user (SSH-like sessions, TUIs, MFA prompts, anything that calls `getpass`), wrap the call with `passthrough_run` — *not* `subprocess.run`:
 
 ```python
-from pitash import passthrough_run
+from eosh import passthrough_run
 
 @registry.command(name="my_ssm", ...)
 def my_ssm():
@@ -381,7 +381,7 @@ Plain `subprocess.run` would have the main shell thread and the subprocess both 
 For reading a single line of input back from the user, use `passthrough_input(prompt)` instead of plain `input()`:
 
 ```python
-from pitash import passthrough_input
+from eosh import passthrough_input
 
 answer = passthrough_input("Continue? [y/N] ")
 ```
@@ -390,12 +390,12 @@ Outside a Python command thread, both helpers fall back to the obvious thing (`s
 
 ### Desktop Notifications
 
-When a command runs for at least 10 seconds, pitash posts an OS notification as it finishes — by then you've probably switched to a browser:
+When a command runs for at least 10 seconds, eosh posts an OS notification as it finishes — by then you've probably switched to a browser:
 
 ```
-✓ pitash — 1m 23s          make -j8 release
-✗ pitash — exit 2 (20.0s)  make
-✓ pitash — 1h 05m          [bg-1] terraform apply
+✓ eosh — 1m 23s          make -j8 release
+✗ eosh — exit 2 (20.0s)  make
+✓ eosh — 1h 05m          [bg-1] terraform apply
 ```
 
 Commands running in a context you backgrounded with `Ctrl+]` (or with `@bg`) notify too, tagged with the context name. Interactive programs — editors, pagers, `top`, `ssh`, `tmux`, sub-shells — are skipped, since sitting in them for an hour isn't work finishing.
@@ -405,15 +405,15 @@ Backends are whatever the platform already ships: `osascript` on macOS, `notify-
 Control it at the prompt:
 
 ```
-pitash> var notify=off              # disable for this session
-pitash> var notify_threshold=30     # only notify for commands ≥ 30s
+eosh> var notify=off              # disable for this session
+eosh> var notify_threshold=30     # only notify for commands ≥ 30s
 ```
 
 Or from your config:
 
 ```python
-# ~/.pitash/config.py
-from pitash import notify
+# ~/.eosh/config.py
+from eosh import notify
 
 notify.configure(threshold=30)
 notify.SKIP_COMMANDS.add("psql")
@@ -429,16 +429,16 @@ See [doc/notifications.md](doc/notifications.md) for the design and the known li
 The prompt is generated by a Python function you can override with `set_prompt()`. The default prompt shows the context name (if not `"default"`), current directory (up to 2 levels), a timestamp, and `[bg:N]` when N other contexts have running processes:
 
 ```
-[prod] projects/pitash 14:32:07>
+[prod] projects/eosh 14:32:07>
 ```
 
 To customize, define a function that takes a `ContextManager` and returns a string:
 
 ```python
-# ~/.pitash/config.py
+# ~/.eosh/config.py
 import os
 from datetime import datetime
-from pitash import set_prompt
+from eosh import set_prompt
 
 def my_prompt(context_manager):
     ctx = context_manager.current()
@@ -466,10 +466,10 @@ The function is called each time the prompt is displayed, so it reflects dynamic
 
 ### Completion Recipes
 
-Built-in recipes add TAB completion for common system commands. Enable them in `~/.pitash/config.py`:
+Built-in recipes add TAB completion for common system commands. Enable them in `~/.eosh/config.py`:
 
 ```python
-from pitash.recipes import enable
+from eosh.recipes import enable
 enable("git", "make", "ssh", "kill", "ls", "grep", "find", "du", "df", "tail", "aws")
 ```
 
@@ -482,20 +482,20 @@ Two protocol fallbacks activate automatically — no recipe needed:
 
 #### User-Defined Recipes
 
-You can write your own recipes and place them in `~/.pitash/recipes/` (or any directory you add to the search path). `enable()` checks the search path automatically after the built-ins, so the call site in `config.py` is identical:
+You can write your own recipes and place them in `~/.eosh/recipes/` (or any directory you add to the search path). `enable()` checks the search path automatically after the built-ins, so the call site in `config.py` is identical:
 
 ```python
-from pitash.recipes import enable
+from eosh.recipes import enable
 enable("git")          # built-in
-enable("my_tool")      # found in ~/.pitash/recipes/my_tool.py
+enable("my_tool")      # found in ~/.eosh/recipes/my_tool.py
 ```
 
 A recipe file must define a `register()` function:
 
 ```python
-# ~/.pitash/recipes/my_tool.py
-from pitash.commands import arg, registry
-from pitash.completion import CallbackCompleter, ChoiceCompleter
+# ~/.eosh/recipes/my_tool.py
+from eosh.commands import arg, registry
+from eosh.completion import CallbackCompleter, ChoiceCompleter
 
 def register():
     registry.command(
@@ -516,25 +516,25 @@ def _list_targets():
 
 #### Recipe Search Path
 
-The default search path contains only `~/.pitash/recipes/`. Call `add_recipe_path()` to add more directories — useful for sharing recipes across a team:
+The default search path contains only `~/.eosh/recipes/`. Call `add_recipe_path()` to add more directories — useful for sharing recipes across a team:
 
 ```python
-from pitash.recipes import add_recipe_path, enable
+from eosh.recipes import add_recipe_path, enable
 
-add_recipe_path("/team/shared/recipes")   # checked after ~/.pitash/recipes/
+add_recipe_path("/team/shared/recipes")   # checked after ~/.eosh/recipes/
 enable("my_tool")   # found in whichever directory contains my_tool.py first
 ```
 
 Lookup order for every `enable()` call:
 
-1. Built-in package (`pitash.recipes.<name>`) — always highest priority
-2. `~/.pitash/recipes/<name>.py` — personal recipes
+1. Built-in package (`eosh.recipes.<name>`) — always highest priority
+2. `~/.eosh/recipes/<name>.py` — personal recipes
 3. Additional paths in the order they were added via `add_recipe_path()`
 
 You can also read or modify `recipe_search_path` directly (it is a plain `list[Path]`).
 
 A recipe may import third-party packages, but they must be installed in
-pitash's own environment (see [Installation](#installation) for `uv tool` /
+eosh's own environment (see [Installation](#installation) for `uv tool` /
 `pipx`). When one is missing, `enable("*")` skips that recipe instead of
 failing the whole config and registers a placeholder command under the
 recipe's name (unless that name is already a command or an executable on
@@ -554,8 +554,8 @@ Subclass `Completer` and implement `complete()`. The `CompletionContext` gives y
 To add completion to a system command without wrapping it, register a handler-less command — execution falls through to the real binary:
 
 ```python
-from pitash.commands import arg, registry
-from pitash.completion import FileCompleter
+from eosh.commands import arg, registry
+from eosh.completion import FileCompleter
 
 registry.command(
     "mytools",
@@ -589,11 +589,11 @@ registry.command(
 
 | Path | Purpose |
 |------|---------|
-| `~/.pitash/config.py` | User configuration |
-| `~/.pitash/history` | Command history |
-| `~/.pitash/history.dirs` | Directories each history line was run in (scopes history TAB candidates) |
-| `~/.pitash/recipes/<name>.py` | User-defined completion recipes (loaded by `enable("<name>")`) |
-| `~/.pitash/decorators/<name>.py` | User-defined pipeline decorators (loaded by `enable("<name>")`) |
+| `~/.eosh/config.py` | User configuration |
+| `~/.eosh/history` | Command history |
+| `~/.eosh/history.dirs` | Directories each history line was run in (scopes history TAB candidates) |
+| `~/.eosh/recipes/<name>.py` | User-defined completion recipes (loaded by `enable("<name>")`) |
+| `~/.eosh/decorators/<name>.py` | User-defined pipeline decorators (loaded by `enable("<name>")`) |
 
 ## Platform Support
 

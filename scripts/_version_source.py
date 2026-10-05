@@ -1,13 +1,13 @@
-"""Locate and rewrite Pitash's single version literal.
+"""Locate and rewrite Eolith Shell's single version literal.
 
-The version lives in exactly one place — ``src/pitash/__init__.py``'s
+The version lives in exactly one place — ``src/eosh/__init__.py``'s
 ``__version__`` — and pyproject.toml derives it through setuptools' dynamic
-``version = { attr = "pitash.__version__" }``. Both release scripts go through
+``version = { attr = "eosh.__version__" }``. Both release scripts go through
 this module so they can never disagree about where the literal is. They once
 did: bump_version.py rewrote pyproject.toml only, which is how 1.0.2 shipped
 with ``__version__`` left behind at 1.0.1.
 
-The literal is read statically (regex, no ``import pitash``) so the release
+The literal is read statically (regex, no ``import eosh``) so the release
 tooling never needs the runtime deps — pillow, pyobjc, windows-curses — merely
 to learn the version. That is the same static approach setuptools itself uses
 to resolve the ``attr`` at build time.
@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INIT = REPO_ROOT / "src" / "pitash" / "__init__.py"
+INIT = REPO_ROOT / "src" / "eosh" / "__init__.py"
 
 #: Anchored to a whole line so nothing else in the file can match.
 PATTERN = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.M)

@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    pitash                           │
+│                Eolith Shell (eosh)                  │
 ├─────────────────────────────────────────────────────┤
 │  Shell Loop (shell.py)                              │
 │  ├── Input handling (lineedit.py — DIY raw editor)  │
@@ -68,7 +68,7 @@
 │  ├── @name [flags] body — wrap pipeline at runtime │
 │  └── Built-ins: @watch, @time, @retry, @quiet, @bg │
 ├─────────────────────────────────────────────────────┤
-│  User Config (~/.pitash/config.py)                 │
+│  User Config (~/.eosh/config.py)                   │
 │  ├── Custom command definitions                    │
 │  └── Custom completer definitions                  │
 └─────────────────────────────────────────────────────┘
@@ -165,7 +165,7 @@ Default prompt: `[context] path/cwd HH:MM:SS [bg:N]>` (ANSI colors). The `[conte
 
 ### colors.py — Color Schemes
 
-`ColorScheme` dataclass holding ANSI colour codes used by the prompt and TUI widgets, with `dark` and `light` schemes shipped. `set_color_scheme(scheme)` swaps the active scheme; users override colours from `~/.pitash/config.py`.
+`ColorScheme` dataclass holding ANSI colour codes used by the prompt and TUI widgets, with `dark` and `light` schemes shipped. `set_color_scheme(scheme)` swaps the active scheme; users override colours from `~/.eosh/config.py`.
 
 ### terminal.py — Cross-Platform Terminal Layer
 
@@ -176,7 +176,7 @@ The single place that touches OS-specific terminal APIs. `lineedit.py`, `tui.py`
 Opt-in completion recipes for system commands. Each recipe calls `registry.command(name, params=[...])` with **no handler attached** — the dispatch path treats handler-less Commands as external recipes. Enable in config:
 
 ```python
-from pitash.recipes import enable
+from eosh.recipes import enable
 enable("*")                                     # all built-in + user recipes
 enable("git", "make", "ssh", "kill", "aws")     # or pick specific ones
 ```
@@ -253,7 +253,7 @@ Ctrl+] pressed (or "context switch <name>")
 ## File Layout
 
 ```
-pitash/
+eosh/
 ├── CLAUDE.md               # Development instructions
 ├── README.md               # End-user documentation
 ├── pyproject.toml          # Package metadata, dependencies
@@ -270,10 +270,10 @@ pitash/
 │   ├── enhancements.md
 │   └── limitations.md
 ├── src/
-│   └── pitash/
+│   └── eosh/
 │       ├── __init__.py         # public exports
 │       ├── __main__.py         # entry point (calls Shell().run())
-│       ├── _config.py          # bundled default ~/.pitash/config.py template
+│       ├── _config.py          # bundled default ~/.eosh/config.py template
 │       ├── shell.py            # main loop, command dispatch, pipeline execution, Python-command slots
 │       ├── commands.py         # command registry, @command decorator, arg() builder, CmdParser, sub-command tree
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
@@ -326,13 +326,13 @@ pitash/
 
 3. **Dict-based positional completers with `None` key for options** — `{arg_index: Completer}` for positional args; `{None: OptionsCompleter(...)}` for flags at any position. A completer at position N inspects `ctx.args[:N]` to see prior selections.
 
-4. **Config as Python** — `~/.pitash/config.py` is plain Python importing pitash APIs. No DSL to learn; full language power for defining completers with caching, API calls, conditional logic. `reload` applies changes without restarting.
+4. **Config as Python** — `~/.eosh/config.py` is plain Python importing eosh APIs. No DSL to learn; full language power for defining completers with caching, API calls, conditional logic. `reload` applies changes without restarting.
 
 5. **PTY process multiplexing** — each context can hold a `ProcessSlot` with a live subprocess. `Ctrl+]` switches between contexts without killing the running process; the slot buffers output while inactive and replays it on return.
 
-6. **Context variables as env vars** — switching contexts exports variables to `os.environ` and backs up originals. This means subprocesses (system commands) automatically inherit context variables without pitash-specific wiring.
+6. **Context variables as env vars** — switching contexts exports variables to `os.environ` and backs up originals. This means subprocesses (system commands) automatically inherit context variables without eosh-specific wiring.
 
-7. **System command fallback** — unregistered commands pass through to a PTY subprocess, making pitash a drop-in replacement shell for daily use.
+7. **System command fallback** — unregistered commands pass through to a PTY subprocess, making eosh a drop-in replacement shell for daily use.
 
 ## Known structural smells
 

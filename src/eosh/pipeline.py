@@ -55,7 +55,7 @@ class Pipeline:
     def run(self, stdin=None, stdout=None, stderr=None) -> int:
         """Execute the pipeline.  Delegates to the registered executor.
 
-        The executor is registered by :class:`pitash.shell.Shell` on
+        The executor is registered by :class:`eosh.shell.Shell` on
         construction so a decorator body (or any external caller) can do
         ``pipeline.run()`` without knowing about Shell.  Without a Shell
         instance, this raises ``RuntimeError`` — Pipeline.run() always
@@ -97,7 +97,7 @@ def set_pipeline_executor(fn: Callable[..., int] | None) -> None:
 # decorator parser needs to know which flags consume the next token (so
 # ``@watch -n 5 ls`` correctly takes ``5`` as ``-n``'s value, leaving
 # ``ls`` as the body).  Registering a callback keeps pipeline.py free of
-# a hard import of pitash.decorators (which would invert the layering —
+# a hard import of eosh.decorators (which would invert the layering —
 # decorators import the parser, not the other way around).
 _decorator_value_flag_lookup: Optional[Callable[[str, str], bool]] = None
 

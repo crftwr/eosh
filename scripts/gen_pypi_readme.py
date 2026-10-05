@@ -7,9 +7,9 @@ with no repository to resolve against. This script bridges the two by
 rewriting every relative target to an absolute, version-tagged GitHub URL:
 
     ![...](doc/images/x.png)
-        -> https://raw.githubusercontent.com/crftwr/pitash/v1.0.5/doc/images/x.png
+        -> https://raw.githubusercontent.com/crftwr/eosh/v1.0.5/doc/images/x.png
     [...](doc/completion.md)
-        -> https://github.com/crftwr/pitash/blob/v1.0.5/doc/completion.md
+        -> https://github.com/crftwr/eosh/blob/v1.0.5/doc/completion.md
 
 Tag URLs, not ``main``, so the PyPI page for a release keeps showing that
 release's images forever, however far ``main`` moves on. `make tag` bumps
@@ -40,8 +40,8 @@ from _version_source import REPO_ROOT, read_version
 SOURCE = REPO_ROOT / "README.md"
 OUTPUT = REPO_ROOT / "README.pypi.md"
 
-BLOB_BASE = "https://github.com/crftwr/pitash/blob"
-RAW_BASE = "https://raw.githubusercontent.com/crftwr/pitash"
+BLOB_BASE = "https://github.com/crftwr/eosh/blob"
+RAW_BASE = "https://raw.githubusercontent.com/crftwr/eosh"
 
 #: A markdown image (``![alt](target)``) or link (``[text](target)``).
 #: Targets containing whitespace or a "title" part aren't matched — README.md

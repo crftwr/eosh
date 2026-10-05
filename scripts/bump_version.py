@@ -1,9 +1,9 @@
-"""Rewrite the `__version__ = "..."` literal in src/pitash/__init__.py.
+"""Rewrite the `__version__ = "..."` literal in src/eosh/__init__.py.
 
 Used by `make tag VERSION=x.y.z`. That literal is the single source of
 truth for the version: pyproject.toml derives it via setuptools' dynamic
-``version = { attr = "pitash.__version__" }``, so bumping this one line moves
-the packaging metadata and ``pitash.__version__`` together and they cannot
+``version = { attr = "eosh.__version__" }``, so bumping this one line moves
+the packaging metadata and ``eosh.__version__`` together and they cannot
 drift apart. Prints `old -> new` so the release recipe echoes what changed.
 
 Kept surgical (see scripts/_version_source.py): it replaces exactly one

@@ -55,7 +55,7 @@ def main() -> int:
         problems.append(f"VERSION '{new}' is not X.Y.Z (optionally +rc1/.post1/…)")
 
     # 2. New version is strictly ahead of the current one (no re-release / rollback).
-    #    Read from the single source of truth, src/pitash/__init__.py's __version__.
+    #    Read from the single source of truth, src/eosh/__init__.py's __version__.
     current = read_version()
     if new == current:
         problems.append(f"VERSION {new} equals the current version in {INIT.name}")
@@ -70,7 +70,7 @@ def main() -> int:
     if "version" in pyproject.get("project", {}):
         problems.append(
             "pyproject.toml has a static [project].version — it must stay in "
-            'dynamic = ["version"] so the build derives pitash.__version__'
+            'dynamic = ["version"] so the build derives eosh.__version__'
         )
     elif "version" not in pyproject.get("project", {}).get("dynamic", []):
         problems.append('pyproject.toml no longer declares dynamic = ["version"]')

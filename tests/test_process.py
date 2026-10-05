@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from pitash.process import OutputBuffer, ProcessSlot, _tail_lines_from_bytes
+from eosh.process import OutputBuffer, ProcessSlot, _tail_lines_from_bytes
 
 
 class TestOutputBuffer:

@@ -1,6 +1,6 @@
 # Known Limitations & Future Improvements
 
-A living document for pitash limitations worth knowing about, and ideas for
+A living document for eosh limitations worth knowing about, and ideas for
 future improvements. Add new entries as they come up; once an item is fixed,
 either delete it or move it under a "Resolved" subsection with the commit
 that addressed it.
@@ -39,7 +39,7 @@ but not nested `subprocess` output.
 `cd | tee log` actually changes the shell's CWD; `var X=1 | …` actually
 sets the variable; `context push | …` actually pushes a context. POSIX
 shells run each stage in a subshell, so these mutations are normally
-discarded — pitash does not. Treat this as the cost of the in-process
+discarded — eosh does not. Treat this as the cost of the in-process
 model: the change is visible.
 
 **Pure-CPU loops in a Python command can't be Ctrl+C'd in a pipeline.**
@@ -79,7 +79,7 @@ looked up by name alone: with no `--category`, the commands query every
 category they know about. That set is the loaded botocore model's
 `ListJobs` enum plus anything in `jobs.EXTRA_JOB_CATEGORIES` (empty by
 default — see the docstring there for how to add one from
-`~/.pitash/config.py`).
+`~/.eosh/config.py`).
 
 botocore treats an enum as documentation and does not reject a value
 absent from it, so an undeclared category reaches the service and the
@@ -165,7 +165,7 @@ stdin bytes, which `ProcessSlot` is in a position to know. That would
 subsume the skip list for external commands (a `vim` session that took
 keystrokes is self-evidently interactive) but not for Python commands or
 `@bg` bodies. Until then: add to `notify.SKIP_COMMANDS` from
-`~/.pitash/config.py`, or `var notify=off` for a session spent in
+`~/.eosh/config.py`, or `var notify=off` for a session spent in
 interactive tools.
 
 ## Notification delivery is best-effort and mostly unverifiable from the shell
@@ -250,7 +250,7 @@ exits:
 - **Shell functions and aliases.** Bash exports functions as
   `BASH_FUNC_name%%` env entries in an encoding only bash understands;
   they are skipped deliberately (`_BASH_ENV_SKIP_PREFIXES`) rather than
-  imported as nonsense variables. pitash has no shell-function concept
+  imported as nonsense variables. eosh has no shell-function concept
   to import them *into*; `alias` exists but bash aliases are not exported
   at all, so `source-bash` cannot see them. Net effect: sourcing a
   `~/.bashrc`-style file gives you its variables and none of its

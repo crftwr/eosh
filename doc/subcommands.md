@@ -51,7 +51,7 @@ Roots are obtained from the registry; everything below comes from chaining
 ### Creating a Root
 
 ```python
-from pitash.commands import registry, arg
+from eosh.commands import registry, arg
 
 awsut = registry.command(
     "awsut",

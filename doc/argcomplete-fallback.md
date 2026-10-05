@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented. See [src/pitash/completion.py](../src/pitash/completion.py) (`ArgcompleteCompleter`) and [tests/test_argcomplete_fallback.py](../tests/test_argcomplete_fallback.py).
+Implemented. See [src/eosh/completion.py](../src/eosh/completion.py) (`ArgcompleteCompleter`) and [tests/test_argcomplete_fallback.py](../tests/test_argcomplete_fallback.py).
 
 ## Motivation
 
@@ -11,9 +11,9 @@ Implemented. See [src/pitash/completion.py](../src/pitash/completion.py) (`Argco
 - `pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, `nox`, `virtualenv`, …
 - Many internal Amazon Python tools that wire `argcomplete.autocomplete(parser)` into their entry point.
 
-`ArgcompleteCompleter` drives the protocol directly so pitash can complete these tools without any per-command recipe and without depending on the bash-completion package.
+`ArgcompleteCompleter` drives the protocol directly so eosh can complete these tools without any per-command recipe and without depending on the bash-completion package.
 
-Combined with [cobra-fallback.md](cobra-fallback.md) (Go CLIs) and [`recipes/aws.py`](../src/pitash/recipes/aws.py) (AWS CLI v2's `aws_completer`), three protocol fallbacks cover the vast majority of modern CLI tools out of the box.
+Combined with [cobra-fallback.md](cobra-fallback.md) (Go CLIs) and [`recipes/aws.py`](../src/eosh/recipes/aws.py) (AWS CLI v2's `aws_completer`), three protocol fallbacks cover the vast majority of modern CLI tools out of the box.
 
 ## Goals
 
@@ -118,7 +118,7 @@ Cobra runs before argcomplete because its probe is cheaper (single `__complete -
 ## API
 
 ```python
-from pitash.completion import (
+from eosh.completion import (
     enable_argcomplete_fallback,
     disable_argcomplete_fallback,
     get_argcomplete_fallback,
@@ -128,7 +128,7 @@ from pitash.completion import (
 # Default: enabled. To override the timeout (default 2.0s):
 enable_argcomplete_fallback(timeout=5.0)
 
-# To turn it off entirely (e.g. in ~/.pitash/config.py):
+# To turn it off entirely (e.g. in ~/.eosh/config.py):
 disable_argcomplete_fallback()
 ```
 

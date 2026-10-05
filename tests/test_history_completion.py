@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import pytest
 
-from pitash.commands import arg, registry as command_registry
-from pitash.completion import Completion, CompletionContext, HistoryCompleter
-from pitash.lineedit import (
+from eosh.commands import arg, registry as command_registry
+from eosh.completion import Completion, CompletionContext, HistoryCompleter
+from eosh.lineedit import (
     History,
     LineEditor,
     _align_verbatim_rows,
     _picker_col_offset,
 )
-from pitash.shell import Shell, _drop_history_duplicates
-from pitash.tui import InlinePicker
+from eosh.shell import Shell, _drop_history_duplicates
+from eosh.tui import InlinePicker
 
 
 def _ctx(line, prefix=""):
@@ -153,7 +153,7 @@ def shell():
     sh = Shell()
     sh.context_manager.current().history = []
     # The live completer is directory-scoped against the real
-    # ~/.pitash/history.dirs, which a test's synthetic entries are not in.
+    # ~/.eosh/history.dirs, which a test's synthetic entries are not in.
     # Treat whatever the test sets as having been run in the cwd.
     sh._history_completer._ran_here_fn = (
         lambda entry: entry in sh.context_manager.current().history
@@ -300,7 +300,7 @@ class _StubPicker:
 
 
 def _editor(monkeypatch, tmp_path, completions_for=None):
-    import pitash.tui as tui
+    import eosh.tui as tui
 
     monkeypatch.setattr(tui, "InlinePicker", _StubPicker)
     _StubPicker.instances = []

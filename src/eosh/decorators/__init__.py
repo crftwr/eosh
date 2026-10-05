@@ -5,13 +5,13 @@ line that wraps the rest of the line as a pipeline.  See
 ``doc/decorators.md`` for the full design.
 
 Built-in decorators are siblings of this module (e.g.
-``pitash.decorators.watch``).  Each module exposes ``register()`` which
+``eosh.decorators.watch``).  Each module exposes ``register()`` which
 calls ``decorator_registry.decorator(...)``.
 
 Public API::
 
-    from pitash.decorators import registry as decorator_registry
-    from pitash.commands import arg
+    from eosh.decorators import registry as decorator_registry
+    from eosh.commands import arg
 
     @decorator_registry.decorator(
         name="watch",
@@ -84,7 +84,7 @@ class Decorator:
 class DecoratorRegistry:
     """Registry of pipeline decorators.
 
-    Mirrors :class:`pitash.commands.CommandRegistry` but flat — decorators
+    Mirrors :class:`eosh.commands.CommandRegistry` but flat — decorators
     don't have subcommands or aliases.
     """
 
@@ -200,7 +200,7 @@ def parse_decorator_args(deco: Decorator, tokens: list[str]) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Built-in / user decorator loading (mirrors pitash.recipes.enable)
+# Built-in / user decorator loading (mirrors eosh.recipes.enable)
 # ---------------------------------------------------------------------------
 
 decorator_search_path: list[Path] = [config_dir() / "decorators"]
@@ -251,7 +251,7 @@ def _load_decorator(name: str):
         candidate = Path(directory) / f"{name}.py"
         if candidate.exists():
             spec = importlib.util.spec_from_file_location(
-                f"pitash_user_decorator_{name}", candidate
+                f"eosh_user_decorator_{name}", candidate
             )
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

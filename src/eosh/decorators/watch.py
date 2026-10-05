@@ -260,7 +260,7 @@ def _render_scrollbar(
     active ColorScheme (shared with the inline picker's scrollbar).
 
     The thumb slides in 1/8-row steps via the shared sub-cell renderer
-    (see ``pitash.scrollbar``) so scrolling reads smoothly instead of
+    (see ``eosh.scrollbar``) so scrolling reads smoothly instead of
     snapping a whole row at a time.
     """
     if body_rows <= 0:
@@ -409,7 +409,7 @@ def register() -> None:
 
         def _do_run() -> None:
             """Run the pipeline; deposit lines (or error) under the lock."""
-            fd_, path = tempfile.mkstemp(prefix="pitash-watch-")
+            fd_, path = tempfile.mkstemp(prefix="eosh-watch-")
             os.close(fd_)
             lines: list[str] = []
             err: BaseException | None = None
@@ -422,13 +422,13 @@ def register() -> None:
                             raw = f.read()
                     except OSError:
                         raw = b""
-                    # Optional debug aid: when PITASH_WATCH_DEBUG is set,
+                    # Optional debug aid: when EOSH_WATCH_DEBUG is set,
                     # mirror the captured raw bytes to /tmp so the user
                     # can inspect what the wrapped command actually emits
                     # (helps diagnose ANSI / line-count surprises).
-                    if os.environ.get("PITASH_WATCH_DEBUG"):
+                    if os.environ.get("EOSH_WATCH_DEBUG"):
                         try:
-                            with open("/tmp/pitash-watch-last.raw", "wb") as df:
+                            with open("/tmp/eosh-watch-last.raw", "wb") as df:
                                 df.write(raw)
                         except OSError:
                             pass

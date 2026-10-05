@@ -1,4 +1,4 @@
-"""Where pitash keeps per-user state.
+"""Where eosh keeps per-user state.
 
 Every file the shell reads or writes under the user's home — ``config.py``,
 ``history``, ``history.dirs``, ``recipes/``, ``decorators/`` — lives in one
@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-CONFIG_DIR_NAME = ".pitash"
+CONFIG_DIR_NAME = ".eosh"
 
 
 def config_dir() -> Path:
-    """Return ``~/.pitash`` (resolved against ``HOME`` at call time)."""
+    """Return ``~/.eosh`` (resolved against ``HOME`` at call time)."""
     return Path.home() / CONFIG_DIR_NAME

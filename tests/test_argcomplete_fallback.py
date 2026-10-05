@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from pitash import completion as completion_mod
-from pitash.completion import (
+from eosh import completion as completion_mod
+from eosh.completion import (
     ArgcompleteCompleter,
     Completion,
     CompletionContext,
@@ -48,7 +48,7 @@ def test_probe_finds_marker_in_plain_script(tmp_path):
     """))
     script.chmod(0o755)
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=str(script)):
+    with patch("eosh.completion.shutil.which", return_value=str(script)):
         assert ac._probe("mytool") is True
 
 
@@ -57,7 +57,7 @@ def test_probe_rejects_script_without_marker(tmp_path):
     script.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
     script.chmod(0o755)
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=str(script)):
+    with patch("eosh.completion.shutil.which", return_value=str(script)):
         assert ac._probe("plain") is False
 
 
@@ -67,20 +67,20 @@ def test_probe_rejects_binary_file(tmp_path):
     binary.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 200)  # mach-o-ish header
     binary.chmod(0o755)
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=str(binary)):
+    with patch("eosh.completion.shutil.which", return_value=str(binary)):
         assert ac._probe("bin") is False
 
 
 def test_probe_rejects_missing_executable():
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=None):
+    with patch("eosh.completion.shutil.which", return_value=None):
         assert ac._probe("nonexistent") is False
 
 
 def test_probe_rejects_unreadable_executable(tmp_path):
     ac = ArgcompleteCompleter()
     bogus_path = str(tmp_path / "doesnotexist")
-    with patch("pitash.completion.shutil.which", return_value=bogus_path):
+    with patch("eosh.completion.shutil.which", return_value=bogus_path):
         assert ac._probe("ghost") is False
 
 
@@ -112,7 +112,7 @@ def test_probe_recognises_setuptools_shim_with_marked_module(tmp_path, monkeypat
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
 
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=str(shim)):
+    with patch("eosh.completion.shutil.which", return_value=str(shim)):
         assert ac._probe("fakeshim") is True
 
 
@@ -133,7 +133,7 @@ def test_probe_rejects_setuptools_shim_with_unmarked_module(tmp_path, monkeypatc
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
 
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=str(shim)):
+    with patch("eosh.completion.shutil.which", return_value=str(shim)):
         assert ac._probe("plainshim") is False
 
 
@@ -142,7 +142,7 @@ def test_probe_cached_per_command(tmp_path):
     script.write_text("#!/usr/bin/env python3\n# PYTHON_ARGCOMPLETE_OK\n")
     script.chmod(0o755)
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=str(script)) as which:
+    with patch("eosh.completion.shutil.which", return_value=str(script)) as which:
         assert ac._is_argcomplete_command("cached") is True
         assert ac._is_argcomplete_command("cached") is True
     # which() is called once for the probe; the second call short-circuits
@@ -163,7 +163,7 @@ def test_should_activate_skips_no_command():
 
 def test_should_activate_skips_unknown_command():
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=None):
+    with patch("eosh.completion.shutil.which", return_value=None):
         assert ac.should_activate(make_ctx("ghost ", "", "ghost")) is False
 
 
@@ -172,7 +172,7 @@ def test_should_activate_uses_probe_result(tmp_path):
     script.write_text("#!/usr/bin/env python3\n# PYTHON_ARGCOMPLETE_OK\n")
     script.chmod(0o755)
     ac = ArgcompleteCompleter()
-    with patch("pitash.completion.shutil.which", return_value=str(script)):
+    with patch("eosh.completion.shutil.which", return_value=str(script)):
         assert ac.should_activate(make_ctx("marked ", "", "marked")) is True
 
 

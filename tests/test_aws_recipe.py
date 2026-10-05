@@ -7,17 +7,17 @@ from unittest.mock import patch
 
 import pytest
 
-from pitash.commands import registry as command_registry
-from pitash.completion import Completion, CompletionContext
-from pitash.recipes import aws as aws_recipe
-from pitash.recipes.aws import (
+from eosh.commands import registry as command_registry
+from eosh.completion import Completion, CompletionContext
+from eosh.recipes import aws as aws_recipe
+from eosh.recipes.aws import (
     AwsCompleter,
     AwsProfileCompleter,
     AwsRegionCompleter,
     AWS_REGIONS,
     _AwsRegionVar,
 )
-from pitash.variables import registry as var_registry
+from eosh.variables import registry as var_registry
 
 
 def make_ctx(line: str, prefix: str, args=None, command="aws"):
@@ -42,8 +42,8 @@ def _completed(stdout: str, returncode: int = 0):
 def test_completer_invokes_aws_completer_with_comp_line_and_point():
     cc = AwsCompleter()
     line = "aws ec2 describe-"
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run", return_value=_completed("describe-instances\n")) as run:
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run", return_value=_completed("describe-instances\n")) as run:
         cc.complete(make_ctx(line, "describe-", args=["ec2"]))
     args, kwargs = run.call_args
     assert args[0] == ["aws_completer"]
@@ -56,8 +56,8 @@ def test_completer_invokes_aws_completer_with_comp_line_and_point():
 
 def test_completer_filters_by_prefix():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run",
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run",
                return_value=_completed("ec2\necr\nec2-instance-connect\nec2messages\nelasticache\n")):
         results = cc.complete(make_ctx("aws ec", "ec", args=[]))
     # Order matches aws_completer's stdout.
@@ -66,8 +66,8 @@ def test_completer_filters_by_prefix():
 
 def test_completer_returns_plain_completions_no_descriptions():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run", return_value=_completed("us-east-1\nus-west-2\n")):
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run", return_value=_completed("us-east-1\nus-west-2\n")):
         results = cc.complete(make_ctx("aws ec2 describe-instances --region ", "", args=["ec2", "describe-instances", "--region"]))
     assert all(isinstance(c, Completion) for c in results)
     assert all(c.description == "" for c in results)
@@ -75,8 +75,8 @@ def test_completer_returns_plain_completions_no_descriptions():
 
 def test_completer_skips_when_binary_missing():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value=None), \
-         patch("pitash.recipes.aws.subprocess.run") as run:
+    with patch("eosh.recipes.aws.shutil.which", return_value=None), \
+         patch("eosh.recipes.aws.subprocess.run") as run:
         results = cc.complete(make_ctx("aws ec2 ", "", args=["ec2"]))
     assert results == []
     run.assert_not_called()
@@ -84,15 +84,15 @@ def test_completer_skips_when_binary_missing():
 
 def test_completer_handles_subprocess_failure():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run", side_effect=OSError("boom")):
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run", side_effect=OSError("boom")):
         assert cc.complete(make_ctx("aws ec2 ", "", args=["ec2"])) == []
 
 
 def test_completer_handles_timeout(capsys):
     cc = AwsCompleter(timeout=0.1)
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run",
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run",
                side_effect=subprocess.TimeoutExpired(cmd="aws_completer", timeout=0.1)):
         assert cc.complete(make_ctx("aws ec2 ", "", args=["ec2"])) == []
     # User sees a brief notice on stderr — better than silent file fallback.
@@ -103,16 +103,16 @@ def test_completer_handles_timeout(capsys):
 
 def test_completer_handles_nonzero_exit():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run",
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run",
                return_value=_completed("ignored\n", returncode=1)):
         assert cc.complete(make_ctx("aws ec2 ", "", args=["ec2"])) == []
 
 
 def test_completer_drops_blank_lines():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run",
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run",
                return_value=_completed("ec2\n\necr\n\n")):
         results = cc.complete(make_ctx("aws e", "e", args=[]))
     assert [c.value for c in results] == ["ec2", "ecr"]
@@ -120,8 +120,8 @@ def test_completer_drops_blank_lines():
 
 def test_completer_caches_per_line():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run",
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run",
                return_value=_completed("ec2\n")) as run:
         cc.complete(make_ctx("aws e", "e", args=[]))
         cc.complete(make_ctx("aws e", "e", args=[]))
@@ -130,8 +130,8 @@ def test_completer_caches_per_line():
 
 def test_completer_cache_invalidates_on_line_change():
     cc = AwsCompleter()
-    with patch("pitash.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
-         patch("pitash.recipes.aws.subprocess.run",
+    with patch("eosh.recipes.aws.shutil.which", return_value="/usr/local/bin/aws_completer"), \
+         patch("eosh.recipes.aws.subprocess.run",
                return_value=_completed("ec2\n")) as run:
         cc.complete(make_ctx("aws e", "e", args=[]))
         cc.complete(make_ctx("aws ec", "ec", args=[]))
@@ -158,7 +158,7 @@ def _clean_aws_registration(monkeypatch):
 
 
 def test_register_installs_delegate_completer(_clean_aws_registration):
-    from pitash.commands import WILDCARD
+    from eosh.commands import WILDCARD
     aws_recipe.register()
     cmd = command_registry.get("aws")
     assert cmd is not None

@@ -7,8 +7,8 @@ before falling back to plain os.environ writes.
 
 Example::
 
-    from pitash import var_registry, Var, EnvVar
-    from pitash.completion import ChoiceCompleter, CallbackCompleter
+    from eosh import var_registry, Var, EnvVar
+    from eosh.completion import ChoiceCompleter, CallbackCompleter
 
     REGIONS = ["us-east-1", "us-west-2", "eu-west-1", "ap-northeast-1"]
 

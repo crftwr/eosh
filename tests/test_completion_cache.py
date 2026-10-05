@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from pitash import completion_cache
+from eosh import completion_cache
 
 
 def test_get_or_fetch_caches_value():
@@ -35,14 +35,14 @@ def test_get_or_fetch_respects_ttl():
         return "value"
 
     base = 1000.0
-    with patch("pitash.completion_cache.time.monotonic", return_value=base):
+    with patch("eosh.completion_cache.time.monotonic", return_value=base):
         completion_cache.get_or_fetch(("k",), fetch, ttl=10)
     # Within TTL: cached.
-    with patch("pitash.completion_cache.time.monotonic", return_value=base + 5):
+    with patch("eosh.completion_cache.time.monotonic", return_value=base + 5):
         completion_cache.get_or_fetch(("k",), fetch, ttl=10)
     assert calls == [1]
     # Past TTL: refetch.
-    with patch("pitash.completion_cache.time.monotonic", return_value=base + 11):
+    with patch("eosh.completion_cache.time.monotonic", return_value=base + 11):
         completion_cache.get_or_fetch(("k",), fetch, ttl=10)
     assert calls == [1, 1]
 

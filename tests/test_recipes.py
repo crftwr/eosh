@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import pitash.recipes as recipes_pkg
+import eosh.recipes as recipes_pkg
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ def _write_recipe(directory: Path, name: str, side_effect_list: list) -> Path:
             _results = {side_effect_list!r}  # reference kept by caller
 
             def register():
-                import pitash.recipes._test_results as _mod
+                import eosh.recipes._test_results as _mod
                 _mod.results.append({name!r})
         """)
     )
@@ -42,7 +42,7 @@ def _make_recipe(tmp_path: Path, name: str) -> Path:
     path.write_text(
         textwrap.dedent(f"""\
             def register():
-                import pitash.recipes._test_results as _mod
+                import eosh.recipes._test_results as _mod
                 _mod.results.append({name!r})
         """)
     )
@@ -53,17 +53,17 @@ def _make_recipe(tmp_path: Path, name: str) -> Path:
 # loaded recipe files (they can't share a list via closure easily).
 @pytest.fixture(autouse=True)
 def _result_module(monkeypatch):
-    """Inject a fresh pitash.recipes._test_results module for each test."""
+    """Inject a fresh eosh.recipes._test_results module for each test."""
     import types
-    mod = types.ModuleType("pitash.recipes._test_results")
+    mod = types.ModuleType("eosh.recipes._test_results")
     mod.results = []
     monkeypatch.setitem(
-        importlib.import_module("pitash.recipes").__dict__,
+        importlib.import_module("eosh.recipes").__dict__,
         "_test_results_mod",
         mod,
     )
     import sys
-    monkeypatch.setitem(sys.modules, "pitash.recipes._test_results", mod)
+    monkeypatch.setitem(sys.modules, "eosh.recipes._test_results", mod)
     return mod
 
 
@@ -188,7 +188,7 @@ class TestEnableAll:
         would never reach ``zzz_ok``.
         """
         (tmp_path / "aaa_needs_dep.py").write_text(
-            "import pitash_no_such_dependency\n"
+            "import eosh_no_such_dependency\n"
             "def register(): pass\n"
         )
         _make_recipe(tmp_path, "zzz_ok")
@@ -201,12 +201,12 @@ class TestEnableAll:
 
         assert _result_module.results == ["zzz_ok"]
         assert recipes_pkg.skipped_recipes == {
-            "aaa_needs_dep": "pitash_no_such_dependency"}
+            "aaa_needs_dep": "eosh_no_such_dependency"}
 
     def test_missing_dependency_still_raises_when_named(
             self, tmp_path, monkeypatch):
         (tmp_path / "needs_dep.py").write_text(
-            "import pitash_no_such_dependency\n"
+            "import eosh_no_such_dependency\n"
             "def register(): pass\n"
         )
         _reset_search_path(monkeypatch, [tmp_path])
@@ -218,7 +218,7 @@ class TestEnableAll:
         """The real recipe: the error says how to fix it, and keeps ``e.name``."""
         import sys
         monkeypatch.setitem(sys.modules, "boto3", None)
-        monkeypatch.delitem(sys.modules, "pitash.recipes.awsut", raising=False)
+        monkeypatch.delitem(sys.modules, "eosh.recipes.awsut", raising=False)
 
         with pytest.raises(ModuleNotFoundError, match=r"\[aws\]") as excinfo:
             recipes_pkg._load_recipe("awsut")

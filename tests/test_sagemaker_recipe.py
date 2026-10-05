@@ -20,12 +20,12 @@ from datetime import datetime, timedelta, timezone
 import botocore.exceptions
 import pytest
 
-from pitash.commands import CmdParser, _collect_inherited_params
-from pitash.commands import registry as command_registry
-from pitash.completion import CompletionContext
-from pitash.recipes import awsut as awsut_recipe
-from pitash.recipes._awsut_sagemaker import hub, hyperpod, jobs, render, studio
-from pitash.tui import _compose_meta, _meta_col_widths
+from eosh.commands import CmdParser, _collect_inherited_params
+from eosh.commands import registry as command_registry
+from eosh.completion import CompletionContext
+from eosh.recipes import awsut as awsut_recipe
+from eosh.recipes._awsut_sagemaker import hub, hyperpod, jobs, render, studio
+from eosh.tui import _compose_meta, _meta_col_widths
 
 
 # ---------------------------------------------------------------------------
@@ -2193,7 +2193,7 @@ def test_content_type_completer_offers_all_only_where_it_applies():
 
 @pytest.fixture(scope="module")
 def sagemaker_tree():
-    from pitash.recipes import enable
+    from eosh.recipes import enable
     enable("awsut")
     return command_registry.get("awsut").children["sagemaker"]
 

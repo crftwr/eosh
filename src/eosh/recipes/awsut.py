@@ -29,7 +29,7 @@ from :func:`register` because ``CommandRegistry`` roots cannot be re-opened
 from a second module.
 
 Every group prints to one contract — header line, table, ``error:`` on stderr —
-defined in :mod:`pitash.recipes._awsut_common`.  The leaves here were ported
+defined in :mod:`eosh.recipes._awsut_common`.  The leaves here were ported
 from a shell that printed colon-separated one-liners; they render through those
 helpers now, so ``awsut ec2 list`` and ``awsut sagemaker studio apps`` line up
 column for column.
@@ -45,9 +45,9 @@ reached through both: ``var agentcore_control_endpoint=...`` and
 of these are stored in module-level Python variables (not ``os.environ``), so
 they don't leak into subprocesses.
 
-User-customisable defaults (read from ``~/.pitash/config.py`` if set):
+User-customisable defaults (read from ``~/.eosh/config.py`` if set):
 
-    from pitash.recipes import awsut
+    from eosh.recipes import awsut
     awsut.console_pages = {"home": "https://...", ...}
     awsut.console_url_modifier_func = lambda account, role, url: ...
     awsut.awscli = ["aws"]
@@ -102,9 +102,9 @@ from .aws import AWS_REGIONS, AwsProfileCompleter
 
 # ─── User-customisable module-level config ──────────────────────────────────
 #
-# Override from ~/.pitash/config.py:
+# Override from ~/.eosh/config.py:
 #
-#     from pitash.recipes import awsut
+#     from eosh.recipes import awsut
 #     awsut.console_pages = {...}
 #     awsut.console_url_modifier_func = lambda account, role, url: ...
 
@@ -360,7 +360,7 @@ def write_credentials_profile(path: str, profile: str,
     text = "\n".join(lines) + "\n"
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    tmp = os.path.join(directory, f".{os.path.basename(path)}.pitash.tmp")
+    tmp = os.path.join(directory, f".{os.path.basename(path)}.eosh.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(fd, "w") as out:

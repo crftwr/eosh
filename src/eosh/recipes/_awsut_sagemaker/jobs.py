@@ -93,9 +93,9 @@ from .render import (
 # may not exist at the endpoint.  It is a list rather than a constant because
 # botocore treats an enum as documentation and does not reject a value absent
 # from it — so an endpoint whose model this botocore release does not carry can
-# still be queried by naming its categories from ``~/.pitash/config.py``:
+# still be queried by naming its categories from ``~/.eosh/config.py``:
 #
-#     from pitash.recipes._awsut_sagemaker import jobs
+#     from eosh.recipes._awsut_sagemaker import jobs
 #     jobs.EXTRA_JOB_CATEGORIES = ["SomeCategory", "SomeOtherCategory"]
 #
 # Kept apart from :func:`declared_categories` because the two fail differently: a

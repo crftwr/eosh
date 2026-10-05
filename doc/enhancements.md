@@ -1,6 +1,6 @@
 # Enhancement Ideas
 
-A living document for pitash enhancement ideas — features that would be
+A living document for eosh enhancement ideas — features that would be
 nice to have but aren't yet implemented. Each entry should be enough for a
 future implementer (or design discussion) to pick up cold; flesh out
 sections as the idea matures. Once an idea ships, either delete it or move
@@ -27,7 +27,7 @@ here in enhancements.md until each item lands.
   (prompt before running) and `@nice -n N` (process-priority wrapper).
 - **Reload integration** — `reload` should call
   `decorator_registry.clear_user_decorators()` once user decorators
-  start landing in `~/.pitash/decorators/`.
+  start landing in `~/.eosh/decorators/`.
 - **Slot-aware `@watch`** — route long-running decorator bodies
   through `PythonCommandSlot` so `Ctrl+]` backgrounding works the
   same as for regular Python commands.
@@ -214,9 +214,9 @@ of [architecture.md](architecture.md).
   the subclass only specifies what it runs.
 
 - **Delete (or make real) the duplicate `history.py`.**
-  `src/pitash/history.py` defines a second, unused `History`
+  `src/eosh/history.py` defines a second, unused `History`
   class; nothing imports it. The live implementation — the one
-  `shell.py` instantiates, that owns the on-disk `~/.pitash/history`
+  `shell.py` instantiates, that owns the on-disk `~/.eosh/history`
   file and the `history.dirs` directory side table — is
   `lineedit.History`. Having two classes with the same name is an
   active trap: a change made to the wrong one type-checks, imports,
@@ -228,7 +228,7 @@ of [architecture.md](architecture.md).
   `lineedit` for the tests that import it from there.
 
 - **Reload integration for user decorators.** Once
-  `~/.pitash/decorators/` lands, `reload` should call
+  `~/.eosh/decorators/` lands, `reload` should call
   `decorator_registry.clear_user_decorators()` (the method
   already exists). Already noted under "Pipeline decorators —
   follow-up items"; mentioned here for completeness.
@@ -292,7 +292,7 @@ pick them up without re-deriving the motivation.
 
 - **Viewing two places at once.** `cp`/`mv`/`git diff` and side-by-side
   context comparison all want simultaneous views of two locations or
-  states; pitash's context stack supports *switching* but not *viewing
+  states; eosh's context stack supports *switching* but not *viewing
   side by side*, and tmux-style splits are disconnected from the shell.
   Open question: should the shell own a split-view mode, or is
   "remember one side" good enough for most cases?

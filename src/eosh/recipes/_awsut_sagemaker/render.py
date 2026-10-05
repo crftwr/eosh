@@ -6,7 +6,7 @@ drift in how they render the same data — several of these APIs hand back opaqu
 JSON documents, and all of them are read by following ARNs out of them.
 
 The output contract itself — table shape, header line, note policy, ``error:``
-lines — is one level up, in :mod:`pitash.recipes._awsut_common`, because the
+lines — is one level up, in :mod:`eosh.recipes._awsut_common`, because the
 rest of ``awsut`` (``ec2``, ``logs``, ``cloudformation``, and the
 ``bedrock-agentcore`` group) prints to the same contract.  So are the
 instruments that are about AWS shapes rather than about SageMaker: model
@@ -123,7 +123,7 @@ def require_operation(client, method: str, api: str) -> None:
     """Fail with an explanation when the loaded model lacks *api*.
 
     The Job APIs in particular are not in every botocore release, and a bare
-    ``AttributeError`` on ``client.list_jobs`` would read like a pitash bug
+    ``AttributeError`` on ``client.list_jobs`` would read like an eosh bug
     rather than a model-vintage problem.
     """
     if not hasattr(client, method):

@@ -8,7 +8,7 @@ import types
 
 import pytest
 
-from pitash.shell import PythonCommandSlot, passthrough_input_block
+from eosh.shell import PythonCommandSlot, passthrough_input_block
 
 
 class _StubProxy:
@@ -35,7 +35,7 @@ def _read_line(slot: PythonCommandSlot, text: bytes, monkeypatch) -> str:
     read_fd, write_fd = os.pipe()
     os.write(write_fd, text)
     os.close(write_fd)          # so an unterminated tail still reaches EOF
-    monkeypatch.setattr("pitash.shell.sys.stdin",
+    monkeypatch.setattr("eosh.shell.sys.stdin",
                         types.SimpleNamespace(fileno=lambda: read_fd))
 
     def release():
@@ -127,9 +127,9 @@ def test_block_falls_back_to_input_outside_a_slot_thread(monkeypatch):
 
 def test_block_falls_back_to_input_when_stdin_is_not_a_terminal(monkeypatch):
     slot = _slot()
-    monkeypatch.setattr("pitash.shell._current_slot",
+    monkeypatch.setattr("eosh.shell._current_slot",
                         types.SimpleNamespace(slot=slot))
-    monkeypatch.setattr("pitash.shell._stdin_is_tty", lambda: False)
+    monkeypatch.setattr("eosh.shell._stdin_is_tty", lambda: False)
     lines = iter(["export A=1", ""])
     monkeypatch.setattr("builtins.input", lambda *a: next(lines))
     assert passthrough_input_block() == "export A=1"

@@ -2,36 +2,36 @@ import os
 
 import pytest
 
-from pitash.parsing import (
+from eosh.parsing import (
     expand_vars,
     raw_token_start,
     split_for_completion,
     tokenize,
 )
-from pitash.variables import EnvVar, Var, VarRegistry, registry as var_registry
+from eosh.variables import EnvVar, Var, VarRegistry, registry as var_registry
 
 
 def test_expand_vars_basic():
-    os.environ["PITASH_TEST_VAR"] = "hello"
-    assert expand_vars("echo $PITASH_TEST_VAR") == "echo hello"
-    del os.environ["PITASH_TEST_VAR"]
+    os.environ["EOSH_TEST_VAR"] = "hello"
+    assert expand_vars("echo $EOSH_TEST_VAR") == "echo hello"
+    del os.environ["EOSH_TEST_VAR"]
 
 
 def test_expand_vars_braces():
-    os.environ["PITASH_TEST_VAR"] = "world"
-    assert expand_vars("echo ${PITASH_TEST_VAR}!") == "echo world!"
-    del os.environ["PITASH_TEST_VAR"]
+    os.environ["EOSH_TEST_VAR"] = "world"
+    assert expand_vars("echo ${EOSH_TEST_VAR}!") == "echo world!"
+    del os.environ["EOSH_TEST_VAR"]
 
 
 def test_expand_vars_unset_is_empty():
-    os.environ.pop("PITASH_TEST_UNSET", None)
-    assert expand_vars("echo $PITASH_TEST_UNSET") == "echo "
+    os.environ.pop("EOSH_TEST_UNSET", None)
+    assert expand_vars("echo $EOSH_TEST_UNSET") == "echo "
 
 
 def test_expand_vars_single_quoted_not_expanded():
-    os.environ["PITASH_TEST_VAR"] = "hello"
-    assert expand_vars("echo '$PITASH_TEST_VAR'") == "echo '$PITASH_TEST_VAR'"
-    del os.environ["PITASH_TEST_VAR"]
+    os.environ["EOSH_TEST_VAR"] = "hello"
+    assert expand_vars("echo '$EOSH_TEST_VAR'") == "echo '$EOSH_TEST_VAR'"
+    del os.environ["EOSH_TEST_VAR"]
 
 
 def test_expand_vars_no_vars():
@@ -134,12 +134,12 @@ def test_expand_vars_var_unset_renders_empty(temp_var):
 
 
 def test_expand_vars_falls_back_to_env_when_no_var(temp_var):
-    os.environ["PITASH_PLAIN"] = "plain"
+    os.environ["EOSH_PLAIN"] = "plain"
     try:
         # No Var registered for this name — env lookup still works.
-        assert expand_vars("echo $PITASH_PLAIN") == "echo plain"
+        assert expand_vars("echo $EOSH_PLAIN") == "echo plain"
     finally:
-        del os.environ["PITASH_PLAIN"]
+        del os.environ["EOSH_PLAIN"]
 
 
 @pytest.mark.parametrize(

@@ -94,7 +94,7 @@ def error_code(exc: botocore.exceptions.ClientError) -> str:
 def guard(fn):
     """Turn the expected AWS/usage failures into one-line messages.
 
-    A pitash command runs in-process, so an uncaught ``ClientError`` would
+    An eosh command runs in-process, so an uncaught ``ClientError`` would
     dump a traceback into the middle of the user's session and a bare
     ``SystemExit`` could take the shell down with it.  Every leaf handler in
     the ``awsut`` tree is wrapped, so a failure reads like a shell error

@@ -1,10 +1,10 @@
-# pitash user configuration
+# eosh user configuration
 # Define custom commands and completers here.
 
 # ── Simple example: one positional argument ───────────────────────────────────
 
-from pitash.commands import registry as command_registry, arg
-from pitash.completion import ChoiceCompleter
+from eosh.commands import registry as command_registry, arg
+from eosh.completion import ChoiceCompleter
 
 @command_registry.command(
     name="hello",
@@ -170,7 +170,7 @@ def cols(indices, delim):
 
 # ── Enable completion recipes for external commands ───────────────────────────
 
-from pitash.recipes import enable
+from eosh.recipes import enable
 enable("*")
 
 
@@ -198,12 +198,12 @@ command_registry.alias("la", "ls -la")
 #
 # At the prompt:
 #
-#     pitash> var editor=<TAB>           → vim, emacs, nano, code
-#     pitash> var editor=vim
-#     pitash> var http_proxy=http://...  → sets HTTP_PROXY *and* HTTPS_PROXY
+#     eosh> var editor=<TAB>           → vim, emacs, nano, code
+#     eosh> var editor=vim
+#     eosh> var http_proxy=http://...  → sets HTTP_PROXY *and* HTTPS_PROXY
 
 import os
-from pitash.variables import registry as var_registry, EnvVar, Var
+from eosh.variables import registry as var_registry, EnvVar, Var
 
 # Simple case: one logical name → one env var, with completion.
 var_registry.register(EnvVar(
@@ -245,20 +245,20 @@ var_registry.register(_HttpProxyVar())
 
 # ── Desktop notifications for long-running commands ───────────────────────────
 #
-# When a command runs longer than the threshold, pitash posts an OS
+# When a command runs longer than the threshold, eosh posts an OS
 # notification as it finishes — you've probably switched to a browser by then.
 # Backends are whatever the platform already ships (osascript / notify-send /
 # a PowerShell toast), so there's nothing to install.
 #
 # At the prompt:
 #
-#     pitash> var notify=off              → disable for this session
-#     pitash> var notify_threshold=30     → only notify for commands ≥ 30s
+#     eosh> var notify=off              → disable for this session
+#     eosh> var notify_threshold=30     → only notify for commands ≥ 30s
 #
 # Both variables are process-global: unlike EnvVars above, they are not
 # saved/restored on context switch.
 
-from pitash import notify
+from eosh import notify
 
 # Default is 10 seconds; raise it if your day is full of 15-second builds.
 notify.configure(threshold=10)
@@ -287,7 +287,7 @@ notify.SKIP_COMMANDS.update({"psql", "mysql", "sqlite3", "ipython"})
 # ── Customize the prompt ──────────────────────────────────────────────────────
 
 from datetime import datetime
-from pitash import set_prompt
+from eosh import set_prompt
 
 def my_prompt(context_manager):
     """Replicates the built-in default prompt: [context] parent/cwd HH:MM:SS [bg:N]>."""
@@ -348,7 +348,7 @@ set_prompt(my_prompt)
 #
 # Uncomment one of the examples below:
 
-from pitash import set_color_scheme, ColorScheme
+from eosh import set_color_scheme, ColorScheme
 
 # Built-in schemes (for light- or dark-background terminals):
 # set_color_scheme("dark")   # default

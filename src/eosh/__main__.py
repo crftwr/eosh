@@ -1,4 +1,4 @@
-"""Entry point for pitash."""
+"""Entry point for eosh."""
 
 import argparse
 
@@ -7,7 +7,7 @@ from . import __version__
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="pitash",
+        prog="eosh",
         description="A lightweight but powerful terminal shell.",
     )
     parser.add_argument("--version", action="version",

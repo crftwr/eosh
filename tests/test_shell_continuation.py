@@ -2,7 +2,7 @@
 
 import pytest
 
-from pitash.shell import _is_continuation, _strip_continuation
+from eosh.shell import _is_continuation, _strip_continuation
 
 
 class TestIsContinuation:

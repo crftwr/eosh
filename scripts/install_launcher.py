@@ -1,11 +1,11 @@
-"""Install a `pitash` launcher on PATH so it can be run from anywhere.
+"""Install a `eosh` launcher on PATH so it can be run from anywhere.
 
 Cross-platform:
 
 * Windows  -> create %USERPROFILE%\\bin with two shims (a .cmd for PowerShell/cmd
               and an extensionless POSIX script for Git bash), then prepend that
               directory to the persistent user PATH.
-* POSIX     -> symlink the venv's `pitash` entry-point into ~/.local/bin.
+* POSIX     -> symlink the venv's `eosh` entry-point into ~/.local/bin.
 
 Paths are derived from this file's location (project_root/.venv), so the launcher
 keeps working as long as the repo and its venv stay put.
@@ -22,8 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def _venv_exe() -> Path:
     if os.name == "nt":
-        return PROJECT_ROOT / ".venv" / "Scripts" / "pitash.exe"
-    return PROJECT_ROOT / ".venv" / "bin" / "pitash"
+        return PROJECT_ROOT / ".venv" / "Scripts" / "eosh.exe"
+    return PROJECT_ROOT / ".venv" / "bin" / "eosh"
 
 
 def _broadcast_environment_change() -> None:
@@ -55,11 +55,11 @@ def install_windows() -> None:
 
     # cmd.exe + PowerShell find the .cmd; Git bash auto-appends .exe but not .cmd,
     # so it needs its own extensionless POSIX shim.
-    cmd_shim = bin_dir / "pitash.cmd"
+    cmd_shim = bin_dir / "eosh.cmd"
     cmd_shim.write_text(f'@echo off\r\n"{exe}" %*\r\n', encoding="ascii")
 
     posix_path = str(exe).replace("\\", "/")
-    sh_shim = bin_dir / "pitash"
+    sh_shim = bin_dir / "eosh"
     sh_shim.write_text(f'#!/bin/sh\nexec "{posix_path}" "$@"\n', encoding="ascii", newline="\n")
 
     # Prepend bin_dir to the persistent (HKCU) user PATH if not already present.
@@ -79,7 +79,7 @@ def install_windows() -> None:
 
     _broadcast_environment_change()
     print(f"Installed shims in {bin_dir}.")
-    print("Open a NEW terminal (PowerShell / cmd / Git bash), then run: pitash")
+    print("Open a NEW terminal (PowerShell / cmd / Git bash), then run: eosh")
 
 
 def install_posix() -> None:
@@ -89,7 +89,7 @@ def install_posix() -> None:
 
     bin_dir = Path.home() / ".local" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    link = bin_dir / "pitash"
+    link = bin_dir / "eosh"
     if link.is_symlink() or link.exists():
         link.unlink()
     link.symlink_to(exe)

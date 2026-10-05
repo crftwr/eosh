@@ -30,11 +30,11 @@ $(info Using Python bootstrap: $(PYTHON_BOOTSTRAP))
 .PHONY: help install test clean run demo banner install-launcher build publish-testpypi tag release-github release-whl release-status
 
 help:
-	@echo "Pitash utility commands:"
-	@echo "  make install          - create the venv and install pitash (editable, with dev + aws deps)"
+	@echo "Eolith Shell utility commands:"
+	@echo "  make install          - create the venv and install eosh (editable, with dev + aws deps)"
 	@echo "  make test             - run the test suite"
-	@echo "  make run              - run pitash from the venv"
-	@echo "  make install-launcher - put a pitash launcher on PATH"
+	@echo "  make run              - run eosh from the venv"
+	@echo "  make install-launcher - put an eosh launcher on PATH"
 	@echo "  make demo             - re-record doc/images/demo.gif (needs vhs)"
 	@echo "  make banner           - render doc/images/banner.svg to the Pages JPEGs (needs Chrome)"
 	@echo "  make clean            - remove the venv, build artifacts and caches"
@@ -60,13 +60,13 @@ test: $(VENV_STAMP)
 	"$(PYTHON)" -m pytest tests/ -v
 
 run: $(VENV_STAMP)
-	"$(PYTHON)" -m pitash
+	"$(PYTHON)" -m eosh
 
 # README demo GIF.  Records scripts/demo/demo.tape with VHS against a
 # throwaway HOME (scripts/demo/setup.sh), so no real history or config shows.
 demo: $(VENV_STAMP)
 	scripts/demo/setup.sh
-	PITASH="$(CURDIR)/$(VENV_BIN)/pitash" vhs scripts/demo/demo.tape
+	EOSH="$(CURDIR)/$(VENV_BIN)/eosh" vhs scripts/demo/demo.tape
 
 # GitHub Pages banner.  banner.svg is the source; link previews ignore SVG in
 # og:image, so the site serves JPEGs rendered from it (headless Chrome + sips).
@@ -78,7 +78,7 @@ install-launcher: $(VENV_STAMP)
 
 # --- Packaging / release ----------------------------------------------------
 # `build` and `twine` are release-time tooling, not needed to run or develop
-# Pitash, so they are installed on demand here rather than bloating the base
+# Eolith Shell, so they are installed on demand here rather than bloating the base
 # venv. Invoked as `python -m ...` (not the venv's console scripts) so the same
 # recipe works on Windows, where those scripts live in Scripts/ and end in .exe.
 # The PyPI long description (README.pypi.md) is generated here on the fly and
@@ -89,7 +89,7 @@ install-launcher: $(VENV_STAMP)
 # generation can never upload an empty description.
 build: $(VENV_STAMP)
 	"$(PIP)" install --quiet build twine
-	rm -rf dist build src/pitash.egg-info
+	rm -rf dist build src/eosh.egg-info
 	"$(PYTHON)" scripts/gen_pypi_readme.py
 	"$(PYTHON)" -m build
 	"$(PYTHON)" -m twine check --strict dist/*
@@ -114,13 +114,13 @@ publish-testpypi: build
 # creates), then `release-github` (release-whl uploads into the Release it
 # opens).
 #
-# The version's single source of truth is src/pitash/__init__.py's __version__;
-# pyproject.toml derives it (dynamic version = attr). PITASH_VERSION below
+# The version's single source of truth is src/eosh/__init__.py's __version__;
+# pyproject.toml derives it (dynamic version = attr). EOSH_VERSION below
 # reads that same literal, so every release-* target acts on the release the
 # checkout is actually on — only `tag` takes a VERSION=. Override it on the
 # others to target a different release (e.g. re-uploading an asset for an
 # older tag).
-PITASH_VERSION := $(if $(VERSION),$(VERSION),$(shell sed -nE 's/^__version__[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' src/pitash/__init__.py 2>/dev/null | head -1))
+EOSH_VERSION := $(if $(VERSION),$(VERSION),$(shell sed -nE 's/^__version__[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' src/eosh/__init__.py 2>/dev/null | head -1))
 
 # Guards shared by the release-* targets, kept in one place so they cannot
 # drift into checking different things. Used as $(call ...) inside a recipe;
@@ -129,15 +129,15 @@ PITASH_VERSION := $(if $(VERSION),$(VERSION),$(shell sed -nE 's/^__version__[[:s
 # check_gh:             a resolvable version and a usable `gh`.
 # check_release_exists: the above, plus the GitHub Release to upload into.
 define check_gh
-test -n "$(PITASH_VERSION)" || { echo "ERROR: could not determine version; pass VERSION=x.y.z"; exit 1; }; \
+test -n "$(EOSH_VERSION)" || { echo "ERROR: could not determine version; pass VERSION=x.y.z"; exit 1; }; \
 command -v gh >/dev/null 2>&1 || { echo "ERROR: 'gh' not found. Install the GitHub CLI first."; exit 1; }; \
 gh auth status >/dev/null 2>&1 || { echo "ERROR: 'gh' is not authenticated. Run 'gh auth login'."; exit 1; }
 endef
 
 define check_release_exists
 $(check_gh); \
-gh release view v$(PITASH_VERSION) >/dev/null 2>&1 || { \
-	echo "ERROR: GitHub Release v$(PITASH_VERSION) does not exist."; \
+gh release view v$(EOSH_VERSION) >/dev/null 2>&1 || { \
+	echo "ERROR: GitHub Release v$(EOSH_VERSION) does not exist."; \
 	echo "       Open it first with 'make release-github'."; \
 	exit 1; \
 }
@@ -166,7 +166,7 @@ tag: $(VENV_STAMP)
 	"$(PYTHON)" scripts/release_preflight.py "$(VERSION)"
 	$(MAKE) test
 	"$(PYTHON)" scripts/bump_version.py "$(VERSION)"
-	git add src/pitash/__init__.py
+	git add src/eosh/__init__.py
 	git commit -m "Releasing $(VERSION)"
 	git tag -a v$(VERSION) -m "$(VERSION)"
 	$(MAKE) build
@@ -187,24 +187,24 @@ tag: $(VENV_STAMP)
 # than erroring, so re-running the pipeline from the top costs nothing.
 release-github:
 	@$(call check_gh)
-	@git ls-remote --exit-code --tags origin "v$(PITASH_VERSION)" >/dev/null 2>&1 || { \
-		echo "ERROR: tag v$(PITASH_VERSION) is not on origin."; \
-		echo "       Push it with 'make tag VERSION=$(PITASH_VERSION)' (or 'git push origin v$(PITASH_VERSION)')."; \
+	@git ls-remote --exit-code --tags origin "v$(EOSH_VERSION)" >/dev/null 2>&1 || { \
+		echo "ERROR: tag v$(EOSH_VERSION) is not on origin."; \
+		echo "       Push it with 'make tag VERSION=$(EOSH_VERSION)' (or 'git push origin v$(EOSH_VERSION)')."; \
 		exit 1; \
 	}
-	@if gh release view v$(PITASH_VERSION) >/dev/null 2>&1; then \
-		echo "GitHub Release v$(PITASH_VERSION) already exists; leaving it as is."; \
+	@if gh release view v$(EOSH_VERSION) >/dev/null 2>&1; then \
+		echo "GitHub Release v$(EOSH_VERSION) already exists; leaving it as is."; \
 	else \
-		gh release create v$(PITASH_VERSION) --title "v$(PITASH_VERSION)" --generate-notes --verify-tag && \
-		echo "Opened GitHub Release v$(PITASH_VERSION) ✓"; \
+		gh release create v$(EOSH_VERSION) --title "v$(EOSH_VERSION)" --generate-notes --verify-tag && \
+		echo "Opened GitHub Release v$(EOSH_VERSION) ✓"; \
 	fi
 
 # The filenames setuptools gives the sdist + wheel, derived from the same
-# version literal as PITASH_VERSION. Naming them explicitly (rather than
+# version literal as EOSH_VERSION. Naming them explicitly (rather than
 # globbing dist/*) means a stale artifact left from an earlier version can
 # never be swept into an upload.
-PYPI_SDIST := dist/pitash-$(PITASH_VERSION).tar.gz
-PYPI_WHEEL := dist/pitash-$(PITASH_VERSION)-py3-none-any.whl
+PYPI_SDIST := dist/eosh-$(EOSH_VERSION).tar.gz
+PYPI_WHEEL := dist/eosh-$(EOSH_VERSION)-py3-none-any.whl
 
 # File target so release-whl builds the distributions on demand when they are
 # missing (e.g. after `make clean`). `make build` wipes dist/ and writes both
@@ -212,7 +212,7 @@ PYPI_WHEEL := dist/pitash-$(PITASH_VERSION)-py3-none-any.whl
 # recipe below then asserts the wheel landed too. Existing artifacts are NOT
 # rebuilt — publishing the exact bytes that were verified is the point.
 $(PYPI_SDIST):
-	@echo "Python distributions for $(PITASH_VERSION) not found; building them first..."
+	@echo "Python distributions for $(EOSH_VERSION) not found; building them first..."
 	@$(MAKE) build
 
 # --- release-whl: publish the Python distributions --------------------------
@@ -230,43 +230,43 @@ $(PYPI_SDIST):
 # Prereqs: a [pypi] token in ~/.pypirc and an authenticated `gh`.
 release-whl: $(PYPI_SDIST)
 	@$(call check_release_exists)
-	@git rev-parse -q --verify "v$(PITASH_VERSION)^{commit}" >/dev/null || { \
-		echo "ERROR: tag v$(PITASH_VERSION) not found locally. Cut it with 'make tag VERSION=$(PITASH_VERSION)' or fetch it."; \
+	@git rev-parse -q --verify "v$(EOSH_VERSION)^{commit}" >/dev/null || { \
+		echo "ERROR: tag v$(EOSH_VERSION) not found locally. Cut it with 'make tag VERSION=$(EOSH_VERSION)' or fetch it."; \
 		exit 1; \
 	}
-	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse "v$(PITASH_VERSION)^{commit}")" || { \
-		echo "ERROR: HEAD is not at tag v$(PITASH_VERSION); the upload would not match the tag."; \
-		echo "       Check the tag out first: git checkout v$(PITASH_VERSION)"; \
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse "v$(EOSH_VERSION)^{commit}")" || { \
+		echo "ERROR: HEAD is not at tag v$(EOSH_VERSION); the upload would not match the tag."; \
+		echo "       Check the tag out first: git checkout v$(EOSH_VERSION)"; \
 		exit 1; \
 	}
 	@# Both files, not just the sdist that triggered the build: a VERSION= override
 	@# that disagrees with __version__ builds different filenames entirely, and
 	@# this is where that shows up as a clear error instead of a twine traceback.
 	@for f in "$(PYPI_SDIST)" "$(PYPI_WHEEL)"; do \
-		test -f "$$f" || { echo "ERROR: $$f missing; run 'make build' from a checkout at v$(PITASH_VERSION)."; exit 1; }; \
+		test -f "$$f" || { echo "ERROR: $$f missing; run 'make build' from a checkout at v$(EOSH_VERSION)."; exit 1; }; \
 	done
 	@echo "Uploading $(notdir $(PYPI_SDIST)) + $(notdir $(PYPI_WHEEL)) to PyPI..."
 	"$(PYTHON)" -m twine upload "$(PYPI_SDIST)" "$(PYPI_WHEEL)"
-	gh release upload v$(PITASH_VERSION) "$(PYPI_SDIST)" "$(PYPI_WHEEL)" --clobber
-	@echo "Published $(PITASH_VERSION) to PyPI and attached both distributions to release v$(PITASH_VERSION) ✓"
+	gh release upload v$(EOSH_VERSION) "$(PYPI_SDIST)" "$(PYPI_WHEEL)" --clobber
+	@echo "Published $(EOSH_VERSION) to PyPI and attached both distributions to release v$(EOSH_VERSION) ✓"
 
 # --- release-status: read-only progress check -------------------------------
 # One place to see which artifacts have landed for the version the checkout is
 # on.
 release-status:
-	@test -n "$(PITASH_VERSION)" || { echo "ERROR: could not determine version; pass VERSION=x.y.z"; exit 1; }
-	@echo "Release v$(PITASH_VERSION):"
+	@test -n "$(EOSH_VERSION)" || { echo "ERROR: could not determine version; pass VERSION=x.y.z"; exit 1; }
+	@echo "Release v$(EOSH_VERSION):"
 	@# Asset names only: gh renders JSON numbers in Go's default float format, so
 	@# {{.size}} would print sizes as 8.8917854e+07.
-	@gh release view v$(PITASH_VERSION) --json assets \
+	@gh release view v$(EOSH_VERSION) --json assets \
 		--template '{{range .assets}}  GitHub asset: {{.name}}{{"\n"}}{{end}}' \
 		2>/dev/null || echo "  (no GitHub Release yet — run 'make release-github')"
 	@"$(PYTHON)" -c "import json,urllib.request as u; \
-		v='$(PITASH_VERSION)'; \
-		d=json.load(u.urlopen('https://pypi.org/pypi/pitash/json')); \
+		v='$(EOSH_VERSION)'; \
+		d=json.load(u.urlopen('https://pypi.org/pypi/eosh/json')); \
 		print('  PyPI: ' + ('published' if v in d['releases'] else 'NOT published'))" \
 		2>/dev/null || echo "  PyPI: unknown (needs the venv and network access)"
 
 
 clean:
-	"$(PYTHON_BOOTSTRAP)" -c "import shutil, pathlib; shutil.rmtree('$(VENV)', ignore_errors=True); [shutil.rmtree(p, ignore_errors=True) for p in ('src/pitash.egg-info', 'build', 'dist', '.pytest_cache')]; pathlib.Path('README.pypi.md').unlink(missing_ok=True); [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
+	"$(PYTHON_BOOTSTRAP)" -c "import shutil, pathlib; shutil.rmtree('$(VENV)', ignore_errors=True); [shutil.rmtree(p, ignore_errors=True) for p in ('src/eosh.egg-info', 'build', 'dist', '.pytest_cache')]; pathlib.Path('README.pypi.md').unlink(missing_ok=True); [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"

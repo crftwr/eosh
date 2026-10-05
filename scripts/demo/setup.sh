@@ -2,11 +2,11 @@
 # Build a throwaway HOME for recording the README demo (see demo.tape).
 #
 # The recording must not show the author's real history, config or paths, so
-# pitash runs against a fresh HOME holding the starter config and a small git
+# eosh runs against a fresh HOME holding the starter config and a small git
 # project to complete against.
 set -euo pipefail
 
-DEMO_HOME=${DEMO_HOME:-/private/tmp/pitash-demo}
+DEMO_HOME=${DEMO_HOME:-/private/tmp/eosh-demo}
 rm -rf "$DEMO_HOME"
 mkdir -p "$DEMO_HOME/webapp"
 cd "$DEMO_HOME/webapp"

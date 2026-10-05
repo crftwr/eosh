@@ -33,12 +33,12 @@ follow-up items."
   (`shell.py::_start_decorator_stage_thread`,
   `_run_pipeline_from_decorator`).
 - Decorator registry mirroring `CommandRegistry` / `VarRegistry`
-  (`pitash/decorators/__init__.py`).
+  (`eosh/decorators/__init__.py`).
 - `Pipeline.run()` indirection so decorator bodies can re-enter
   execution (`pipeline.py::set_pipeline_executor`).
 - Dispatch in `Shell._execute_decorator_stage`.
 - Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, `@bg`
-  (`pitash/decorators/*.py`).
+  (`eosh/decorators/*.py`).
 - `@<TAB>` completion: decorator-name list, decorator-flag picker, and
   body-command delegation through the existing recipe / argcomplete /
   cobra fallback chain.
@@ -50,12 +50,12 @@ The closest battle-tested analog is **IPython's magic commands**, which
 have shipped since ~2007 and are now familiar to most Python developers
 via Jupyter:
 
-| IPython | pitash decorator |
+| IPython | eosh decorator |
 |---------|-------------------|
 | `%time some_expr` | `@time some_pipeline` |
 | `%timeit -n 100 -r 5 expr` | `@timeit -n 100 -r 5 pipeline` |
 | `%%capture out` | `@capture out` (or `@quiet`) |
-| `%%bash` | (pitash already runs shell) |
+| `%%bash` | (eosh already runs shell) |
 | `%lsmagic` | `@<TAB>` (decorator-name completion) |
 
 What we borrow:
@@ -76,7 +76,7 @@ What we borrow:
 What we deliberately don't borrow:
 
 - **Line vs. cell distinction (`%` vs `%%`).** IPython has both because
-  notebook cells are multi-line. pitash lines are single statements
+  notebook cells are multi-line. eosh lines are single statements
   (modulo `;` and `\`-continuation), so one prefix is enough.
 - **Magics receive raw strings.** IPython magics get the rest of the
   line/cell as a string and parse it themselves, so every magic
@@ -92,7 +92,7 @@ What we deliberately don't borrow:
 ## Why decorators (vs. a regular built-in command)
 
 The first sketch was to add `watch` as a built-in Python command whose
-body re-parses its trailing arguments as a pitash pipeline. That works
+body re-parses its trailing arguments as an eosh pipeline. That works
 for the pipe-with-watch ergonomic problem, but has two real costs:
 
 1. **Syntactic confusion with POSIX `watch`.** Users typing
@@ -121,7 +121,7 @@ scopes for the same trailing text:
 
 ```
  watch -n 5 df -h | grep abc      # POSIX: pipes watch's output through grep
-@watch -n 5 df -h | grep abc      # pitash: re-runs `df -h | grep abc` every 5s
+@watch -n 5 df -h | grep abc      # eosh: re-runs `df -h | grep abc` every 5s
 ```
 
 The visual form is identical except for the leading `@`. Worse, this
@@ -270,7 +270,7 @@ the closing brace.
 ```
 
 Parser story (implemented in
-[pipeline.py::_extract_decorator_prefix](../src/pitash/pipeline.py)):
+[pipeline.py::_extract_decorator_prefix](../src/eosh/pipeline.py)):
 
 ```
 @abc -n 5 {df -h} | grep xyz
@@ -289,7 +289,7 @@ outer-sequence parser to treat the decorator-stage as one statement,
 which is a separate change.
 
 Executor story
-([shell.py::_execute_pipeline](../src/pitash/shell.py)):
+([shell.py::_execute_pipeline](../src/eosh/shell.py)):
 
 * The decorator-call stage runs on a worker thread spawned by
   `_start_decorator_stage_thread` — analogous to
@@ -343,7 +343,7 @@ other shells. The concerns, in order of weight:
 
 1. **Brace expansion.** Bash, zsh, and fish all use `{...}` for
    list/sequence expansion: `echo {a,b,c}`, `mv img{,.bak}`,
-   `seq {1..10}`. pitash doesn't implement this today, but it's a
+   `seq {1..10}`. eosh doesn't implement this today, but it's a
    feature users routinely expect from a modern shell. Reserving
    `{...}` as a general grouping construct would lock us out (or force
    bash-style "depends on whitespace and position" disambiguation,
@@ -353,7 +353,7 @@ other shells. The concerns, in order of weight:
    required space after `{`, required `;` (or newline) before `}`,
    only at statement start. Users who know this will assume our
    `{...}` follows the same rules.
-3. **`${var}` parameter expansion.** Already used by pitash.
+3. **`${var}` parameter expansion.** Already used by eosh.
    Different context (always after `$`), so no actual parser
    collision, but it does mean `{` is overloaded across
    "subexpression," "parameter expansion," and (potentially) "brace
@@ -368,7 +368,7 @@ PowerShell will at least find the visual familiar.
 | Syntax | Used by | Notes |
 |--------|---------|-------|
 | `{...}` | bash command groups, PowerShell scriptblocks, fish brace-expansion | Most "shell-natural" but conflicts with future brace expansion |
-| `(...)` | bash subshells | Strong "this is its own scope" connotation; collides only if pitash ever adds subshells |
+| `(...)` | bash subshells | Strong "this is its own scope" connotation; collides only if eosh ever adds subshells |
 | `$(...)` | bash/zsh command substitution | Reads as "capture this," not "delimit this" — wrong semantics |
 | `<(...)` `>(...)` | bash process substitution | Visually busy and the meaning ("file path that streams") doesn't fit |
 | `[...]` | bash test, glob class | Heavily overloaded already |
@@ -421,7 +421,7 @@ decorator(s), it's plain pipeline completion.
 
 ## Impact of in-process Python pipelines (commit `047086b`)
 
-pitash runs Python `@registry.command` stages in worker threads
+eosh runs Python `@registry.command` stages in worker threads
 that share the shell process, with thread-local
 `sys.stdin`/`sys.stdout`/`sys.stderr` rebound to the pipe ends. That
 landed before decorators were implemented, and it shapes the design
@@ -486,8 +486,8 @@ parallel `deco_arg`, no parallel parser. A decorator is essentially a
 command that receives a `Pipeline` instead of running directly.
 
 ```python
-from pitash.commands import arg
-from pitash.decorators import registry as decorator_registry
+from eosh.commands import arg
+from eosh.decorators import registry as decorator_registry
 
 @decorator_registry.decorator(
     name="watch",
@@ -529,7 +529,7 @@ Shipped:
 | `@quiet [--stderr]` | discard stdout (and optionally stderr) |
 | `@bg [--as NAME \| -n NAME]` | run pipeline in a background context slot (replaces `&`); auto-named if `--as` / `-n` omitted |
 
-`@bg` ties into pitash's existing context-multiplexing primitives —
+`@bg` ties into eosh's existing context-multiplexing primitives —
 a decorator becomes the natural surface for "run this pipeline in a
 different process slot."  The named and anonymous cases are the same
 decorator: omit `--as` for a fresh auto-named slot (`bg-1`, `bg-2`,
@@ -596,8 +596,8 @@ follow-up items."
   name-for-text substitution; decorators are runtime wrappers around a
   pipeline AST. They're complementary.
 - **Not POSIX-compatible.** The `@` prefix and `{...}` scope marker
-  are intentionally pitash-specific; scripts using decorators won't
-  run in `bash`/`zsh`. That's fine — pitash is interactive-first.
+  are intentionally eosh-specific; scripts using decorators won't
+  run in `bash`/`zsh`. That's fine — eosh is interactive-first.
 - **`{...}` is not (yet) a general command-grouping construct.** It's
   defined only in the position immediately following a decorator. We
   may extend it later, but reserving it now would foreclose brace
@@ -605,7 +605,7 @@ follow-up items."
 
 ## What's shipped
 
-1. **Parser** in [pipeline.py](../src/pitash/pipeline.py):
+1. **Parser** in [pipeline.py](../src/eosh/pipeline.py):
    `_extract_decorator_prefix` peels `@name [flags] body` before the
    normal pipeline grammar runs; `_find_matching_brace` honours
    single quotes, double quotes (with `\\`-escapes), `${...}` var
@@ -617,22 +617,22 @@ follow-up items."
    to a regular multi-stage pipeline.  `;`/`&&`/`||` after the
    closing `}` are rejected with a focused error.
 2. **Registry** in
-   [pitash/decorators/__init__.py](../src/pitash/decorators/__init__.py):
+   [eosh/decorators/__init__.py](../src/eosh/decorators/__init__.py):
    `Decorator` dataclass, `DecoratorRegistry`, module-level `registry`
    singleton, `@registry.decorator(...)` API with three call forms
    matching `CommandRegistry.command(...)`. Reuses `arg(...)`,
    `CmdParser`, `_build_completers`, `_build_help_text` from
    `commands.py` — no parallel helpers. `enable("*")` /
-   search-path mechanism mirrors `pitash/recipes/`.
+   search-path mechanism mirrors `eosh/recipes/`.
 3. **`Pipeline.run()` indirection** in
-   [pipeline.py](../src/pitash/pipeline.py): `Pipeline.run(stdin=,
+   [pipeline.py](../src/eosh/pipeline.py): `Pipeline.run(stdin=,
    stdout=, stderr=) -> int` calls into a registered executor. The
    `Shell.__init__` flow registers
    `Shell._run_pipeline_from_decorator`, which currently ignores the
    stdio kwargs (decorator bodies inherit the decorator's stdio,
    which is already correctly routed by the thread-local stdio).
 4. **Dispatch** in
-   [shell.py::_execute_decorator_stage](../src/pitash/shell.py):
+   [shell.py::_execute_decorator_stage](../src/eosh/shell.py):
    resolves the decorator, runs its argparse, calls
    `deco.func(body_pipeline, **kwargs)`. `SystemExit` propagates;
    `KeyboardInterrupt` exits 130; other exceptions print and exit 1;
@@ -643,10 +643,10 @@ follow-up items."
    pipeline-execution path so its first/last stage read/write the
    thread's rebound stdio (the outer pipe ends).
 5. **`@watch` built-in** in
-   [pitash/decorators/watch.py](../src/pitash/decorators/watch.py)
+   [eosh/decorators/watch.py](../src/eosh/decorators/watch.py)
    — TTY-aware screen-clear, `BrokenPipeError` graceful exit.
 6. **`@<TAB>` completion** in
-   [shell.py::_maybe_decorator_completion](../src/pitash/shell.py):
+   [shell.py::_maybe_decorator_completion](../src/eosh/shell.py):
    three cases — decorator-name list, decorator-flag picker via
    `OptionsCompleter`, and body-command delegation through the
    normal command-completion path.
@@ -672,7 +672,7 @@ follow-up items."
   and `@nice -n N` (process-priority wrapper).
 - **Reload integration** — `reload` should call
   `decorator_registry.clear_user_decorators()` once user decorators
-  start landing in `~/.pitash/decorators/`.
+  start landing in `~/.eosh/decorators/`.
 - **Slot-aware `@watch`** — route long-running decorator bodies
   through `PythonCommandSlot` so `Ctrl+]` backgrounding works the
   same as for regular Python commands.
