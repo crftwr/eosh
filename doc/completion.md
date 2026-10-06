@@ -133,7 +133,7 @@ CallbackCompleter(lambda: get_current_branches())
 
 ### OptionsCompleter
 
-Completes command-line flags. Registered under the `None` key in a completers dict so it activates at any argument position when the user types a `-`-prefixed token.
+Completes command-line flags. Built on demand from a command's `params` (`Command.options_completer()`); it answers at any argument position where the user types a `-`-prefixed token.
 
 ```python
 OptionsCompleter(
@@ -315,17 +315,17 @@ _get_base_completions(line_before_cursor)
   → No tokens?
       → CommandNameCompleter
   → Has tokens?
-      → Look up command in registry (or external completers)
-      → Last arg is a value-taking flag and prefix doesn't start with "-"?
-          → Yes, has value_completer → return value_completer.complete(ctx)
-          → Yes, no value completer  → return [] (the status bar says what to type)
-      → completers[None] present AND prefix starts with "-"?
-          → options_completer.complete(ctx) if should_activate()
-      → No options matches yet, completers[arg_index] present?
-          → positional_completer.complete(ctx) if should_activate()
-      → No completer registered at this slot?
+      → Look up command; Command.resolve(args) → deepest sub-command + its args
+        (a flat command resolves to itself)
+      → _resolve_slot() classifies the token — the same call the status bar makes:
+          delegate   → node.delegate.complete(ctx)        (aws_completer, cobra)
+          flag       → node.options_completer().complete(ctx)
+          value      → the flag's value completer, or [] (the status bar says what to type)
+          subcommand → node's children names
+          positional → node.positional_completer(i).complete(ctx)
+      → No completer at this slot (positional without one, or unknown command)?
           → Try ArgcompleteCompleter (if command is an argcomplete-marked Python script)
-      → Still no matches and no completer registered? → FileCompleter fallback
+          → Still nothing → FileCompleter
 ```
 
 **The argcomplete fallback** runs only where no completer is registered. A registered completer that returned `[]` meant "nothing here". It finds argcomplete tools by reading the script, never by running it, and caches that per command. **Cobra tools are not a fallback.** Running an unknown command with `__complete` to find out would execute it, so they are opted in by name and get a `CobraCompleter` as their `delegate`, like any other recipe. See [cobra.md](cobra.md) and [argcomplete-fallback.md](argcomplete-fallback.md).
@@ -395,7 +395,7 @@ The **fallback to `FileCompleter`** only triggers when **no completer** is regis
 
 ## Per-Argument Binding
 
-Python commands declare arguments via a single `params=[arg(...)]` list. Each `arg()` configures argparse (validation, type coercion, defaults, action) **and** TAB completion in one place — `completer=` on a positional drives completion of the value at that position; `completer=` on a value-taking flag drives completion of the value typed after the flag. The registry derives the underlying `{arg_index: Completer, None: OptionsCompleter}` dict automatically.
+Python commands declare arguments via a single `params=[arg(...)]` list. Each `arg()` configures argparse (validation, type coercion, defaults, action) **and** TAB completion in one place — `completer=` on a positional drives completion of the value at that position; `completer=` on a value-taking flag drives completion of the value typed after the flag. Completion reads the list on demand (`Command.options_completer()`, `Command.positional_completer(i)`); nothing is pre-derived.
 
 ```python
 from eosh.commands import registry, arg

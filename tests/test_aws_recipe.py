@@ -158,13 +158,11 @@ def _clean_aws_registration(monkeypatch):
 
 
 def test_register_installs_delegate_completer(_clean_aws_registration):
-    from eosh.commands import WILDCARD
     aws_recipe.register()
     cmd = command_registry.get("aws")
     assert cmd is not None
-    # delegate=AwsCompleter() installs the same completer at None and WILDCARD.
-    assert isinstance(cmd.completers.get(None), AwsCompleter)
-    assert cmd.completers.get(None) is cmd.completers.get(WILDCARD)
+    # delegate=AwsCompleter() answers every slot — flags and positionals.
+    assert isinstance(cmd.delegate, AwsCompleter)
 
 
 def test_register_preserves_aws_region_var(_clean_aws_registration):

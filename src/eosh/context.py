@@ -1,4 +1,8 @@
-"""Context management — named collection with current pointer and push/pop stack.
+"""Context management — named collection with a current pointer.
+
+Contexts are kept in most-recently-used order (current first); that order is
+what the Ctrl+] picker lists and what decides which context becomes current
+when the current one is closed.
 
 Each context stores:
 - variables: set/restored on context switch
@@ -48,7 +52,6 @@ class ContextManager:
     def __init__(self):
         self.contexts: dict[str, Context] = {}
         self.current_name: str | None = None
-        self.stack: list[str] = []
         self._display_order: list[str] = []
         self._env_backup: dict[str, str | None] = {}
         self._initial_cwd: str = os.getcwd()
@@ -71,6 +74,16 @@ class ContextManager:
             self._activate(name)
         return ctx
 
+    def new(self, name: str) -> Context:
+        """Create *name* inheriting the current context's variables and Up/Down
+        history (it starts in the current cwd), without switching to it."""
+        parent = self.current()
+        return self.create(
+            name,
+            variables=dict(parent.variables) if parent else {},
+            history=list(parent.history) if parent else [],
+        )
+
     def _activate(self, name: str) -> None:
         self.current_name = name
         self._display_order = [name] + [n for n in self._display_order if n != name]
@@ -83,26 +96,6 @@ class ContextManager:
         self._unapply_env()
         self._activate(name)
 
-    def push(self, name: str) -> None:
-        if self.current_name is not None:
-            self.stack.append(self.current_name)
-        if name not in self.contexts:
-            raise KeyError(f"No context named '{name}'")
-        self._save_current()
-        self._unapply_env()
-        self._activate(name)
-
-    def pop(self) -> Context | None:
-        self._save_current()
-        self._unapply_env()
-        if not self.stack:
-            self.current_name = None
-            os.chdir(self._initial_cwd)
-            return None
-        prev_name = self.stack.pop()
-        self._activate(prev_name)
-        return self.contexts.get(prev_name)
-
     def current(self) -> Context | None:
         if self.current_name is None:
             return None
@@ -112,17 +105,18 @@ class ContextManager:
         return [n for n in self._display_order if n in self.contexts]
 
     def remove(self, name: str) -> None:
+        """Delete *name*.  Removing the current context makes the most
+        recently used remaining one current."""
         if name not in self.contexts:
             raise KeyError(f"No context named '{name}'")
         was_current = self.current_name == name
         del self.contexts[name]
         self._display_order = [n for n in self._display_order if n != name]
-        self.stack = [n for n in self.stack if n != name]
         if was_current:
             self._unapply_env()
-            self.current_name = self.stack[-1] if self.stack else None
-            if self.current_name:
-                self._restore(self.contexts[self.current_name])
+            self.current_name = None
+            if self._display_order:
+                self._activate(self._display_order[0])
             else:
                 os.chdir(self._initial_cwd)
 
@@ -138,7 +132,6 @@ class ContextManager:
         ctx.name = new
         self.contexts[new] = ctx
         self._display_order = [new if n == old else n for n in self._display_order]
-        self.stack = [new if n == old else n for n in self.stack]
         if self.current_name == old:
             self.current_name = new
 

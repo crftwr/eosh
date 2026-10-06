@@ -37,7 +37,7 @@ a redirected single stage, which runs as a one-stage pipeline:
 **Stateful built-ins mutate the parent in pipelines.**
 
 `cd | tee log` actually changes the shell's CWD; `var X=1 | …` actually
-sets the variable; `context push | …` actually pushes a context. POSIX
+sets the variable; `context new x | …` actually creates a context. POSIX
 shells run each stage in a subshell, so these mutations are normally
 discarded — eosh does not. Treat this as the cost of the in-process
 model: the change is visible.

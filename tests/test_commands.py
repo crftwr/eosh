@@ -1,7 +1,7 @@
 import pytest
 from eosh.commands import (
     Command, CommandRegistry, CmdParser, arg,
-    _build_completers, _build_usage, _build_help_text,
+    _build_usage, _build_help_text, options_completer, positional_completer,
 )
 from eosh.completion import ChoiceCompleter, OptionsCompleter
 
@@ -42,8 +42,8 @@ def test_command_with_completers():
         pass
 
     cmd = reg.get("test")
-    assert 0 in cmd.completers
-    assert cmd.completers[0] is completer
+    assert cmd.positional_completer(0) is completer
+    assert cmd.positional_completer(1) is None
 
 
 def _make_deploy_parser():
@@ -158,34 +158,24 @@ DEPLOY_PARAMS = [
 
 # ── _build_usage ──────────────────────────────────────────────────────────────
 
-def test_build_usage_required_positional():
-    assert _build_usage("cmd", [arg("name")]) == "Usage: cmd <name>"
+def test_build_usage_is_what_argparse_prints():
+    """The usage line is argparse's own — the same text ``--help`` shows."""
+    assert _build_usage("cmd", [arg("name")]) == "usage: cmd [-h] name"
+    assert _build_usage("cmd", [arg("x", nargs="?")]) == "usage: cmd [-h] [x]"
 
 
-def test_build_usage_optional_positional():
-    assert _build_usage("cmd", [arg("x", nargs="?")]) == "Usage: cmd [x]"
-
-
-def test_build_usage_boolean_flag_short_form():
-    usage = _build_usage("cmd", [arg("-n", "--dry-run", action="store_true")])
-    assert "[-n]" in usage
-    assert "--dry-run" not in usage   # compact: only short form
-
-
-def test_build_usage_value_taking_flag_with_metavar():
-    usage = _build_usage("cmd", [arg("-t", "--timeout", type=int, metavar="SECONDS")])
+def test_build_usage_flags_use_their_first_name_and_metavar():
+    usage = _build_usage("cmd", [arg("-n", "--dry-run", action="store_true"),
+                                 arg("-t", "--timeout", type=int, metavar="SECONDS"),
+                                 arg("-o", "--output")])
+    assert "[-n]" in usage and "--dry-run" not in usage
     assert "[-t SECONDS]" in usage
-
-
-def test_build_usage_value_taking_flag_metavar_derived():
-    # No metavar= → derived from --long-name → uppercased
-    usage = _build_usage("cmd", [arg("-o", "--output")])
-    assert "[-o OUTPUT]" in usage
+    assert "[-o OUTPUT]" in usage   # no metavar= → derived from --output
 
 
 def test_build_usage_full_deploy():
-    usage = _build_usage("deploy", DEPLOY_PARAMS)
-    assert usage == "Usage: deploy <environment> [service] [-n] [-t SECONDS]"
+    assert _build_usage("deploy", DEPLOY_PARAMS) == (
+        "usage: deploy [-h] [-n] [-t SECONDS] {prod,dev} [service]")
 
 
 # ── _build_help_text ──────────────────────────────────────────────────────────
@@ -200,14 +190,20 @@ def test_build_help_text_help_only():
 
 def test_build_help_text_params_only():
     ht = _build_help_text(None, _noop, "cmd", [arg("name")])
-    assert ht == "Usage: cmd <name>"
+    assert ht == "usage: cmd [-h] name"
+
+
+def test_build_help_text_without_a_handler_is_the_description_only():
+    """A group or an external-tool recipe: the tool's own --help owns usage."""
+    assert _build_help_text("list files", None, "ls", [arg("-l", action="store_true")]) == "list files"
+    assert _build_help_text(None, None, "ls", [arg("path")]) == ""
 
 
 def test_build_help_text_help_and_params():
     ht = _build_help_text("Do something.", _noop, "cmd", [arg("name")])
     lines = ht.splitlines()
     assert lines[0] == "Do something."
-    assert any("Usage:" in l for l in lines)
+    assert any("usage:" in l for l in lines)
 
 
 def test_build_help_text_first_line_is_description():
@@ -249,7 +245,7 @@ def test_registry_help_and_params_combined():
 
     ht = reg.get("demo").help_text
     assert ht.startswith("Run demo.")
-    assert "Usage: demo <x>" in ht
+    assert "usage: demo [-h] x" in ht
 
 
 def test_registry_description_field_matches_help():
@@ -261,67 +257,55 @@ def test_registry_description_field_matches_help():
     assert reg.get("thing").description == "Does a thing."
 
 
-def test_build_completers_positional_choices():
-    comps = _build_completers([arg("env", choices=["prod", "staging"])])
-    assert isinstance(comps[0], ChoiceCompleter)
-    assert set(comps[0].choices) == {"prod", "staging"}
-    assert None not in comps  # no flags → no OptionsCompleter
+def test_positional_completer_from_choices():
+    comp = positional_completer([arg("env", choices=["prod", "staging"])], 0)
+    assert isinstance(comp, ChoiceCompleter)
+    assert set(comp.choices) == {"prod", "staging"}
+    assert options_completer([arg("env", choices=["prod"])]) is None   # no flags
 
 
-def test_build_completers_positional_explicit_completer():
-    explicit = ChoiceCompleter(["a", "b"])
-    comps = _build_completers([arg("x", completer=explicit)])
-    assert comps[0] is explicit
+def test_positional_completer_explicit_wins_over_choices():
+    explicit = ChoiceCompleter(["x"])
+    assert positional_completer([arg("x", choices=["a", "b"], completer=explicit)], 0) is explicit
 
 
-def test_build_completers_positional_choices_overridden_by_completer():
-    override = ChoiceCompleter(["x"])
-    comps = _build_completers([arg("x", choices=["a", "b"], completer=override)])
-    # explicit completer= wins over auto-derived ChoiceCompleter(choices)
-    assert comps[0] is override
+def test_positional_completer_wildcard_serves_every_later_slot():
+    rest = ChoiceCompleter(["f"])
+    params = [arg("first", choices=["a"]), arg("rest", nargs="*", completer=rest)]
+    assert isinstance(positional_completer(params, 0), ChoiceCompleter)
+    assert positional_completer(params, 1) is rest
+    assert positional_completer(params, 7) is rest
+    assert positional_completer([arg("only")], 1) is None
 
 
-def test_build_completers_boolean_flags_in_options():
-    comps = _build_completers([
+def test_options_completer_boolean_flags():
+    oc = options_completer([
         arg("-n", "--dry-run", action="store_true", help="dry run"),
         arg("-v", "--verbose", action="store_true", help="verbose"),
     ])
-    oc = comps[None]
     assert isinstance(oc, OptionsCompleter)
-    assert "-n" in oc.options and "--dry-run" in oc.options
-    assert "-v" in oc.options and "--verbose" in oc.options
+    assert {"-n", "--dry-run", "-v", "--verbose"} <= set(oc.options)
     # Boolean flags must NOT appear in args (they don't take a value)
     assert "-n" not in oc.args and "--dry-run" not in oc.args
 
 
-def test_build_completers_value_taking_flags():
+def test_options_completer_value_taking_flags():
     val_compl = ChoiceCompleter(["30", "60"])
-    comps = _build_completers([
+    oc = options_completer([
         arg("-t", "--timeout", type=int, default=60, metavar="SECONDS",
             completer=val_compl),
         arg("-b", "--branch", default="main", metavar="BRANCH"),
+        arg("-o", "--output", default="-"),
     ])
-    oc = comps[None]
-    # Both flags in options dict
-    assert "-t" in oc.options and "--timeout" in oc.options
-    assert "-b" in oc.options and "--branch" in oc.options
-    # Value-taking flags in args dict (OptionsCompleter unpacks tuple internally)
-    assert oc.args["-t"] == "SECONDS"
+    assert oc.args["-t"] == oc.args["--timeout"] == "SECONDS"
     assert oc._value_completers["-t"] is val_compl
-    assert oc.args["--timeout"] == "SECONDS"
-    assert oc._value_completers.get("--timeout") is val_compl
+    assert oc._value_completers["--timeout"] is val_compl
     assert oc.args["-b"] == "BRANCH"       # plain string when no completer
     assert "-b" not in oc._value_completers
+    assert oc.args["-o"] == "OUTPUT"       # metavar derived from --output
 
 
-def test_build_completers_metavar_derived_from_long_name():
-    # --output → dest = "output" → metavar = "OUTPUT" when metavar= not given
-    comps = _build_completers([arg("-o", "--output", default="-")])
-    oc = comps[None]
-    assert oc.args["-o"] == "OUTPUT"
-
-
-def test_registry_auto_derives_completers_from_params():
+def test_registry_command_derives_completion_from_params():
     reg = CommandRegistry()
 
     @reg.command(
@@ -335,26 +319,23 @@ def test_registry_auto_derives_completers_from_params():
         pass
 
     cmd = reg.get("demo")
-    # Positional completer at index 0
-    assert isinstance(cmd.completers[0], ChoiceCompleter)
-    # OptionsCompleter under None key
-    assert isinstance(cmd.completers[None], OptionsCompleter)
-    assert "-v" in cmd.completers[None].options
+    assert isinstance(cmd.positional_completer(0), ChoiceCompleter)
+    assert "-v" in cmd.options_completer().options
 
 
-def test_registry_explicit_completer_on_arg_overrides_choices():
-    """arg(completer=) wins over the ChoiceCompleter auto-derived from choices=."""
+def test_registry_command_needs_a_name():
     reg = CommandRegistry()
-    override = ChoiceCompleter(["override"])
+    with pytest.raises(TypeError):
+        @reg.command
+        def nameless():
+            pass
 
-    @reg.command(
-        name="over",
-        params=[arg("x", choices=["auto"], completer=override)],
-    )
-    def over(x):
-        pass
 
-    assert reg.get("over").completers[0] is override
+def test_delegate_and_params_are_exclusive():
+    reg = CommandRegistry()
+    with pytest.raises(ValueError):
+        reg.command("x", params=[arg("-v", action="store_true")],
+                    delegate=ChoiceCompleter(["a"]))
 
 
 def test_no_params_backward_compat():

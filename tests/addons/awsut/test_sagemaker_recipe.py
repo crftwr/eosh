@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 import botocore.exceptions
 import pytest
 
-from eosh.commands import CmdParser, _collect_inherited_params
+from eosh.commands import _build_parser
 from eosh.commands import registry as command_registry
 from eosh.completion import CompletionContext
 from eosh_addons.awsut import cli as awsut_recipe
@@ -2256,16 +2256,14 @@ def _flags(node):
 
 
 def _parser(node):
-    """The parser a leaf is actually dispatched with (mirrors ``_invoke_tree``)."""
-    parser = CmdParser(node.name, description=node.description or None)
-    for param in _collect_inherited_params(node):
-        parser.add_argument(*param.names, **param.kwargs)
-    return parser
+    """The parser a leaf is actually dispatched with (mirrors ``_invoke_self``)."""
+    return _build_parser(node.name, node.params)
 
 
-def test_every_jobs_leaf_inherits_category(sagemaker_tree):
+def test_every_jobs_leaf_takes_category(sagemaker_tree):
+    """Declared on each leaf: flags are never inherited from the group."""
     group = sagemaker_tree.children["jobs"]
-    assert "--category" in _flags(group)
+    assert "--category" not in _flags(group)
     # The leaves that take a job name need one supplied to parse at all.
     needs_name = ("describe", "log", "stop")
     for name, leaf in group.children.items():

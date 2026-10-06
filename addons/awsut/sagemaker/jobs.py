@@ -538,23 +538,22 @@ def _filter_params(*, for_watch: bool) -> list:
 
 # ─── command tree ───────────────────────────────────────────────────────────
 
+# Every ``jobs`` leaf takes it: JobCategory is required by the API.  Declared
+# on each leaf rather than the group — flags are never inherited.
+CATEGORY = arg("--category", metavar="CATEGORY", completer=_JobCategoryCompleter(),
+               help="one category, or 'all' / 'extra' (default: all known)")
+
 def register_jobs(sagemaker) -> None:
     jobs = sagemaker.command(
         "jobs",
         help="Job resources — ListJobs / DescribeJob / StopJob",
-        params=[
-            # Declared once here and inherited by every leaf: JobCategory is
-            # required by the API, so all four sub-commands need it.
-            arg("--category", metavar="CATEGORY", completer=_JobCategoryCompleter(),
-                help="one category, or 'all' / 'extra' (default: all known)"),
-        ],
     )
 
     @jobs.command(
         "list",
         help="List jobs across categories (a '+' on DURATION means the job is "
              "still running)",
-        params=_filter_params(for_watch=False) + [
+        params=[CATEGORY] + _filter_params(for_watch=False) + [
             arg("--sort", choices=["Name", "CreationTime", "Status"],
                 default="CreationTime", help="service-side sort key"),
             arg("--asc", action="store_true", help="oldest first"),
@@ -612,6 +611,7 @@ def register_jobs(sagemaker) -> None:
              "(a '+' on a transition's duration means it is the current one — "
              "the service leaves EndTime unset, so durations are derived)",
         params=[
+            CATEGORY,
             arg("job_name", help="job to describe",
                 completer=_JobNameCompleter()),
             arg("--raw", action="store_true", help="Show the raw API response as JSON"),
@@ -634,6 +634,7 @@ def register_jobs(sagemaker) -> None:
         "log",
         help="Read a job's own CloudWatch log stream",
         params=[
+            CATEGORY,
             arg("job_name", help="job whose log to read",
                 completer=_JobNameCompleter()),
             arg("--stream", metavar="NAME", default=None,
@@ -689,6 +690,7 @@ def register_jobs(sagemaker) -> None:
         "watch",
         help="Poll a job and log changes; with no JOB_NAME, watch every matching job",
         params=[
+            CATEGORY,
             arg("job_name", nargs="?", default=None, completer=_JobNameCompleter(),
                 help="omit to watch every job matching the filters"),
             arg("-n", "--interval", type=float, default=15.0, metavar="SEC",
@@ -711,6 +713,7 @@ def register_jobs(sagemaker) -> None:
     @jobs.command(
         "stop", help="Stop a running job",
         params=[
+            CATEGORY,
             arg("job_name", help="job to stop",
                 completer=_JobNameCompleter()),
             arg("-y", "--yes", action="store_true", help="Skip confirmation"),

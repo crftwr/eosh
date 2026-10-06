@@ -157,40 +157,51 @@ def test_invoke_dispatches_to_leaf_handler():
     assert captured == {"path": "s3://bkt"}
 
 
-def test_inherited_flag_passed_to_leaf():
+def test_a_leaf_receives_exactly_its_own_params():
+    """Flags are never inherited: a shared flag is declared on each leaf."""
     reg = CommandRegistry()
     captured = {}
+    region = arg("--region", metavar="R")
 
-    aws = reg.command("aws", params=[arg("--region", metavar="R")])
-    s3 = aws.command("s3")
+    s3 = reg.command("aws").command("s3")
 
-    @s3.command("ls", params=[arg("path", nargs="?")])
-    def s3_ls(path=None, region=None):
+    @s3.command("ls", params=[region, arg("path", nargs="?")])
+    def s3_ls(path, region):
         captured.update(path=path, region=region)
 
-    reg.get("aws").invoke(["--region", "us-east-1", "s3", "ls", "s3://bkt"])
+    reg.get("aws").invoke(["s3", "ls", "--region", "us-east-1", "s3://bkt"])
     assert captured == {"path": "s3://bkt", "region": "us-east-1"}
 
 
-def test_handler_signature_filters_unused_inherited_kwargs():
-    """A handler that doesn't accept --profile must not error out."""
+def test_a_flag_declared_elsewhere_is_rejected(capsys):
+    reg = CommandRegistry()
+    called = []
+
+    @reg.command("aws").command("s3").command("ls")
+    def s3_ls():
+        called.append(True)
+
+    reg.get("aws").invoke(["s3", "ls", "--region", "x"])
+    assert called == []
+    assert "unrecognized arguments: --region" in capsys.readouterr().err
+
+
+def test_a_node_cannot_have_both_a_handler_and_children():
+    import pytest
+
     reg = CommandRegistry()
 
-    aws = reg.command("aws", params=[
-        arg("--region", metavar="R"),
-        arg("--profile", metavar="P"),
-    ])
-    s3 = aws.command("s3")
+    @reg.command("tool")
+    def tool():
+        pass
 
-    received = {}
+    with pytest.raises(ValueError, match="has a handler"):
+        reg.get("tool").command("sub")
 
-    @s3.command("ls", params=[arg("path", nargs="?")])
-    def s3_ls(path=None, region=None):  # note: no profile=
-        received.update(path=path, region=region)
-
-    reg.get("aws").invoke(["--region", "us-east-1", "--profile", "dev",
-                           "s3", "ls", "s3://b"])
-    assert received == {"path": "s3://b", "region": "us-east-1"}
+    group = reg.command("grp")
+    group.command("sub")
+    with pytest.raises(ValueError, match="has sub-commands"):
+        group(lambda: None)
 
 
 def test_invoke_group_node_prints_help(capsys):
@@ -232,29 +243,15 @@ def test_external_tree_invoke_falls_through(capsys):
 
 # ── Completion: merged options ───────────────────────────────────────────────
 
-def test_merged_options_includes_ancestor_flags():
+def test_a_node_offers_only_its_own_flags():
     reg = CommandRegistry()
     aws = reg.command("aws", params=[arg("--region", metavar="R")])
     s3 = aws.command("s3")
     s3.command("ls", params=[arg("--recursive", action="store_true")])
 
-    leaf = aws.children["s3"].children["ls"]
-    oc = leaf.merged_options_completer()
-    assert "--region" in oc.options
-    assert "--recursive" in oc.options
-
-
-def test_merged_options_descendant_flags_not_visible_at_ancestor():
-    reg = CommandRegistry()
-    aws = reg.command("aws", params=[arg("--region", metavar="R")])
-    s3 = aws.command("s3")
-    s3.command("ls", params=[arg("--recursive", action="store_true")])
-
-    s3_node = aws.children["s3"]
-    oc = s3_node.merged_options_completer()
-    # --region inherited from root, but --recursive (defined at ls) NOT visible
-    assert "--region" in oc.options
-    assert "--recursive" not in oc.options
+    assert set(aws.children["s3"].children["ls"].options_completer().options) == {"--recursive"}
+    assert aws.children["s3"].options_completer() is None
+    assert set(aws.options_completer().options) == {"--region"}
 
 
 def test_value_taking_flag_known_at_descendant():

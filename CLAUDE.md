@@ -64,7 +64,7 @@ change.
 │  └── Ctrl+] context switch (inline picker)         │
 ├─────────────────────────────────────────────────────┤
 │  Context Manager (context.py)                       │
-│  ├── Context stack                                 │
+│  ├── Contexts in most-recently-used order          │
 │  ├── Context-aware variable resolution             │
 │  ├── CWD save/restore on switch                    │
 │  └── env var apply/unapply on switch               │
@@ -165,7 +165,8 @@ def hello(name):
 ```
 
 Methods:
-- `command(name, *, help=None, params=None, delegate=None)` — register a Python function (with handler) or an external recipe (no handler attached). `params=[arg(...)]` declares positionals and flags; the registry derives both an argparse parser and the per-position completer dict from the same list. `delegate=Completer` installs a single completer at every slot (used when an external tool drives its own completion protocol).
+- `command(name, *, help=None, params=None, delegate=None) -> Command` — register a root. Two forms, both returning the `Command`. Use a **plain call** for a group or an external recipe (`git = registry.command("git", ...)`), and a **decorator** to attach a handler (`@registry.command("hello", ...)` or `name="hello"`). A name is always required. `params=[arg(...)]` declares positionals and flags. argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`, `node.takes_value(flag)`); there is no pre-built completer dict. `delegate=Completer` is a `Command` attribute that answers every completion slot, for a tool with its own completion protocol (`aws_completer`, cobra). It can't be combined with `params`.
+- `node.command(name, ...)` — the same two forms one level down (see [doc/subcommands.md](doc/subcommands.md)). A node's flags are **its own** and are never inherited from ancestors; a flag shared by several commands is one `arg(...)` listed on each. A node never has both a handler and children: either order raises `ValueError`. A flat command is a root with no children, so completion, the status bar and dispatch all follow the same per-node rules, through `shell._resolve_slot`.
 - `mark_builtins()` — snapshot current commands as builtins (not removed on `reload`)
 - `clear_user_commands()` — remove non-builtin commands and aliases
 
@@ -393,7 +394,7 @@ class OptionsCompleter(Completer):         # flags, one picker row each; value-t
 
 #### Per-Argument Completer Binding
 
-Python commands declare positionals and flags via a single `params=[arg(...)]` list. Each `arg()` configures argparse (validation, defaults, action) **and** TAB completion in one place — `completer=` on a positional drives completion at that position; `completer=` on a value-taking flag drives completion of the value typed after the flag. The registry derives the underlying `{arg_index: Completer, None: OptionsCompleter}` dict automatically.
+Python commands declare positionals and flags via a single `params=[arg(...)]` list. Each `arg()` configures argparse (validation, defaults, action) **and** TAB completion in one place — `completer=` on a positional drives completion at that position; `completer=` on a value-taking flag drives completion of the value typed after the flag. Completion reads the list on demand. There is no derived completer dict to keep in sync.
 
 ```python
 @registry.command(
@@ -542,16 +543,14 @@ Contexts represent an environment (e.g., AWS account + region, k8s cluster). Eac
 class ContextManager:
     contexts: dict[str, Context]   # all known contexts by name
     current_name: str | None       # which context is active
-    stack: list[str]               # push/pop stack (stores names)
 
     def create(self, name: str, variables: dict | None = None,
                history: list[str] | None = None) -> Context: ...
+    def new(self, name: str) -> Context: ...   # create, inheriting current's vars + history
     def switch(self, name: str): ...           # set current to any existing context
-    def push(self, name: str): ...             # save current to stack, switch to name
-    def pop(self) -> Context | None: ...       # switch back to previous on stack
     def current(self) -> Context | None: ...
-    def list_contexts(self) -> list[str]: ...  # in display order (current first)
-    def remove(self, name: str): ...
+    def list_contexts(self) -> list[str]: ...  # most-recently-used order (current first)
+    def remove(self, name: str): ...           # current removed → MRU next becomes current
     def set_variable(self, key, value): ...    # set on current context + os.environ
     def unset_variable(self, key): ...         # remove from current context + os.environ
     def get_variable(self, key) -> str | None: ...
@@ -559,18 +558,20 @@ class ContextManager:
 
 Context switching (shell commands):
 ```
-eosh> context push prod
-Pushed context 'prod'
+eosh> context new prod
+Created context 'prod'
 [prod] eosh> var ACCOUNT=123456 REGION=us-east-1
-[prod] eosh> context push staging
-Pushed context 'staging'
+[prod] eosh> context new staging
+Created context 'staging'
 [staging] eosh> var ACCOUNT=789012 REGION=us-west-2
-[staging] eosh> context pop
-Popped 'staging', now in 'prod'
-[prod] eosh> context switch staging   # switch directly, prod still on stack
-[staging] eosh> context list          # show all: staging*, prod
-[staging] eosh> context kill prod     # send SIGTERM to running process in 'prod'
+[staging] eosh> context switch prod
+[prod] eosh> context list             # MRU order: prod*, staging, default
+[prod] eosh> context kill staging     # send SIGTERM to running process in 'staging'
+[prod] eosh> context close staging    # remove it (refused while a process runs)
 ```
+
+There is no push/pop stack. Its only effect was choosing the next current
+context after a removal, and the MRU order answers that (discussion #41).
 
 Completers can use `ctx.shell_context` to adapt:
 ```python
@@ -1181,9 +1182,9 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 2. **Completer receives full context** — the `CompletionContext` dataclass carries all parsed state so completers can make decisions based on command name, preceding args, and shell context without global state.
 
-3. **Dict-based positional completers with `None` key for options** — `{arg_index: Completer}` for positional args; `{None: OptionsCompleter(...)}` for flags. A completer at position N can inspect `ctx.args[:N]` to see what was already chosen.
+3. **`params` is the one source of truth for a command** — argparse parses with it, completion reads flag and positional completers off it on demand, and each node owns its flags (no inheritance down a tree). Flat commands and trees resolve the same way (`Command.resolve` + `shell._resolve_slot`), so TAB completion and the status bar can't drift apart. A completer at position N can inspect `ctx.args[:N]` to see what was already chosen.
 
-4. **Context as a stack with env+cwd isolation** — push/pop semantics let you temporarily enter a context and return. On every switch, context variables are unapplied from `os.environ` then the new context's variables are applied; CWD is saved and restored.
+4. **Contexts with env+cwd isolation, in most-recently-used order** — `context new` / `switch` / `close`; closing the current context returns to the one used before it. On every switch, context variables are unapplied from `os.environ` then the new context's variables are applied; CWD is saved and restored.
 
 5. **PTY process multiplexing** — each context can hold a `ProcessSlot` with a live subprocess. `Ctrl+]` switches between contexts without killing the running process. The slot buffers output while inactive and replays it on return.
 

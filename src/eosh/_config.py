@@ -19,32 +19,28 @@ def hello(name):
 # ── Multi-level sub-command example ───────────────────────────────────────────
 #
 # Build a command tree by:
-# 1. Calling `command_registry.command(name, ...)` bare — returns a `Command` node.
-# 2. Chaining `.command(...)` on the node for each child (group or leaf).
+# 1. Calling `command_registry.command(name, ...)` — returns a `Command` node.
+# 2. Chaining `.command(...)` on the node for each child group.
 # 3. Using `@parent.command(name, ...)` as a decorator to attach a handler.
 #
-# Flags declared on a parent node are *inherited* by every leaf automatically;
-# a leaf handler only needs to accept the kwargs it actually uses — the rest
-# are filtered out before the call.  So `--verbose` and `--dry-run` declared on
-# the `deploy` root are usable on `deploy app`, `deploy rollback`, etc.
+# A node's flags are its own — nothing is inherited down the tree.  A flag
+# several sub-commands share is declared once and listed on each, and every
+# handler receives exactly the params it declares.
 
-deploy = command_registry.command(
-    "deploy",
-    help="Deploy services to environments.",
-    params=[
-        # Inherited shared flags — visible on every sub-command.
-        arg("-v", "--verbose", action="store_true",
-                               help="print details for each step"),
-        arg("-n", "--dry-run", action="store_true",
-                               help="show steps, skip execution"),
-    ],
-)
+# Shared flags: declared once, listed on each sub-command that takes them.
+VERBOSE = arg("-v", "--verbose", action="store_true",
+              help="print details for each step")
+DRY_RUN = arg("-n", "--dry-run", action="store_true",
+              help="show steps, skip execution")
+
+deploy = command_registry.command("deploy", help="Deploy services to environments.")
 
 
 @deploy.command(
     "app",
     help="Deploy a service to an environment.",
     params=[
+        VERBOSE, DRY_RUN,
         # choices= drives argparse validation AND TAB completion simultaneously.
         arg("environment", choices=["prod", "staging", "dev"],
                            help="target environment"),
@@ -61,7 +57,6 @@ deploy = command_registry.command(
 )
 def deploy_app(environment, service, dry_run, verbose, timeout, branch):
     import sys, time
-    # Inherited flags (dry_run, verbose) arrive as kwargs alongside this leaf's own.
     # While this runs, press Ctrl+] to switch context without killing the deploy.
     prefix = "[DRY RUN] " if dry_run else ""
     print(f"{prefix}Deploying '{service}' to '{environment}'  "
@@ -89,6 +84,7 @@ def deploy_app(environment, service, dry_run, verbose, timeout, branch):
     "rollback",
     help="Roll back a deployment to the previous revision.",
     params=[
+        VERBOSE, DRY_RUN,
         arg("environment", choices=["prod", "staging", "dev"],
                            help="target environment"),
         arg("service",     nargs="?", default="all",
@@ -109,13 +105,12 @@ def deploy_rollback(environment, service, dry_run, verbose):
     "status",
     help="Show deployment status for an environment.",
     params=[
+        VERBOSE,
         arg("environment", choices=["prod", "staging", "dev"],
                            help="environment to inspect"),
     ],
 )
 def deploy_status(environment, verbose):
-    # Leaf only declares the inherited flags it cares about (verbose);
-    # dry_run is silently dropped because it's not in the signature.
     print(f"Status for '{environment}':")
     for name, ver in [("api", "v1.4.2"), ("web", "v1.4.2"), ("worker", "v1.4.1")]:
         print(f"  {name:8} {ver}")

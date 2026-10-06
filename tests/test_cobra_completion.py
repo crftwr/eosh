@@ -211,7 +211,7 @@ def test_enable_cobra_installs_delegate():
     cmd = command_registry.get("mytool")
     assert cmd is not None
     assert not cmd.has_any_handler()  # completion-only; runs as a system command
-    assert isinstance(cmd.completers[None], CobraCompleter)
+    assert isinstance(cmd.delegate, CobraCompleter)
 
 
 def test_enable_cobra_skips_names_not_on_path():

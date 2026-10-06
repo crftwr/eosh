@@ -9,6 +9,7 @@ from eosh.completion import (
     OptionsCompleter,
 )
 from eosh.context import Context
+from eosh.commands import Command, arg
 from eosh.shell import _positional_index
 
 
@@ -102,8 +103,15 @@ def test_positional_index_no_flags():
     assert _positional_index(["prod", "api"], None) == 2
 
 
+def _deploy_node():
+    return Command("deploy", params=[
+        arg("-n", action="store_true"), arg("-v", action="store_true"),
+        arg("-t", metavar="SECONDS"), arg("-b", metavar="BRANCH"),
+    ])
+
+
 def test_positional_index_boolean_flags_skipped():
-    oc = _make_options_completer()
+    oc = _deploy_node()
     # "deploy -n <TAB>" → first positional not yet given
     assert _positional_index(["-n"], oc) == 0
     # "deploy -n -v <TAB>" → still 0
@@ -115,7 +123,7 @@ def test_positional_index_boolean_flags_skipped():
 
 
 def test_positional_index_value_taking_flags_consume_value_token():
-    oc = _make_options_completer()
+    oc = _deploy_node()
     # "deploy -t 60 <TAB>" → -t + 60 skipped, positional = 0
     assert _positional_index(["-t", "60"], oc) == 0
     # "deploy prod -t 60 <TAB>" → positional = 1
