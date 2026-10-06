@@ -322,7 +322,7 @@ def test_apply_inserts_at_the_anchor_verbatim(monkeypatch, tmp_path):
     ed = _editor(monkeypatch, tmp_path)
     ed._buf, ed._cursor = "git com", 7
 
-    ed._apply(_history_completion('commit -m "fix typo"'), "com")
+    ed._apply(_history_completion('commit -m "fix typo"'))
 
     # Replaces the partial token, inserted as-is: no shell quoting of the
     # spaces, no trailing space added.
@@ -335,7 +335,7 @@ def test_apply_at_the_anchor_of_a_quoted_token(monkeypatch, tmp_path):
     ed = _editor(monkeypatch, tmp_path)
     ed._buf, ed._cursor = "cat 'My Do", 10
 
-    ed._apply(_history_completion("'My Documents/notes.txt'"), "My Do")
+    ed._apply(_history_completion("'My Documents/notes.txt'"))
 
     assert ed._buf == "cat 'My Documents/notes.txt'"
     assert ed._cursor == len(ed._buf)
@@ -345,7 +345,7 @@ def test_apply_keeps_text_after_the_caret(monkeypatch, tmp_path):
     ed = _editor(monkeypatch, tmp_path)
     ed._buf, ed._cursor = "git com --amend", 7
 
-    ed._apply(_history_completion("commit -m msg"), "com")
+    ed._apply(_history_completion("commit -m msg"))
 
     assert ed._buf == "git commit -m msg --amend"
     assert ed._cursor == len("git commit -m msg")
@@ -360,7 +360,7 @@ def test_unique_token_candidate_still_auto_applies(monkeypatch, tmp_path, capsys
     ed = _editor(monkeypatch, tmp_path, completions_for)
     ed._buf, ed._cursor = "ls al", 5
 
-    ed._complete(0)
+    ed._complete()
 
     assert ed._buf == "ls alpha "
     assert _StubPicker.instances == []   # no picker was ever opened
@@ -378,7 +378,7 @@ def test_history_only_list_opens_a_picker_instead_of_auto_applying(
     ed._buf, ed._cursor = "ls al", 5
     _StubPicker.script = [{"selected": None}]
 
-    ed._complete(0)
+    ed._complete()
 
     assert len(_StubPicker.instances) == 1
     assert ed._buf == "ls al"            # dismissed → line untouched
@@ -395,7 +395,7 @@ def test_selecting_a_history_row_extends_the_line(monkeypatch, tmp_path, capsys)
     ed._buf, ed._cursor = "ls al", 5
     _StubPicker.script = [{"selected": entry}]
 
-    ed._complete(0)
+    ed._complete()
 
     assert ed._buf == "ls alphabet soup"
     capsys.readouterr()
@@ -482,7 +482,7 @@ def test_picker_rows_all_start_at_the_picker_column(monkeypatch, tmp_path, capsy
     ed._buf, ed._cursor = "cat ~/.aws/", len("cat ~/.aws/")
     _StubPicker.script = [{"selected": None}]
 
-    ed._complete(0)
+    ed._complete()
     capsys.readouterr()
 
     picker = _StubPicker.instances[0]
@@ -503,10 +503,10 @@ def test_selecting_a_trimmed_row_still_inserts_the_whole_value(
     ed = _editor(monkeypatch, tmp_path, completions_for)
     ed._buf, ed._cursor = "cat ~/.aws/", len("cat ~/.aws/")
     _StubPicker.script = [{"selected": None}]
-    ed._complete(0)
+    ed._complete()
     capsys.readouterr()
 
-    ed._apply(_StubPicker.instances[0].items[0], "~/.aws/")
+    ed._apply(_StubPicker.instances[0].items[0])
 
     assert ed._buf == "cat ~/.aws/config ~/.aws/credentials"
 
@@ -564,7 +564,7 @@ def _extend_after_typing(monkeypatch, tmp_path, capsys, buf, completions_for, ty
     ed._buf, ed._cursor = buf, len(buf)
     _StubPicker.script = [{"selected": None}]
 
-    ed._complete(0)
+    ed._complete()
     capsys.readouterr()
 
     kwargs = _StubPicker.instances[0].kwargs

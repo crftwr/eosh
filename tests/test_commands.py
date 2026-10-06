@@ -46,22 +46,6 @@ def test_command_with_completers():
     assert cmd.completers[0] is completer
 
 
-def test_imperative_register():
-    reg = CommandRegistry()
-
-    def my_func(x):
-        return x
-
-    cmd = Command(name="doit", func=my_func, description="Do something.")
-    reg.register(cmd)
-
-    got = reg.get("doit")
-    assert got is cmd
-    assert got.name == "doit"
-    assert got.func("hi") == "hi"
-    assert got.description == "Do something."
-
-
 def _make_deploy_parser():
     p = CmdParser("deploy")
     p.add_argument("environment", choices=["prod", "staging", "dev"])

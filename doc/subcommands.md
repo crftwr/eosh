@@ -269,9 +269,11 @@ def connect(environment, region, verbose=False): ...
 ```
 
 A flat command is just a tree with a single leaf node — the existing API
-is the special case where the root **is** the leaf. Internally the
-registry stores them as `Command` nodes too, so there is no separate code
-path.
+is the special case where the root **is** the leaf. The registry stores
+both as `Command` nodes. **Completion still takes two paths**, though:
+`Shell._get_base_completions` handles a flat command itself, with
+`_positional_index`, and sends only commands with children through
+`_complete_tree_node`. Unifying them is discussion #41.
 
 ## Interaction With Existing Subsystems
 
@@ -284,8 +286,9 @@ path.
   `_build_completers()` is generalized to merge ancestor flags into a node's
   effective options dict. The flat path remains a degenerate case.
 * **Shell dispatch (`shell.py`)** — `_get_base_completions()` and the command
-  invocation path call the resolution algorithm above. The
-  `_positional_index()` helper is replaced by the walk.
+  invocation path call the resolution algorithm above for commands with
+  children; flat commands still use `_positional_index()` (see the note
+  under "Compatibility With Flat Commands").
 * **External recipes (`recipes/*.py`)** — migrated incrementally. Each
   recipe's `register()` becomes a series of `.command()` calls instead of
   hand-rolled `OptionsCompleter` + dispatcher classes.

@@ -7,7 +7,6 @@ from .prompt import set_prompt
 from .shell import (
     passthrough_input,
     passthrough_input_block,
-    passthrough_poll_key,
     passthrough_run,
 )
 from .variables import Var, EnvVar, registry as var_registry
@@ -30,5 +29,4 @@ __all__ = [
     "passthrough_run",
     "passthrough_input",
     "passthrough_input_block",
-    "passthrough_poll_key",
 ]

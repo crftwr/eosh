@@ -36,9 +36,7 @@ _SUBCELL = 8
 _LOWER_BLOCKS = " ▁▂▃▄▅▆▇█"
 
 
-def vbar_cells(
-    h: int, pos: float, ratio: float, subcell: bool = True
-) -> Iterator[tuple[int, str, int]]:
+def vbar_cells(h: int, pos: float, ratio: float) -> Iterator[tuple[int, str, int]]:
     """Decompose a vertical scrollbar of ``h`` rows into per-row cell kinds.
 
     Yields ``(row, kind, eighths)`` top to bottom. ``kind`` is ``"track"`` or
@@ -51,14 +49,12 @@ def vbar_cells(
     ``pos`` is the thumb position in ``0..1`` and ``ratio`` the visible
     fraction of the content in ``0..1``. Thumb length and offset are computed
     in eighth-cell units, so the thumb slides in 1/8-row steps instead of
-    snapping a whole row at a time. ``subcell=False`` falls back to whole-cell
-    rounding and yields no caps (for a terminal without truecolor, where a cap
-    would have no way to say which half is the thumb).
+    snapping a whole row at a time.
 
     The one-cell minimum length is what keeps both caps out of the *same* cell:
     a cell covered only in its middle has no glyph to draw it with.
     """
-    unit = _SUBCELL if subcell else 1
+    unit = _SUBCELL
     total = h * unit
     length = max(unit, round(total * ratio))
     start = round((total - length) * pos)

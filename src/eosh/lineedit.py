@@ -16,7 +16,6 @@ from . import terminal
 from .completion import Completion
 from .parsing import raw_token_start
 
-SWITCH_SENTINEL = "\x1d__SWITCH__"
 CONTEXT_CHANGED_SENTINEL = "\x1d__CHANGED__"
 
 _NEEDS_QUOTING = re.compile(r"[^\w@%+=:,./~-]")
@@ -283,17 +282,12 @@ class History:
         except OSError:
             pass   # same policy as the history file: never fail a command over it
 
-    def dirs_for(self, line: str) -> list[str]:
-        """Directories *line* was run in, most recent last (may be empty)."""
-        return list(self._dirs.get(line.rstrip(), ()))
-
     def ran_here(self, line: str, cwd: str | None = None) -> bool:
         """True when *line* was recorded as run in *cwd* (default: the cwd).
 
         Entries stored before the side table existed have no directory at all,
-        so they answer False everywhere — they reach the user through the
-        completer's "nothing matched here" fallback rather than as local
-        candidates.
+        so they answer False everywhere and never become TAB candidates (until
+        they are run again).  Up/Down and Ctrl+R still reach them.
         """
         cwd = os.getcwd() if cwd is None else cwd
         return _norm_dir(cwd) in self._dirs.get(line.rstrip(), ())
@@ -314,7 +308,8 @@ class LineEditor:
     Raw-mode line editor. Handles its own key dispatch, history, and TAB
     completion via InlinePicker. No prompt_toolkit involved.
 
-    prompt() returns the entered line, SWITCH_SENTINEL on Ctrl+], or raises
+    prompt() returns the entered line, CONTEXT_CHANGED_SENTINEL when a Ctrl+]
+    switch needs the caller to resume the new context's process, or raises
     EOFError (Ctrl+D on empty line) or KeyboardInterrupt (Ctrl+C).
     """
 
@@ -346,7 +341,6 @@ class LineEditor:
         self._prompt_str = ""
         self._prompt_len = 0
         self._cursor_row = 0  # rows below render-top where cursor sits
-        self._add_to_history = True
         # VSCode integrated terminal does not reflow content on resize;
         # cursor stays at the same row (clamped column). Detect it so we
         # re-render explicitly instead of relying on terminal reflow.
@@ -417,21 +411,21 @@ class LineEditor:
                 self._cols, self._lines = cols_before, lines_before
                 self._on_resize(None, None)
 
-    def prompt(self, prompt_str: str | None = None, add_to_history: bool = True) -> str:
+    def prompt(self, prompt_str: str | None = None) -> str:
         """Read one line.
+
+        The line is *not* added to history: the caller joins continuation
+        lines first and records the combined command with
+        :meth:`add_to_history`.
 
         Args:
             prompt_str: If given, display this string instead of calling _get_prompt().
                         Useful for continuation prompts (e.g. ``"> "``).
-            add_to_history: When False the entered line is *not* added to history.
-                            Use this when the caller will join multiple lines and add
-                            the combined command to history itself.
         """
         self._buf = ""
         self._cursor = 0
         self._hist_idx = 0
         self._saved_buf = ""
-        self._add_to_history = add_to_history
         self._prompt_str = prompt_str if prompt_str is not None else self._get_prompt()
         self._prompt_len = _visible_len(self._prompt_str)
 
@@ -675,10 +669,7 @@ class LineEditor:
 
         # Enter
         if key in (b"\r", b"\n"):
-            result = self._buf
-            if self._add_to_history:
-                self.add_to_history(result)
-            return result
+            return self._buf
 
         # Ctrl+D — EOF if buffer empty
         if key == b"\x04":
@@ -692,16 +683,16 @@ class LineEditor:
             self._cursor = 0
             raise KeyboardInterrupt
 
-        # Ctrl+] — context switch
+        # Ctrl+] — context switch (inert without a switch_fn, e.g. in tests)
         if key == b"\x1d":
-            if self._switch_fn is not None:
-                needs_forward = self._do_inline_switch()
-                return CONTEXT_CHANGED_SENTINEL if needs_forward else None
-            return SWITCH_SENTINEL
+            if self._switch_fn is None:
+                return None
+            needs_forward = self._do_inline_switch()
+            return CONTEXT_CHANGED_SENTINEL if needs_forward else None
 
         # TAB — completion
         if key == b"\x09":
-            self._complete(fd)
+            self._complete()
             return None
 
         # Backspace
@@ -783,7 +774,7 @@ class LineEditor:
 
         # Ctrl+R — history search
         if key == b"\x12":
-            self._history_search(fd)
+            self._history_search()
             return None
 
         # Up arrow — history back (CSI and SS3 forms; SS3 is what Terminal.app
@@ -890,7 +881,7 @@ class LineEditor:
 
     # ── completion ───────────────────────────────────────────────────────────
 
-    def _complete(self, fd: int) -> None:
+    def _complete(self) -> None:
         from .tui import InlinePicker, _common_prefix
 
         buf_changed = False
@@ -941,14 +932,12 @@ class LineEditor:
                     and token_completions[0].multi_select
                     and token_completions[0].arg_hint
                     and not from_reopen):
-                self._apply(token_completions[0], prefix)
+                self._apply(token_completions[0])
                 buf_changed = True
                 continue
 
             if len(token_completions) == 1 and not from_reopen:
-                self._apply(token_completions[0], prefix)
-                if token_completions[0].arg_hint:
-                    self._prompt_for_arg(token_completions[0])
+                self._apply(token_completions[0])
                 return
 
             # Multi-select options picker.
@@ -1077,7 +1066,7 @@ class LineEditor:
             # in all three the typed chars stay in the buffer and the user is
             # handed back a plain prompt.
             if selected is not None:
-                self._apply(selected, prefix)
+                self._apply(selected)
             return
 
     def _complete_multi(self, completions: list[Completion], prefix: str, status_label: str = "") -> None:
@@ -1166,7 +1155,7 @@ class LineEditor:
                         self._hint = f"{hint_comp.value} <{hint_comp.arg_hint}>"
                 break
 
-    def _history_search(self, fd: int) -> None:
+    def _history_search(self) -> None:
         from .tui import InlinePicker
 
         entries = self._history.entries
@@ -1238,10 +1227,7 @@ class LineEditor:
         """
         return raw_token_start(self._buf[: self._cursor])
 
-
-        sys.stdout.flush()
-
-    def _apply(self, completion: Completion, prefix: str) -> None:  # noqa: ARG002
+    def _apply(self, completion: Completion) -> None:
         # Verbatim candidate (history): the value may span several tokens and is
         # already shell syntax, so it replaces the raw token as-is — no shell
         # quoting and no trailing space.  It starts at the same anchor an
@@ -1280,13 +1266,12 @@ class LineEditor:
         self._cursor = len(pre) + len(value)
 
     def _prompt_for_arg(self, opt: Completion) -> bool:
-        """Show an inline prompt for opt's argument, insert the value, return False if cancelled.
+        """Pick a value for opt's argument from its completer; False if cancelled.
 
-        If the completion engine returns candidates for the current buffer state
-        (i.e. a completer is registered for the flag's value), an InlinePicker is
-        shown instead of the plain InlineArgPrompt text input.
+        Called only for a flag whose value has a registered completer — a flag
+        without one gets the arg hint instead (see :meth:`_complete_multi`).
         """
-        from .tui import InlineArgPrompt, InlinePicker
+        from .tui import InlinePicker
 
         self._redraw()
 
@@ -1316,34 +1301,9 @@ class LineEditor:
             _flag_label = opt.value
 
         if not completions:
-            # ── free-text fallback: InlineArgPrompt (original behaviour) ──────
-            rows_to_end = end_row - caret_row
-            if rows_to_end > 0:
-                sys.stdout.write(f"\033[{rows_to_end}B")
-            sys.stdout.write("\r")
-            if end_col > 0:
-                sys.stdout.write(f"\033[{end_col}C")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-            arg_prompt = InlineArgPrompt(
-                label=f"{opt.value} <{opt.arg_hint}>",
-                description=opt.description,
-                status_label=_flag_label,
-            )
-            with self._picker_session():
-                value = arg_prompt.run()
-
-            # InlineArgPrompt._cleanup() left the cursor at anchor (col 0 of the
-            # prompt line, end_row + 1 below render-top). Move back to caret_row
-            # without flushing so the up-move batches with _redraw on return.
-            sys.stdout.write(f"\033[{end_row + 1 - caret_row}A")
-
-            if value is None:
-                return False
-            self._buf = self._buf[: self._cursor] + value + self._buf[self._cursor :]
-            self._cursor += len(value)
-            return True
+            # Only reached from _complete_multi, which checks for value
+            # candidates first; nothing to pick means nothing to insert.
+            return False
 
         # ── picker path: completions are available for the flag value ──────────
         # Loop mirrors _complete()'s while-True structure to handle tab-extend
@@ -1438,5 +1398,5 @@ class LineEditor:
             if selected is None:
                 return False
 
-            self._apply(selected, prefix)
+            self._apply(selected)
             return True

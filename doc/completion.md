@@ -166,19 +166,6 @@ Boolean short flags are automatically merged: selecting `-a` and `-l` inserts `-
 - **Short-flag cluster parsing** — `-hs` in `ctx.args` is treated as both `-h` and `-s` already used
 - **Preceding-flag hint** — when the last completed arg is a value-taking flag and the user presses TAB without typing `-`, the engine shows a hint instead of opening a picker
 
-### ConditionalCompleter
-
-Selects a sub-completer based on the preceding arguments. Useful when argument N's valid values depend on what was chosen for arguments 0..N-1:
-
-```python
-ConditionalCompleter({
-    ("prod",): ChoiceCompleter(["us-east-1", "us-west-2"]),
-    ("staging",): ChoiceCompleter(["us-west-2"]),
-})
-```
-
-Performs longest-prefix matching on `ctx.args` against the mapping keys: tries the full `args` tuple first, then progressively shorter prefixes.
-
 ### HistoryCompleter
 
 Completes the typed line from past command lines. It is the one completer that
@@ -227,7 +214,7 @@ table so the main history file's format, and every reader of `History.entries`
 line still records its directory (re-running a command after a `cd` is new
 information even when the line is not), and each write prunes lines the history
 file no longer holds. Missing, corrupt, or unreadable: no directory is known for
-any line, and every candidate arrives via the fallback.
+any line, so history contributes no TAB candidates at all.
 
 Anchoring means the picker shows what a candidate would *add*, so a history row
 reads like the token rows next to it: `git com<TAB>` offers `commit` (the

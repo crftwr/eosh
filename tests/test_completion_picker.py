@@ -324,7 +324,7 @@ def test_dismissed_picker_keeps_typed_chars(monkeypatch, tmp_path, capsys):
     ed._buf, ed._cursor = "ls al", 5
     _StubPicker.script = [{"selected": None, "typed": "ph"}]
 
-    ed._complete(0)
+    ed._complete()
 
     assert ed._buf == "ls alph"
     assert ed._cursor == 7
@@ -336,7 +336,7 @@ def test_empty_close_keeps_typed_chars(monkeypatch, tmp_path, capsys):
     ed._buf, ed._cursor = "ls al", 5
     _StubPicker.script = [{"selected": None, "typed": "zz", "closed_empty": True}]
 
-    ed._complete(0)
+    ed._complete()
 
     assert ed._buf == "ls alzz"
     capsys.readouterr()
@@ -348,7 +348,7 @@ def test_accepting_a_candidate_replaces_the_whole_token(monkeypatch, tmp_path, c
     ed._buf, ed._cursor = "ls al", 5
     _StubPicker.script = [{"selected": Completion(value="alpha"), "typed": "p"}]
 
-    ed._complete(0)
+    ed._complete()
 
     assert ed._buf == "ls alpha "
     capsys.readouterr()
@@ -359,7 +359,7 @@ def test_completion_picker_opens_without_a_default_selection(monkeypatch, tmp_pa
     ed._buf, ed._cursor = "ls al", 5
     _StubPicker.script = [{"selected": None}]
 
-    ed._complete(0)
+    ed._complete()
 
     assert _StubPicker.instances[0].kwargs["select_first"] is False
     capsys.readouterr()

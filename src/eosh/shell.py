@@ -43,7 +43,7 @@ from .completion import (
 )
 from .variables import registry as var_registry, VarCompleter
 from .context import ContextManager, ContextState
-from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor, SWITCH_SENTINEL
+from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor
 from .parsing import expand_vars, split_for_completion, tokenize
 from .paths import config_dir
 from .pipeline import (
@@ -234,9 +234,7 @@ class _StdoutProxy(io.TextIOBase):
     No CRLF translation happens here: the main loop runs Python commands
     under raw-input/cooked-output mode (see
     :func:`terminal.set_raw_input_cooked_output`), so the kernel re-adds
-    carriage returns to bare LFs at the tty boundary.  The ``raw_mode``
-    flag on :meth:`activate` is accepted for API stability but has no
-    effect; callers may stop passing it.
+    carriage returns to bare LFs at the tty boundary.
     """
 
     def __init__(self, real: io.TextIOBase) -> None:
@@ -280,11 +278,10 @@ class _StdoutProxy(io.TextIOBase):
         # whether emitting ANSI clear-screen escapes makes sense).
         return self._real.isatty()
 
-    def activate(self, raw_mode: bool = False) -> None:
+    def activate(self) -> None:
         """Replay buffer to real stdout and start writing live.
 
-        ``raw_mode`` is ignored (kept for backward compatibility); CRLF
-        translation is done by the kernel via OPOST/ONLCR.
+        CRLF translation is done by the kernel via OPOST/ONLCR.
         """
         with self._lock:
             content = self._buf.getvalue()
@@ -431,29 +428,6 @@ def passthrough_run(argv: list[str], **popen_kwargs) -> int:
     return slot._run_in_pty(argv, popen_kwargs)
 
 
-def passthrough_poll_key(timeout: float | None = 0.0) -> bytes:
-    """Poll for a keystroke from inside a Python command thread.
-
-    Returns whatever bytes the main forwarding loop has buffered for the
-    enclosing slot, or ``b""`` if the timeout expires before any arrive.
-    ``timeout=None`` blocks forever; ``timeout=0`` returns immediately.
-
-    Outside a slot thread (e.g. synchronous command on the main thread)
-    returns ``b""`` — there is no separate forwarding loop to receive
-    from.  In a piped Python command, raises ``RuntimeError`` for the
-    same reason ``passthrough_input`` does: stdin is wired to a pipe.
-    """
-    if getattr(_in_pipeline, "flag", False):
-        raise RuntimeError(
-            "passthrough_poll_key cannot be used inside a piped Python command "
-            "(stdin is wired to a pipe, not the terminal)"
-        )
-    slot = getattr(_current_slot, "slot", None)
-    if slot is None:
-        return b""
-    return slot.poll_key(timeout)
-
-
 def passthrough_input(prompt: str = "") -> str:
     """Read a line from real stdin from inside a Python command thread.
 
@@ -567,10 +541,10 @@ class PythonCommandSlot(ExitCallbackMixin):
         # of leaving the user with an unresponsive prompt.
         self._input_interrupted = threading.Event()
         # Raw stdin bytes the main forwarding loop received while no PTY
-        # subprocess was active.  Decorators (e.g. ``@watch``) consume
-        # these via :func:`passthrough_poll_key` to react to keystrokes
-        # like ``q`` or ``Ctrl+C``.  Cleared each time the slot thread
-        # picks up a Python command.
+        # subprocess was active.  :meth:`poll_key` drains them — that is
+        # how ``passthrough_input_block`` reads a paste off the raw key
+        # stream.  Cleared each time the slot thread picks up a Python
+        # command.
         self._keybuf: bytearray = bytearray()
         self._keybuf_lock = threading.Lock()
         self._keybuf_event = threading.Event()
@@ -631,11 +605,14 @@ class PythonCommandSlot(ExitCallbackMixin):
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def activate(self, raw_mode: bool = False) -> None:
+    def activate(self, raw_mode: bool = False) -> None:  # noqa: ARG002
+        # ``raw_mode`` is part of the slot interface (``ProcessSlot`` and
+        # ``PipelineSlot`` use it); a Python command's output needs no
+        # translation — the kernel adds CRs (see ``_StdoutProxy``).
         if self._proxy:
-            self._proxy.activate(raw_mode=raw_mode)
+            self._proxy.activate()
         if self._err_proxy:
-            self._err_proxy.activate(raw_mode=raw_mode)
+            self._err_proxy.activate()
         # Drain any PTY output that arrived while inactive, then resume
         # live forwarding from the reader thread.
         with self._pty_lock:
@@ -716,9 +693,8 @@ class PythonCommandSlot(ExitCallbackMixin):
         * If a ``passthrough_run`` subprocess is active, the bytes go to
           its PTY master so the child sees the user's typing.
         * Otherwise the bytes are buffered in ``_keybuf`` so a Python
-          command body running on this slot can poll for them via
-          :func:`passthrough_poll_key`.  Decorators like ``@watch`` use
-          this to handle ``q``-to-quit etc.
+          command body running on this slot can read them via
+          :meth:`poll_key` (``passthrough_input_block`` does).
         """
         with self._pty_lock:
             fd = self._pty_master_fd
@@ -875,11 +851,11 @@ class PythonCommandSlot(ExitCallbackMixin):
                 os.close(master_fd)
             except OSError:
                 pass
-            # Re-enable the buffering proxy in raw mode for any remaining
+            # Re-enable the buffering proxy for any remaining
             # prints from the Python command after the subprocess returns.
-            self._proxy.activate(raw_mode=True)
+            self._proxy.activate()
             if self._err_proxy:
-                self._err_proxy.activate(raw_mode=True)
+                self._err_proxy.activate()
 
         return proc.returncode if proc.returncode is not None else 1
 
@@ -977,9 +953,9 @@ class PythonCommandSlot(ExitCallbackMixin):
         finally:
             self._input_request.clear()
             self._input_resume.set()
-            self._proxy.activate(raw_mode=True)
+            self._proxy.activate()
             if self._err_proxy:
-                self._err_proxy.activate(raw_mode=True)
+                self._err_proxy.activate()
 
     def _run_input_block(self, prompt: str = "") -> str:
         """Read lines until a blank line or Ctrl+D, off the raw key stream.
@@ -4088,10 +4064,7 @@ class Shell:
                         print(f"\n[Process exited with code {exit_code}]")
 
                 # Collect the primary line (history managed here, not inside the editor).
-                text = self._line_editor.prompt(add_to_history=False)
-                if text == SWITCH_SENTINEL:
-                    self._handle_switch()
-                    continue
+                text = self._line_editor.prompt()
                 if text == CONTEXT_CHANGED_SENTINEL:
                     continue
 
@@ -4102,10 +4075,8 @@ class Shell:
                 full_text = text
                 while _is_continuation(full_text):
                     partial = _strip_continuation(full_text)
-                    cont = self._line_editor.prompt(prompt_str="> ", add_to_history=False)
-                    if cont in (SWITCH_SENTINEL, CONTEXT_CHANGED_SENTINEL):
-                        if cont == SWITCH_SENTINEL:
-                            self._handle_switch()
+                    cont = self._line_editor.prompt(prompt_str="> ")
+                    if cont == CONTEXT_CHANGED_SENTINEL:
                         full_text = ""
                         break
                     full_text = partial + cont

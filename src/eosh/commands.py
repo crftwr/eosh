@@ -638,7 +638,6 @@ class CommandRegistry:
         params: list[Arg] | None = None,
         help: str | None = None,
         delegate: Completer | None = None,
-        options_completer: "OptionsCompleter | None" = None,
     ):
         """Register a top-level command, group, or external recipe.
 
@@ -665,9 +664,6 @@ class CommandRegistry:
         decides per-call what to return (e.g. ``aws_completer``).  Cannot be
         combined with ``params``.
 
-        ``options_completer`` — override the auto-built flag completer at
-        the ``None`` slot.  Used when a custom subclass is needed (e.g. tar's
-        bundle-letter handling).
         """
         # Form: @registry.command  (no parens at all)
         if callable(name):
@@ -679,7 +675,7 @@ class CommandRegistry:
         if isinstance(name, str):
             node = self._make_root(
                 name, params=params, help=help, func=None,
-                delegate=delegate, options_completer=options_completer,
+                delegate=delegate,
             )
             node._pending_help = help
             return node
@@ -689,7 +685,7 @@ class CommandRegistry:
             cmd_name = func.__name__
             self._make_root(
                 cmd_name, params=params, help=help, func=func,
-                delegate=delegate, options_completer=options_completer,
+                delegate=delegate,
             )
             return func
         return decorator
@@ -701,15 +697,12 @@ class CommandRegistry:
         help: str | None,
         func: Callable | None,
         delegate: Completer | None = None,
-        options_completer: "OptionsCompleter | None" = None,
     ) -> Command:
         completers = _build_completers(params) if params else {}
         if delegate is not None:
             # Same completer at None (flags) and WILDCARD (all positional slots).
             completers[None] = delegate
             completers[WILDCARD] = delegate
-        if options_completer is not None:
-            completers[None] = options_completer
         cmd = Command(
             name=name,
             func=func,
@@ -721,15 +714,6 @@ class CommandRegistry:
         )
         self._commands[name] = cmd
         return cmd
-
-    def register(self, cmd: Command) -> None:
-        """Register a pre-built :class:`Command` object.
-
-        Mirrors ``var_registry.register(var_object)``.  Use ``command(...)``
-        instead when you want the registry to build the :class:`Command` for
-        you from ``params`` / ``help`` / a function.
-        """
-        self._commands[cmd.name] = cmd
 
     def get(self, name: str) -> Command | None:
         return self._commands.get(name)

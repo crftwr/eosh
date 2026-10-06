@@ -364,10 +364,7 @@ class OptionsCompleter(Completer):
     """Completer for command-line flags with multi-select TUI support.
 
     Auto-built from the flag (``-`` / ``+`` prefixed) entries of a command's
-    ``params`` list, so recipes never construct one directly.  An instance
-    can be passed via the ``options_completer=`` kwarg on
-    :meth:`registry.command` to override the auto-built completer when a
-    custom subclass is needed.
+    ``params`` list, so recipes never construct one directly.
     """
 
     def __init__(
@@ -450,24 +447,6 @@ class OptionsCompleter(Completer):
                 # +-flags don't cluster — record verbatim.
                 used.add(arg)
         return used
-
-
-class ConditionalCompleter(Completer):
-    """Picks a sub-completer based on preceding args."""
-
-    def __init__(self, mapping: dict[tuple, Completer]):
-        self.mapping = mapping
-
-    def complete(self, ctx: CompletionContext) -> list[Completion]:
-        key = tuple(ctx.args)
-        completer = self.mapping.get(key)
-        if completer:
-            return completer.complete(ctx)
-        for length in range(len(ctx.args), 0, -1):
-            partial_key = tuple(ctx.args[:length])
-            if partial_key in self.mapping:
-                return self.mapping[partial_key].complete(ctx)
-        return []
 
 
 # ---------------------------------------------------------------------------
