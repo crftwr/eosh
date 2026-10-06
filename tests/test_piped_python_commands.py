@@ -249,3 +249,81 @@ def test_main_thread_stdout_unaffected_by_pipeline(shell):
 
     out = _read_to_file(shell, "_t_silent_in_main | cat")
     assert out == "PIPE_OUTPUT\n" * 5
+
+
+# ---------------------------------------------------------------------------
+# Single-stage redirect (``pycmd > file``) — runs as a one-stage pipeline
+# ---------------------------------------------------------------------------
+
+def test_redirect_does_not_swap_global_stdout(shell):
+    """The redirect is bound on the command's own thread only.
+
+    Before, ``pycmd > file`` assigned the process-global ``sys.stdout``, so
+    any other thread printing meanwhile (a backgrounded command, a
+    ``@bg`` body) wrote into the redirect target.
+    """
+    import threading
+
+    seen = {}
+
+    @registry.command(name="_t_redir_global")
+    def _t_redir_global():
+        seen["stdout"] = sys.modules["sys"].stdout
+        other = threading.Thread(target=lambda: print("LEAK", file=sys.stdout))
+        other.start()
+        other.join()
+        print("ok")
+
+    router = sys.stdout
+    out = _read_to_file(shell, "_t_redir_global")
+    assert out == "ok\n"
+    assert seen["stdout"] is router
+    assert sys.stdout is router
+
+
+def test_redirect_stdin_and_stderr_to_stdout(shell, tmp_path):
+    src = tmp_path / "in.txt"
+    src.write_text("one\ntwo\n")
+
+    @registry.command(name="_t_redir_io")
+    def _t_redir_io():
+        for line in sys.stdin:
+            print(line.strip().upper())
+        print("warn", file=sys.stderr)
+
+    out = _read_to_file(shell, f"_t_redir_io < {src} 2>&1")
+    assert out == "ONE\nTWO\nwarn\n"
+
+
+def test_redirect_append(shell, tmp_path):
+    @registry.command(name="_t_redir_append")
+    def _t_redir_append():
+        print("line")
+
+    target = tmp_path / "log.txt"
+    shell._execute(f"_t_redir_append >> {target}")
+    shell._execute(f"_t_redir_append >> {target}")
+    assert target.read_text() == "line\nline\n"
+
+
+def test_system_exit_in_redirected_command_does_not_exit_shell(shell, tmp_path):
+    @registry.command(name="_t_redir_exit")
+    def _t_redir_exit():
+        print("bye")
+        raise SystemExit(3)
+
+    target = tmp_path / "out.txt"
+    shell._execute(f"_t_redir_exit > {target}")  # must not raise
+    assert target.read_text() == "bye\n"
+
+
+def test_redirected_external_command(shell, tmp_path):
+    target = tmp_path / "out.txt"
+    shell._execute(f"echo hello > {target}")
+    assert target.read_text() == "hello\n"
+
+
+def test_assignment_with_redirect_still_assigns(shell, tmp_path, monkeypatch):
+    monkeypatch.delenv("_T_REDIR_VAR", raising=False)
+    shell._execute(f"_T_REDIR_VAR=set > {tmp_path / 'x'}")
+    assert os.environ.get("_T_REDIR_VAR") == "set"

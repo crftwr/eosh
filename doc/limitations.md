@@ -31,8 +31,8 @@ def my_cmd():
 the thread-local router rebinds. Workaround: pass `stdout=sys.stdout`
 (and `stdin=sys.stdin`, `stderr=sys.stderr` as needed) explicitly when
 shelling out from a piped Python command. The same caveat applies to
-the single-stage redirect path — `my_cmd > out.txt` redirects `print`
-but not nested `subprocess` output.
+a redirected single stage, which runs as a one-stage pipeline:
+`my_cmd > out.txt` redirects `print` but not nested `subprocess` output.
 
 **Stateful built-ins mutate the parent in pipelines.**
 
@@ -65,12 +65,6 @@ discipline discards an over-long line entirely rather than truncating it
 it exists for; use `passthrough_input_block`, which reads off the raw key
 stream, for anything a user might *paste* (a session token, a policy
 document, a URL with a long query). Line editing there is backspace only.
-
-**`SystemExit` raised in a redirected single-stage Python command still
-exits the shell.** `exit > log` exits the shell because the redirect
-path on `_execute_stage` runs synchronously on the main thread. The
-pipeline path catches and absorbs `SystemExit` per stage; matching
-that behaviour for the redirect path is a separate, smaller change.
 
 ## `awsut sagemaker jobs` — a category the loaded model doesn't declare costs a round-trip
 
@@ -223,9 +217,10 @@ what escaped the handler: `SystemExit` → its code, `KeyboardInterrupt`
 way to say "I ran fine but the thing I was asked about failed", and
 `my_cmd && other` treats an unhappy-but-clean run as success.
 
-Raising `SystemExit` is not a workaround: per the entry above, the
-redirect path re-raises it on the main thread and would take the shell
-down.
+Raising `SystemExit` is not a workaround. A piped or redirected stage
+absorbs it into an exit code, but a plain foreground run re-raises it
+on the main thread (that is how `exit` works), which would take the
+shell down.
 
 Consequence for ported tools: every `awsut` leaf (`awsut.py`,
 `_awsut_sagemaker/` and `_awsut_agentcore/`, all wrapped in
