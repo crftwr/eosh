@@ -2318,36 +2318,17 @@ class Shell:
         env.update(env_prefix)
         return env
 
-    @contextlib.contextmanager
-    def _temp_environ(self, env_prefix: dict[str, str]):
-        """Apply *env_prefix* to ``os.environ`` for the duration of the block.
-
-        Used to give a Python ``@registry.command`` the same per-command
-        environment an external child gets from ``FOO=bar cmd``.  Restores the
-        prior values (or deletes keys that weren't set before) on exit.
-
-        In-process caveat: a Python stage in a *multi-stage* pipeline runs in a
-        worker thread, so a temporary mutation of the process-wide
-        ``os.environ`` is visible to sibling stages for the overlap window.
-        This mirrors the existing "stateful built-ins mutate the parent in
-        pipelines" limitation and only bites the rare ``FOO=bar pycmd | …``
-        case; external children are unaffected (they get their own ``env=``).
-        """
-        if not env_prefix:
-            yield
-            return
-        saved: dict[str, str | None] = {}
-        for key, value in env_prefix.items():
-            saved[key] = os.environ.get(key)
-            os.environ[key] = value
-        try:
-            yield
-        finally:
-            for key, prev in saved.items():
-                if prev is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = prev
+    @staticmethod
+    def _env_prefix_refused(command_name: str, env_prefix: dict[str, str]) -> int:
+        """A Python command can't take ``FOO=bar cmd``: it runs in the shell's
+        own process, where the only environment is ``os.environ`` — shared by
+        every thread, so a temporary change would leak into the other stages
+        of a pipeline and outlive a backgrounded run.  Say so (status 2)."""
+        names = " ".join(f"{k}=…" for k in env_prefix)
+        print(f"eosh: {names} {command_name}: an environment prefix only applies to "
+              f"external commands; set it with `var` for a Python command",
+              file=sys.stderr)
+        return 2
 
     def _unset_variable(self, key: str) -> None:
         """Remove a variable via var_registry, or fall back to plain os.environ / context removal."""
@@ -2679,7 +2660,8 @@ class Shell:
             return None
         env_prefix, tokens = self._split_env_prefix(tokens)
         if env_prefix:
-            # Let PipelineSlot handle it — it applies the prefix per-stage.
+            # Refused for a Python command — let PipelineSlot's stage path
+            # report it.
             return None
         cmd = self.registry.get(tokens[0])
         if cmd is None or not cmd.has_any_handler():
@@ -2861,10 +2843,15 @@ class Shell:
             if redirect_error:
                 pass  # leave worker=None; cleanup below closes any open files/pipes
             elif is_py_stage:
+                if env_prefix:
+                    # Refused (see _env_prefix_refused) — as the stage's own
+                    # work, so its pipe ends close and its status is 2.
+                    fn = lambda name=cmd.name, env=env_prefix: self._env_prefix_refused(name, env)
+                else:
+                    fn = lambda cmd=cmd, args=tokens[1:]: cmd.invoke(args)
                 worker = self._start_stage_thread(
                     label=cmd.name,
-                    fn=lambda cmd=cmd, args=tokens[1:], env=env_prefix: (
-                        self._invoke_with_env(cmd, args, env)),
+                    fn=fn,
                     stdin_fd=stdin_fd_pipe if stdin_pipe_used else None,
                     stdout_fd=stdout_fd_pipe if stdout_pipe_used else None,
                     stdin_file=stdin_file,
@@ -3123,6 +3110,8 @@ class Shell:
         # the system command path so the real binary runs.
         if cmd is not None and not cmd.has_any_handler():
             cmd = None
+        if cmd and env_prefix:
+            return self._env_prefix_refused(command_name, env_prefix)
         if cmd:
             if IS_WINDOWS or cmd.sync:
                 # On the main thread: a `sync` command (the built-ins — they
@@ -3131,20 +3120,14 @@ class Shell:
                 # thread-based context switching.  passthrough_run falls back
                 # to subprocess.run and passthrough_input reads the terminal
                 # directly, since no slot is registered.
-                return run_handler(lambda: self._invoke_with_env(cmd, args, env_prefix),
-                                   command_name, announce_interrupt=True)
+                return run_handler(lambda: cmd.invoke(args), command_name,
+                                   announce_interrupt=True)
             else:
                 # Interactive Python command — run in a thread so Ctrl+] works.
-                # The per-command env prefix is applied for the duration of the
-                # foreground run.  If the command is backgrounded via Ctrl+]
-                # (result == "switched") the prefix is restored here — a
-                # backgrounded Python command does not keep the temporary env,
-                # matching the in-process-model caveats in doc/limitations.md.
                 ctx = self.context_manager.current()
                 slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished)
-                with self._temp_environ(env_prefix):
-                    slot.start()
-                    result = self._enter_python_forwarding_mode(slot)
+                slot.start()
+                result = self._enter_python_forwarding_mode(slot)
                 if result == "switched":
                     slot.deactivate()
                     if ctx is not None:
@@ -3158,10 +3141,6 @@ class Shell:
                 return slot.exit_code or 0
 
         return self._execute_external(command_name, args, env_prefix=env_prefix)
-
-    def _invoke_with_env(self, cmd, args: list[str], env_prefix: dict[str, str] | None):
-        with self._temp_environ(env_prefix or {}):
-            return cmd.invoke(args)
 
     def _execute_external_windows(
         self, command_name: str, args: list[str], env_prefix: dict[str, str] | None = None

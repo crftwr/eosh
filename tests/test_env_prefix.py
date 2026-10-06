@@ -96,3 +96,29 @@ def test_env_prefix_in_pipeline_stage(shell, tmp_path):
     )
     assert out.read_text().strip() == "piped"
     assert "EOSH_TEST_PIPE" not in os.environ
+
+
+# ── Python commands refuse a prefix: os.environ is shared by every thread ────
+
+
+@pytest.mark.requires_real_stdio
+def test_a_python_command_refuses_an_env_prefix(shell, tmp_path, capsys):
+    from eosh.commands import registry
+    from eosh.pipeline import parse_line
+
+    ran = []
+
+    @registry.command("_t_envpy")
+    def _t_envpy():
+        ran.append(os.environ.get("EOSH_TEST_PY"))
+
+    try:
+        out = tmp_path / "out.txt"
+        seq = parse_line(f"EOSH_TEST_PY=1 _t_envpy > {out}")
+        assert shell._execute_pipeline(seq.items[0][1]) == 2
+        seq = parse_line(f"EOSH_TEST_PY=1 _t_envpy | cat > {out}")
+        shell._execute_pipeline(seq.items[0][1])
+        assert ran == []
+        assert "EOSH_TEST_PY" not in os.environ
+    finally:
+        registry._commands.pop("_t_envpy", None)

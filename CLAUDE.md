@@ -1111,7 +1111,7 @@ eosh/
 - Glob expansion `*` `?` `**` ✅ — `expand_globs` with `recursive=True` for `**`
 - Stderr redirect `2>` `2>>` `2>&1` ✅
 - Backslash line continuation `\` ✅ — handled in `shell.py` before execution; continuation lines collected with `"> "` prompt; full joined command stored as one history entry
-- Per-command env prefix `FOO=bar cmd args` ✅ — leading `KEY=VALUE` tokens apply only to that command's environment (`Shell._split_env_prefix`). External children get an explicit `env=`; Python `@registry.command`s get a temporary `os.environ` overlay via `Shell._temp_environ` (see the in-process caveat in that method's docstring). A line that is *only* assignments is still a permanent set; `make FOO=bar` keeps `FOO=bar` as an argument (scan stops at the command name).
+- Per-command env prefix `FOO=bar cmd args` ✅ — leading `KEY=VALUE` tokens apply only to that command's environment (`Shell._split_env_prefix`). External children get an explicit `env=`. A Python `@registry.command` **refuses** a prefix (status 2, `Shell._env_prefix_refused`): it runs in the shell's own process, whose only environment is the `os.environ` every thread shares, so a temporary change would leak into sibling pipeline stages and outlive a backgrounded run — set the variable with `var` instead. A line that is *only* assignments is still a permanent set; `make FOO=bar` keeps `FOO=bar` as an argument (scan stops at the command name).
 - Command substitution `$(…)` ❌ — not yet implemented at the eosh prompt;
   `source-bash` runs a body containing it in a real bash and imports the
   resulting variables, which covers the pasted-snippet case
