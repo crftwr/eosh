@@ -16,7 +16,7 @@ A **recipe** adds TAB completion to an external (system) command — one that ru
 >
 > - **argcomplete** — Python CLIs that ship completions via the [argcomplete](https://kislyuk.github.io/argcomplete/) library (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, `nox`, `virtualenv`, …). Automatic: eosh reads the script for the marker without running it. See [argcomplete-fallback.md](argcomplete-fallback.md).
 >
-> Write a recipe only when neither applies (most classic Unix tools), or when you want richer UX like multi-select flag pickers.
+> Write a recipe only when neither applies (most classic Unix tools), or when you want richer UX like per-flag descriptions and value completers.
 
 ## Anatomy of a Recipe File
 
@@ -50,7 +50,7 @@ The recipes range from one-liners to complex multi-class files. Pick the pattern
 
 ### Pattern 1 — Flags only
 
-Use this for simple commands whose only useful completions are flags. The flags collected from `arg(...)` entries with leading dashes feed the auto-built `OptionsCompleter`, which gives you multi-select TUI for free.
+Use this for simple commands whose only useful completions are flags. The flags collected from `arg(...)` entries with leading dashes feed the auto-built `OptionsCompleter`, which gives you a picker row per flag, with its description, for free.
 
 ```python
 # Example: ls recipe (abbreviated)

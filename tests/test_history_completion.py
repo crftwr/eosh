@@ -187,8 +187,8 @@ def test_history_precedes_but_keeps_command_candidates(shell):
     assert label == "command"
 
 
-def test_history_is_kept_out_of_the_flag_picker(shell):
-    """Mixing a history candidate in would demote the checkbox picker to a list."""
+def test_history_rows_join_the_flag_rows(shell):
+    """Flags are ordinary picker rows, so history is offered beside them."""
     command_registry.command(
         "_t_flags",
         help="test command",
@@ -196,9 +196,8 @@ def test_history_is_kept_out_of_the_flag_picker(shell):
     )
     _set_history(shell, ["_t_flags -v extra"])
     completions, _, _ = shell._get_completions("_t_flags -")
-    assert completions
-    assert all(c.multi_select for c in completions)
-    assert not any(c.verbatim for c in completions)
+    assert completions[0].value == "-v extra" and completions[0].verbatim
+    assert {c.value for c in completions if not c.verbatim} == {"-v", "--verbose"}
 
 
 def test_a_history_row_the_completer_already_offers_is_dropped(shell):
@@ -234,8 +233,9 @@ def test_a_history_row_that_spans_more_than_the_token_survives(shell):
     assert any(c.value == "spaces" and not c.verbatim for c in completions)
 
 
-def test_history_is_kept_out_of_the_arg_hint(shell):
-    """A lone is_arg_hint renders as a hint line, not a picker — keep it lone."""
+def test_a_value_flag_without_a_completer_offers_only_history(shell):
+    """The slot belongs to the flag's value: no positional/file candidates,
+    but a value used here before is worth offering."""
     command_registry.command(
         "_t_hint",
         help="test command",
@@ -243,9 +243,10 @@ def test_history_is_kept_out_of_the_arg_hint(shell):
     )
     _set_history(shell, ["_t_hint -p 8080"])
     completions, _, _ = shell._get_completions("_t_hint -p ")
-    assert len(completions) == 1
-    assert completions[0].is_arg_hint
-    assert not completions[0].verbatim
+    assert [(c.value, c.verbatim) for c in completions] == [("8080", True)]
+
+    _set_history(shell, [])
+    assert shell._get_completions("_t_hint -p ")[0] == []
 
 
 # ---------------------------------------------------------------------------

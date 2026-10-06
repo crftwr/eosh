@@ -141,7 +141,7 @@ disable_argcomplete_fallback()
 | Latency (invoke) | One subprocess per TAB; argcomplete-instrumented Python tools usually return in 50–300 ms. Capped by `timeout` (default 2.0 s). |
 | Caching | Detection is cached per command for the session. Results go through `completion_cache`, keyed on cwd and line, and are cleared after every command. |
 | Correctness | argcomplete parses `COMP_LINE`/`COMP_POINT` itself — quoting/escaping match user expectation. |
-| UX gap vs. recipes | Plain string candidates (no description, no multi-select, no arg-hint prompt). Recipes remain the path for richer UX. |
+| UX gap vs. recipes | Plain string candidates (no description, no value placeholder on flags). Recipes remain the path for richer UX. |
 | Failure modes | Tool missing, isn't argcomplete-aware, errors, or times out → empty result, fall through to `FileCompleter`. Never crashes the prompt. Never invokes a non-argcomplete tool blindly. |
 | Security | Detection only reads bytes from disk; never executes user code. Invocation only runs tools already marked as argcomplete-aware. |
 

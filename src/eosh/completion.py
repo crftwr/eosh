@@ -40,10 +40,8 @@ class Completion:
     display: str = ""
     description: str = ""
     fields: tuple[str, ...] = ()   # description split into picker columns (aligned across rows)
-    multi_select: bool = False
-    combinable: bool = False  # True for single-char flags that can be merged (-a -l → -al)
-    arg_hint: str = ""        # non-empty when the flag requires a following argument (e.g. "N")
-    is_arg_hint: bool = False  # True when this completion IS the hint for a preceding flag's value
+    arg_hint: str = ""        # non-empty for a flag that takes a value ("N"): applying it
+                              # moves straight on to completing that value
     verbatim: bool = False    # True → value may span several tokens; inserted as-is at the anchor
 
     def __post_init__(self):
@@ -361,7 +359,10 @@ class HistoryCompleter(Completer):
 
 
 class OptionsCompleter(Completer):
-    """Completer for command-line flags with multi-select TUI support.
+    """Completer for command-line flags: one picker row per flag.
+
+    A value-taking flag is displayed as ``-d <N>`` and carries ``arg_hint``,
+    so the line editor inserts it and goes on to complete its value.
 
     Auto-built from the flag (``-`` / ``+`` prefixed) entries of a command's
     ``params`` list, so recipes never construct one directly.
@@ -405,9 +406,8 @@ class OptionsCompleter(Completer):
             arg_hint = self.args.get(flag, "")
             result.append(Completion(
                 value=flag,
+                display=f"{flag} <{arg_hint}>" if arg_hint else "",
                 description=desc,
-                multi_select=True,
-                combinable=(len(flag) == 2 and flag.startswith("-") and not arg_hint),
                 arg_hint=arg_hint,
             ))
         return result

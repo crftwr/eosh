@@ -42,20 +42,14 @@ Sleep 400ms
 Enter
 Sleep 1.2s
 
-# ── Multi-select flag picker: Space toggles, short flags merge ─────────────
+# ── Flag completion: one row per flag, with descriptions ───────────────────
 Type "ls -"
 Tab
-Sleep 1.2s
-Type "a"
-Sleep 400ms
-Type "a"
-Sleep 400ms
-Space
-Sleep 500ms
+Sleep 1.5s
 Type "l"
-Sleep 400ms
-Space
-Sleep 600ms
+Sleep 800ms
+Down
+Sleep 500ms
 Enter
 Sleep 600ms
 Enter

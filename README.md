@@ -10,12 +10,12 @@
 </p>
 <!-- pypi-exclude-end -->
 
-![Eolith Shell demo: TAB completion with descriptions, the multi-select flag picker, and switching contexts while a build keeps running](doc/images/demo.gif)
+![Eolith Shell demo: TAB completion with descriptions, flag completion, and switching contexts while a build keeps running](doc/images/demo.gif)
 
 ## Features
 
 - **Rich tab completion** — per-argument completers with descriptions, inline picker UI
-- **Multi-select flag picker** — TAB on flags opens a Space-to-toggle checkbox list
+- **Flag completion** — TAB on `-` lists every flag with its description; a flag that takes a value goes straight on to completing that value
 - **Context switching** — named environments with variables and working directories, with push/pop and `Ctrl+]` live switching
 - **PTY process multiplexing** — run processes in contexts and switch between them without killing them
 - **Pipelines and redirections** — `|`, `>`, `>>`, `<`, `2>`, `2>&1`, `;`, `&&`, `||`, globs (`*`, `?`, `**`), and `\`-line-continuation
@@ -180,11 +180,12 @@ run here means no history rows — the picker just shows the ordinary candidates
 `↑`/`↓` and `Ctrl+R` are not directory-scoped, so lines from elsewhere are still
 one key away.
 
-**Flag completion** — when flags are available, TAB opens a multi-select checkbox picker:
-- Navigate with arrows; **Space** toggles a flag; **Enter** confirms
-- Type a letter to jump to the next flag starting with that letter
-- Short boolean flags are combined: selecting `-a` and `-l` inserts `-al`
-- Flags that take a value (e.g. `-d N`) insert `flag ` then open a value picker or show an inline hint
+**Flag completion** — TAB on `-` lists the command's flags as ordinary picker
+rows, each with its description:
+- Type to narrow, Down/Up and **Enter** to pick — one flag per TAB
+- A flag that takes a value is shown as `-d <N>`; picking it inserts `-d ` and
+  goes straight on to completing the value (a directory picker for `tar -C`,
+  say). When the value has no completer, the status bar shows what to type.
 
 ### Pipelines, Redirects, and Sequencing
 
@@ -460,7 +461,7 @@ The function is called each time the prompt is displayed, so it reflects dynamic
 | `CallbackCompleter(func)` | Complete from a function's return value |
 | `FileCompleter()` | Complete filesystem paths (files and directories) |
 | `DirCompleter()` | Complete directory paths only |
-| `OptionsCompleter(options, args)` | Complete flags with multi-select TUI; `args` declares value-taking flags |
+| `OptionsCompleter(options, args)` | Complete flags, one picker row each; `args` declares value-taking flags |
 | `HistoryCompleter(history_fn, limit, ran_here_fn)` | Continue the typed line from past command lines (may span several arguments), scoped to the ones run in the cwd |
 
 ### Completion Recipes

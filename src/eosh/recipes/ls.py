@@ -1,4 +1,4 @@
-"""Completion recipe for ls — flag completion with multi-select TUI."""
+"""Completion recipe for ls — flag completion."""
 
 from __future__ import annotations
 

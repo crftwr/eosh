@@ -345,7 +345,6 @@ class LineEditor:
         # cursor stays at the same row (clamped column). Detect it so we
         # re-render explicitly instead of relying on terminal reflow.
         self._terminal_reflows = os.environ.get("TERM_PROGRAM", "") != "vscode"
-        self._hint: str = ""  # transient hint shown after TAB; cleared on next keypress
         self._status_bar_visible: bool = False  # whether the status bar is currently showing something
         self._suppress_statusbar: bool = False  # set by _on_resize, cleared on next keypress
         # While a TUI picker is up the cursor isn't where the line editor
@@ -601,8 +600,6 @@ class LineEditor:
         statusbar_str: str | None = None
         if self._suppress_statusbar:
             pass
-        elif self._hint:
-            statusbar_str = _statusbar(self._hint, "", self._cols)
         elif self._get_arg_info is not None:
             info = self._get_arg_info(self._buf, self._cursor)
             if info:
@@ -664,7 +661,6 @@ class LineEditor:
 
     def _handle_key(self, key: bytes, fd: int) -> str | None:
         """Return a result string to finish, or None to keep editing."""
-        self._hint = ""  # any keypress dismisses the hint; TAB may re-set it
         self._suppress_statusbar = False  # bring the bar back on user activity
 
         # Enter
@@ -914,35 +910,12 @@ class LineEditor:
             # command lines also match.
             token_completions = [c for c in completions if not c.verbatim]
 
-            # Arg-hint: the preceding flag needs a typed value (e.g. "-d N").
-            # Show an informational hint below the buffer without opening a
-            # picker or modifying the buffer — cleared by the next _redraw().
-            if len(token_completions) == 1 and token_completions[0].is_arg_hint:
-                hint = token_completions[0]
-                if hint.description:
-                    self._hint = f"{hint.value} <{hint.arg_hint}>: {hint.description}"
-                else:
-                    self._hint = f"{hint.value} <{hint.arg_hint}>"
-                return
-
-            # Single value-taking option: auto-apply then re-run the loop.
-            # The next iteration will either open a value picker (when a
-            # value_completer is registered) or set self._hint (is_arg_hint).
-            if (len(token_completions) == 1
-                    and token_completions[0].multi_select
-                    and token_completions[0].arg_hint
-                    and not from_reopen):
-                self._apply(token_completions[0])
-                buf_changed = True
-                continue
-
             if len(token_completions) == 1 and not from_reopen:
                 self._apply(token_completions[0])
-                return
-
-            # Multi-select options picker.
-            if all(c.multi_select for c in completions):
-                self._complete_multi(completions, prefix, status_label)
+                if token_completions[0].arg_hint:
+                    # A value-taking flag: go straight on to its value.
+                    buf_changed = True
+                    continue
                 return
 
             # Move to the end of the visible content, then go one line down.
@@ -1023,7 +996,6 @@ class LineEditor:
                 rows_above=rows_above,
                 refresh_fn=refresh,
                 extend_fn=extend,
-                reopen_when=lambda items: bool(items) and all(c.multi_select for c in items),
                 status_label=status_label,
                 # Open with nothing highlighted: Enter must not insert a
                 # candidate the user never picked. Only Down/Up select.
@@ -1065,95 +1037,16 @@ class LineEditor:
             # and ``picker.closed_empty`` (typing narrowed the list to zero):
             # in all three the typed chars stay in the buffer and the user is
             # handed back a plain prompt.
-            if selected is not None:
-                self._apply(selected)
-            return
-
-    def _complete_multi(self, completions: list[Completion], prefix: str, status_label: str = "") -> None:
-        """Run the multi-select options picker."""
-        from .tui import InlineMultiPicker
-
-        caret_char = self._prompt_len + _wcswidth(self._buf[:self._cursor])
-        caret_col = _pending_wrap_col(caret_char, self._cols)
-        caret_row = _pending_wrap_row(caret_char, self._cols)
-        end_row = _pending_wrap_row(self._prompt_len + _wcswidth(self._buf), self._cols)
-        rows_above = end_row - caret_row + 1
-
-        cols_from_end = _wcswidth(self._buf[self._cursor:])
-        if cols_from_end > 0:
-            sys.stdout.write(f"\033[{cols_from_end}C")
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-
-        picker = InlineMultiPicker(
-            completions,
-            display_fn=lambda c: f"{c.display or c.value} <{c.arg_hint}>" if c.arg_hint else (c.display or c.value),
-            meta_fn=lambda c: c.meta,
-            max_height=12,
-            rows_above=rows_above,
-            caret_col=caret_col,
-            status_label=status_label,
-            # Nothing highlighted on open — Enter must not insert the first
-            # flag in the list. Space checks items; Down/Up highlight one.
-            select_first=False,
-        )
-        with self._picker_session():
-            selected = picker.run()
-
-        # No flush — let these bytes batch with the next _redraw so the caret
-        # doesn't briefly land at the picker's anchor column on the prompt row.
-        sys.stdout.write(f"\033[{rows_above}A")
-
-        if not selected:
-            return
-
-        bool_sel = [c for c in selected if not c.arg_hint]
-        arg_sel = [c for c in selected if c.arg_hint]
-
-        # Replace the prefix and insert combined boolean flags.
-        pre = self._buf[: self._cursor - len(prefix)]
-        post = self._buf[self._cursor :]
-        short = [c for c in bool_sel if c.combinable]
-        long_bool = [c for c in bool_sel if not c.combinable]
-        parts: list[str] = []
-        if short:
-            parts.append("-" + "".join(c.value[1:] for c in short))
-        parts.extend(c.value for c in long_bool)
-        bool_str = " ".join(parts)
-        self._buf = pre + bool_str + post
-        self._cursor = len(pre) + len(bool_str)
-
-        # For each arg-taking flag, insert it then handle its value:
-        #   • flags with a value completer (e.g. -C DIR) → picker via _prompt_for_arg
-        #   • hint-only flags (e.g. -j N)               → hint line, return to user
-        for opt in arg_sel:
-            sep = " " if self._cursor > 0 and self._buf[self._cursor - 1] != " " else ""
-            ins = f"{sep}{opt.value} "
-            self._buf = self._buf[: self._cursor] + ins + self._buf[self._cursor :]
-            self._cursor += len(ins)
-
-            value_comps, _, _ = self._get_completions(self._buf[: self._cursor])
-            # ``verbatim`` (history) candidates are not values for this flag —
-            # they'd make every flag look like it had a value completer.
-            has_value_picker = any(
-                not c.multi_select and not c.is_arg_hint and not c.verbatim
-                for c in value_comps
-            )
-
-            if has_value_picker:
-                # Value completer available: open picker, then continue to next flag.
-                if not self._prompt_for_arg(opt):
-                    break
-            else:
-                # Hint-only: show hint below and hand control back to the user.
-                # They type the value directly; any remaining flags wait for next TAB.
-                hint_comp = next((c for c in value_comps if c.is_arg_hint), None)
-                if hint_comp:
-                    if hint_comp.description:
-                        self._hint = f"{hint_comp.value} <{hint_comp.arg_hint}>: {hint_comp.description}"
-                    else:
-                        self._hint = f"{hint_comp.value} <{hint_comp.arg_hint}>"
-                break
+            if selected is None:
+                return
+            self._apply(selected)
+            if not selected.arg_hint:
+                return
+            # A value-taking flag (``-d <N>``): the next round offers the
+            # flag's value completer, or returns nothing and leaves the
+            # status bar to say what to type.
+            buf_changed = True
+            from_reopen = False
 
     def _history_search(self) -> None:
         from .tui import InlinePicker
@@ -1257,146 +1150,7 @@ class LineEditor:
         # may continue typing the path; (b) the value ends with "=" — a KEY=
         # completion where the user will continue typing the value; (c) post
         # already starts with whitespace.
-        # arg_hint flags always get a space — _prompt_for_arg uses it as a separator.
-        if completion.arg_hint:
-            value = value + " "
-        elif not completion.value.endswith(("/", "=")) and not post[:1].isspace():
+        if not completion.value.endswith(("/", "=")) and not post[:1].isspace():
             value = value + " "
         self._buf = pre + value + post
         self._cursor = len(pre) + len(value)
-
-    def _prompt_for_arg(self, opt: Completion) -> bool:
-        """Pick a value for opt's argument from its completer; False if cancelled.
-
-        Called only for a flag whose value has a registered completer — a flag
-        without one gets the arg hint instead (see :meth:`_complete_multi`).
-        """
-        from .tui import InlinePicker
-
-        self._redraw()
-
-        # Ask the completion engine what's available for this argument position.
-        # Filter out multi_select entries (flag pickers), is_arg_hint entries
-        # (hint-only flags with no value completer), and verbatim entries
-        # (history suggestions, which are not values for this flag) —
-        # only real value completions remain.
-        raw_completions, prefix, _ = self._get_completions(self._buf[: self._cursor])
-        completions = [
-            c for c in raw_completions
-            if not c.multi_select and not c.is_arg_hint and not c.verbatim
-        ]
-
-        end_char = self._prompt_len + _wcswidth(self._buf)
-        end_row = _pending_wrap_row(end_char, self._cols)
-        end_col = _pending_wrap_col(end_char, self._cols)
-        caret_row = self._cursor_row  # updated by _redraw()
-
-        if opt.arg_hint and opt.description:
-            _flag_label = f"{opt.value} <{opt.arg_hint}>: {opt.description}"
-        elif opt.description:
-            _flag_label = f"{opt.value}: {opt.description}"
-        elif opt.arg_hint:
-            _flag_label = f"{opt.value} <{opt.arg_hint}>"
-        else:
-            _flag_label = opt.value
-
-        if not completions:
-            # Only reached from _complete_multi, which checks for value
-            # candidates first; nothing to pick means nothing to insert.
-            return False
-
-        # ── picker path: completions are available for the flag value ──────────
-        # Loop mirrors _complete()'s while-True structure to handle tab-extend
-        # (picker.reopen) and backspace (picker.apply_backspace).
-        while True:
-            caret_char = self._prompt_len + _wcswidth(self._buf[:self._cursor])
-            caret_col = _pending_wrap_col(caret_char, self._cols)
-            caret_row = _pending_wrap_row(caret_char, self._cols)
-            end_char = self._prompt_len + _wcswidth(self._buf)
-            end_row = _pending_wrap_row(end_char, self._cols)
-            rows_above = end_row - caret_row + 1
-            display_offset = _display_col_offset(prefix, completions)
-            col = caret_col - display_offset
-
-            # Move cursor to the end of the buffer content, then one line below.
-            cols_from_end = _wcswidth(self._buf[self._cursor:])
-            if cols_from_end > 0:
-                sys.stdout.write(f"\033[{cols_from_end}C")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-            buf_at_open = self._buf[: self._cursor]
-            caret_char_at_open = caret_char
-
-            def refresh(typed: str) -> tuple[list[Completion], int]:
-                new_raw, new_prefix, _ = self._get_completions(buf_at_open + typed)
-                new_completions = [
-                    c for c in new_raw if not c.multi_select and not c.verbatim
-                ]
-                new_caret_col = _pending_wrap_col(
-                    caret_char_at_open + len(typed), self._cols  # typed is always ASCII
-                )
-                new_col = new_caret_col - _display_col_offset(new_prefix, new_completions)
-                return new_completions, new_col
-
-            picker = InlinePicker(
-                completions,
-                display_fn=lambda c: c.display or c.value,
-                meta_fn=lambda c: c.meta,
-                max_height=10,
-                col=col,
-                initial_offset=display_offset,
-                rows_above=rows_above,
-                refresh_fn=refresh,
-                value_fn=lambda c: c.value,
-                completion_prefix=prefix,
-                status_label=_flag_label,
-                select_first=False,   # Enter must not pick an unselected value
-            )
-            with self._picker_session():
-                selected = picker.run()
-
-            # Picker cleanup left cursor at col `picker._col` of (end_row + 1).
-            # Go back up to the caret row, but don't flush — let these bytes
-            # batch with the next render so we don't briefly show the caret
-            # at the picker's anchor column on the prompt row.
-            sys.stdout.write(f"\033[{rows_above}A")
-
-            # Commit what the user typed inside the picker on every exit path —
-            # the picker echoed those chars but never wrote them to the buffer.
-            if picker.typed:
-                self._buf = self._buf[: self._cursor] + picker.typed + self._buf[self._cursor :]
-                self._cursor += len(picker.typed)
-
-            if picker.reopen:
-                # TAB was pressed inside the picker (or the display column
-                # shifted while narrowing): reopen with a refreshed completion
-                # list. Even if narrowing leaves only one completion, do NOT
-                # auto-apply — the user can't see the count cross the threshold
-                # mid-typing, so a sudden close + insert would be surprising.
-                # Keep the picker open on the lone item; the user presses Enter
-                # to apply or TAB to extend the common prefix explicitly.
-                completions, prefix, _ = self._get_completions(self._buf[: self._cursor])
-                completions = [
-                    c for c in completions if not c.multi_select and not c.verbatim
-                ]
-                if not completions:
-                    return True  # typed chars committed; no further completions
-                continue
-
-            if picker.apply_backspace:
-                # Backspace with nothing typed: remove the trailing space the flag
-                # inserted and let the user continue editing freely.
-                if self._cursor > 0:
-                    self._buf = self._buf[: self._cursor - 1] + self._buf[self._cursor :]
-                    self._cursor -= 1
-                return True
-
-            # Esc, Enter with nothing highlighted, or the list narrowing to zero
-            # (``picker.closed_empty``): leave the typed value in the buffer and
-            # report "no value chosen" so the caller stops filling in flags.
-            if selected is None:
-                return False
-
-            self._apply(selected)
-            return True

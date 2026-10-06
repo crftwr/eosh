@@ -80,9 +80,10 @@ def test_options_completer_shows_value_taking_flags():
     assert t.arg_hint == "SECONDS"
     b = next(r for r in results if r.value == "-b")
     assert b.arg_hint == "BRANCH"
-    # Value-taking flags are not combinable
-    assert not t.combinable
-    assert not b.combinable
+    # ... and shown with their value placeholder, as ordinary rows
+    assert t.display == "-t <SECONDS>"
+    n = next(r for r in results if r.value == "-n")
+    assert n.display == "-n" and not n.arg_hint
 
 
 def _make_options_completer():

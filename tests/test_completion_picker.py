@@ -17,7 +17,7 @@ import re
 
 from eosh.completion import Completion
 from eosh.lineedit import History, LineEditor
-from eosh.tui import (InlineMultiPicker, InlinePicker, _compose_meta,
+from eosh.tui import (InlinePicker, _compose_meta,
                          _meta_col_widths)
 
 
@@ -158,28 +158,6 @@ def test_enter_with_no_selection_yields_nothing():
     assert p._current() is None           # what run() returns on accept
 
 
-# ── InlineMultiPicker: same rule for the flag picker ─────────────────────────
-
-
-def test_multipicker_no_default_highlight():
-    p = InlineMultiPicker(["-a", "-b"], select_first=False)
-    assert p._selected == -1
-    p._move(1)
-    assert p._selected == 0
-
-
-def test_multipicker_space_with_no_highlight_checks_nothing():
-    p = InlineMultiPicker(["-a", "-b"], select_first=False)
-    assert p._dispatch(b" ") == "toggle"
-    assert p._checked == set()
-
-
-def test_multipicker_jump_works_from_no_selection():
-    p = InlineMultiPicker(["-a", "-b"], select_first=False)
-    p._jump_to("b")
-    assert p._selected == 1
-
-
 # ── Metadata columns: aligned across rows, empty ones cost nothing ───────────
 
 
@@ -251,16 +229,6 @@ def test_the_picker_starts_every_meta_column_at_the_same_screen_column():
     assert [r.index("JupyterLab") for r in drawn[:1]] == \
            [drawn[1].index("CodeEditor")]
     assert drawn[0].index("no app") == drawn[1].index("app InService")
-
-
-def test_the_flag_picker_composes_columns_too():
-    rows = [Completion(value="-a", fields=("all", "boolean")),
-            Completion(value="--number", fields=("n", "takes N"))]
-    p = InlineMultiPicker(rows, display_fn=lambda c: c.display,
-                          meta_fn=lambda c: c.meta)
-    drawn = [_visible(p._format_row(c, checked=False, selected=False,
-                                    panel_w=60)) for c in rows]
-    assert drawn[0].index("boolean") == drawn[1].index("takes N")
 
 
 # ── LineEditor._complete: typed chars survive every exit path ────────────────
@@ -362,4 +330,63 @@ def test_completion_picker_opens_without_a_default_selection(monkeypatch, tmp_pa
     ed._complete()
 
     assert _StubPicker.instances[0].kwargs["select_first"] is False
+    capsys.readouterr()
+
+
+# ── Flags are ordinary rows; a value-taking flag leads straight to its value ──
+
+
+def _flags_then_values(line):
+    """``-d <N>`` takes a value with a completer; ``-a`` is boolean."""
+    if line.endswith("-d "):
+        return ([Completion(value="1"), Completion(value="2")], "", "-d <N>")
+    return (
+        [Completion(value="-a", description="all"),
+         Completion(value="-d", display="-d <N>", description="depth", arg_hint="N")],
+        line.rsplit(" ", 1)[-1],
+        "du option",
+    )
+
+
+def test_choosing_a_value_flag_moves_on_to_its_value(monkeypatch, tmp_path, capsys):
+    ed = _editor(monkeypatch, tmp_path, _flags_then_values)
+    ed._buf, ed._cursor = "du -", 4
+    _StubPicker.script = [
+        {"selected": Completion(value="-d", arg_hint="N")},
+        {"selected": Completion(value="2")},
+    ]
+
+    ed._complete()
+
+    assert ed._buf == "du -d 2 "
+    assert [c.value for c in _StubPicker.instances[1].items] == ["1", "2"]
+    capsys.readouterr()
+
+
+def test_choosing_a_boolean_flag_stops(monkeypatch, tmp_path, capsys):
+    ed = _editor(monkeypatch, tmp_path, _flags_then_values)
+    ed._buf, ed._cursor = "du -", 4
+    _StubPicker.script = [{"selected": Completion(value="-a")}]
+
+    ed._complete()
+
+    assert ed._buf == "du -a "
+    assert len(_StubPicker.instances) == 1
+    capsys.readouterr()
+
+
+def test_a_value_flag_without_candidates_just_leaves_the_flag(monkeypatch, tmp_path, capsys):
+    """No value completer → nothing to offer; the status bar says what to type."""
+    def completions(line):
+        if line.endswith("-j "):
+            return [], "", "-j <N>"
+        return [Completion(value="-j", arg_hint="N")], "-", "make option"
+
+    ed = _editor(monkeypatch, tmp_path, completions)
+    ed._buf, ed._cursor = "make -", 6
+
+    ed._complete()   # a single candidate auto-applies, then nothing follows
+
+    assert ed._buf == "make -j "
+    assert _StubPicker.instances == []
     capsys.readouterr()
