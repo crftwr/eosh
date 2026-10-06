@@ -29,13 +29,12 @@
 │  Completion Engine (completion.py)                  │
 │  ├── Command name completion                       │
 │  ├── Argument completion (per-command completers)  │
-│  ├── Options completion (flags, multi-select TUI)  │
+│  ├── Options completion (flags as picker rows)     │
 │  ├── CobraCompleter (opt-in) / Argcomplete fallback│
 │  └── Filesystem completion (fallback)              │
 ├─────────────────────────────────────────────────────┤
 │  TUI Widgets (tui.py)                               │
 │  ├── InlinePicker — single-select inline list      │
-│  ├── InlineMultiPicker — multi-select with Space   │
 │  └── InlineArgPrompt — single-line text input      │
 ├─────────────────────────────────────────────────────┤
 │  Line Editor (lineedit.py)                          │
@@ -112,7 +111,7 @@ Defines the `Completer` protocol, `CompletionContext`, and built-in completers.
 - `CompletionContext` carries full parse state to every completer
 - `Completer` ABC with `complete()` and optional `should_activate()` guard
 - Built-in completers: `FileCompleter`, `DirCompleter`, `CommandNameCompleter`, `ChoiceCompleter`, `CallbackCompleter`, `OptionsCompleter`
-- `OptionsCompleter` supports multi-select flag TUI, flag arg-hints, value completers, and flag deduplication
+- `OptionsCompleter` offers flags as ordinary picker rows (`-d <N>` for a value-taking flag, which then leads straight on to its value completer), and deduplicates flags already typed
 - **Protocol completers**:
   - `CobraCompleter` drives `<cmd> __complete <words>` for cobra-based CLIs (docker, kubectl, helm, gh, argocd, …). It is opt-in per command, installed as a `delegate` by the `cobra` recipe or `enable_cobra(...)`. See `doc/cobra.md`.
   - `ArgcompleteCompleter` (automatic, where no completer is registered) drives the argcomplete protocol (env vars + fd 8) for Python CLIs (pipx, conda, pre-commit, tox, pdm, httpie, …) — see `doc/argcomplete-fallback.md`
@@ -133,7 +132,7 @@ DIY raw-mode line editor. No prompt_toolkit or readline.
 
 - `LineEditor.prompt()` — reads one line in raw terminal mode
 - Full key binding suite: `Ctrl+A/E/B/F/W/K/U/L`, `Alt+B/F`, arrows, `Ctrl+P/N`, `Ctrl+R`, `Ctrl+]`
-- TAB opens `InlinePicker` (or `InlineMultiPicker` for flags) with **no candidate pre-selected** — Enter dismisses, only Down/Up select (TAB extends the common prefix, never selects); supports narrowing by typing, TAB-extend, backspace-to-close, and self-closes when narrowing leaves zero candidates
+- TAB opens `InlinePicker` (flags included, one row each) with **no candidate pre-selected** — Enter dismisses, only Down/Up select (TAB extends the common prefix, never selects); supports narrowing by typing, TAB-extend, backspace-to-close, and self-closes when narrowing leaves zero candidates
 - `Ctrl+R` opens a filterable history picker
 - Multi-line wrap tracking for correct cursor repositioning
 - VSCode integrated terminal detection for resize handling (see `doc/terminal-resize.md`)
@@ -143,7 +142,6 @@ DIY raw-mode line editor. No prompt_toolkit or readline.
 Inline-rendered widgets anchored with DECSC/DECRC (no alternate screen). Cancel on SIGWINCH.
 
 - `InlinePicker` — single-select list; supports narrowing by typing, scrollbar, `meta_fn` labels (one string, or cells laid out as columns aligned across rows). `select_first=False` opens with no row highlighted (Enter → None); `closed_empty` reports "narrowed to zero candidates"; `empty_placeholder` keeps the picker open on zero candidates, rendering that text instead (used by `Ctrl+R`, whose query lives only in the picker); `typed` exposes the chars the picker echoed for the caller to commit
-- `InlineMultiPicker` — multi-select with Space; jump-to by letter; returns checked items (or the highlighted one, or None when neither); `select_first=False` as above
 - `InlineArgPrompt` — single-line text prompt (naming a context in the switch picker)
 
 ### process.py — PTY Process Slots
@@ -230,10 +228,10 @@ User presses TAB
               → Check completers[arg_index] for positional completer
               → No completer registered? → FileCompleter fallback
       → HistoryCompleter (current context's history, cwd-scoped, tail from the anchor)
-          → prepended, unless the base result is a flag picker or an arg-hint
+          → prepended, unless the line is empty
           → minus the tails the base result already offers as a single token
-    → Single token completion → _apply() directly
-    → All multi_select completions → InlineMultiPicker
+    → Single token completion → _apply() directly (a value-taking flag
+      loops on to complete its value)
     → Otherwise → InlinePicker (narrows as user types)
 ```
 
@@ -286,7 +284,7 @@ eosh/
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
 │       ├── colors.py           # ColorScheme + set_color_scheme (dark/light)
 │       ├── terminal.py         # cross-platform raw-mode + key reading
-│       ├── tui.py              # InlinePicker, InlineMultiPicker, InlineArgPrompt
+│       ├── tui.py              # InlinePicker, InlineArgPrompt
 │       ├── recipes/            # external-command completion recipes (28+ files)
 │       │   ├── __init__.py     # enable(*names) helper, recipe_search_path, add_recipe_path
 │       │   └── <name>.py       # see Available recipes block in __init__.py

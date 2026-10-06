@@ -24,8 +24,8 @@ class CmdParser(argparse.ArgumentParser):
     the help or error message exactly as argparse normally would.
 
     Argparse handles combined short boolean flags automatically (``-nv`` is
-    treated as ``-n -v``), so commands that expose eosh's multi-select
-    option TUI work without any extra effort.
+    treated as ``-n -v``), so a user who types flags combined needs no extra
+    effort from the command.
 
     Typical usage inside a command function::
 

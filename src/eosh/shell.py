@@ -1683,14 +1683,6 @@ class Shell:
         past command lines that continue what is typed — listed first so "what I
         ran before" is the top candidate.
 
-        History is deliberately *not* mixed into the two results whose shape is
-        itself a contract with the line editor:
-
-        * the flag picker (every candidate ``multi_select``) — one history
-          candidate would demote the checkbox picker to a plain list;
-        * the arg-hint (a lone ``is_arg_hint``) — the editor renders that as a
-          hint line below the prompt instead of opening a picker at all.
-
         A history row that only repeats a candidate the command's own completer
         already offers is dropped — see :func:`_drop_history_duplicates`.
 
@@ -1700,11 +1692,6 @@ class Shell:
         than costing a keystroke on every completion.
         """
         completions, prefix, label = self._get_base_completions(line_before_cursor)
-
-        if completions and all(c.multi_select for c in completions):
-            return completions, prefix, label
-        if len(completions) == 1 and completions[0].is_arg_hint:
-            return completions, prefix, label
 
         history = self._history_completer.complete(CompletionContext(
             command=None,
@@ -1815,9 +1802,11 @@ class Shell:
             positional_completer = get_positional_completer(completers_dict, pos_idx)
 
             # When the last arg is a value-taking flag (e.g. "du -d <TAB>"),
-            # suppress positional/file completion and return a hint instead.
-            # Skip when the user is already typing another flag (prefix starts
-            # with "-" or "+") — they should see the options picker, not the hint.
+            # the slot belongs to its value: offer the flag's value completer,
+            # or nothing — never positional/file candidates.  With nothing to
+            # offer, the status bar (``_get_arg_info``) already says what to
+            # type.  Skip when the user is already typing another flag (prefix
+            # starts with "-" or "+").
             if (options_completer and ctx.args and not ctx.prefix.startswith(("-", "+"))
                     and hasattr(options_completer, "get_preceding_flag_hint")):
                 hint_info = options_completer.get_preceding_flag_hint(ctx)
@@ -1827,14 +1816,7 @@ class Shell:
                     if value_completer:
                         # Flag has a dedicated value completer (e.g. -C DIR → DirCompleter).
                         return value_completer.complete(ctx), ctx.prefix, flag_label
-                    # No value completer: suppress file fallback and show an inline hint.
-                    return [Completion(
-                        value=flag,
-                        display=f"<{arg_hint}>",
-                        description=description,
-                        arg_hint=arg_hint,
-                        is_arg_hint=True,
-                    )], ctx.prefix, flag_label
+                    return [], ctx.prefix, flag_label
 
             # Options completer takes priority when typing a flag-prefixed token.
             if options_completer and ctx.prefix.startswith(("-", "+")):
@@ -1982,23 +1964,18 @@ class Shell:
         # Build a merged options completer (this node + ancestors).
         merged_options = node.merged_options_completer()
 
-        # Preceding-flag hint: if last completed token is a value-taking flag
-        # known at this node or an ancestor, show its value completer / hint.
+        # Preceding value-taking flag known at this node or an ancestor: the
+        # slot belongs to its value — its value completer, or nothing (the
+        # status bar says what to type).
         if (merged_options and ctx.args and not ctx.prefix.startswith("-")
                 and hasattr(merged_options, "get_preceding_flag_hint")):
             hint_info = merged_options.get_preceding_flag_hint(ctx)
             if hint_info:
                 flag, arg_hint, description, value_completer = hint_info
-                flag_label = f"{flag}: {description}" if description else f"{flag} <{arg_hint}>"
+                flag_label = _flag_label(flag, arg_hint, description)
                 if value_completer:
                     return value_completer.complete(ctx), ctx.prefix, flag_label
-                return [Completion(
-                    value=flag,
-                    display=f"<{arg_hint}>",
-                    description=description,
-                    arg_hint=arg_hint,
-                    is_arg_hint=True,
-                )], ctx.prefix, flag_label
+                return [], ctx.prefix, flag_label
 
         # Typing a flag → offer all flags from this node + ancestors.
         if ctx.prefix.startswith("-"):

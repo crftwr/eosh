@@ -245,10 +245,13 @@ pick them up without re-deriving the motivation.
 - **Mixing filter-based and manual selection — and folding "object-first"
   into it.** GUIs let you narrow a list by filter and then individually
   check/uncheck items; CUI tools (`find`, `grep`, `ps | grep python`,
-  `git add -p`) don't compose this way. Idea: extend `OptionsCompleter`'s
-  checkbox UI (`InlineMultiPicker`) toward "type to filter, Space to
-  toggle individual items," with the non-trivial question of whether
-  toggled selections survive a filter change.
+  `git add -p`) don't compose this way. Idea: give `InlinePicker` a
+  "type to filter, Space to toggle individual items" mode, with the
+  non-trivial question of whether toggled selections survive a filter
+  change. (The old flag-only checkbox picker, `InlineMultiPicker`, was
+  removed in #36 — it was a second copy of the picker built for one
+  caller. If this comes back it belongs in `InlinePicker` itself, for
+  every completer.)
 
   This turns out to be the key that unlocks "object-first interaction"
   (verb→object vs. object→verb) too — previously framed as its own

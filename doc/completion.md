@@ -32,10 +32,8 @@ class Completion:
     display: str = ""       # label shown in completion menu (defaults to value)
     description: str = ""   # metadata shown beside the completion
     fields: tuple[str, ...] = ()  # description split into columns (aligned across rows)
-    multi_select: bool = False   # True → opens InlineMultiPicker instead of InlinePicker
-    combinable: bool = False     # True for single-char flags that can be merged (-a -l → -al)
-    arg_hint: str = ""           # non-empty when flag requires a following argument (e.g. "N")
-    is_arg_hint: bool = False    # True when this IS the hint for a preceding flag's value
+    arg_hint: str = ""           # non-empty for a flag that takes a value ("N"): applying
+                                 # it moves straight on to completing that value
     verbatim: bool = False       # True → value may span tokens; inserted as-is
 ```
 
@@ -153,13 +151,9 @@ OptionsCompleter(
 )
 ```
 
-When all completions returned are `multi_select=True` (which `OptionsCompleter` always sets), the line editor opens `InlineMultiPicker` instead of `InlinePicker`. The user:
-- Navigates with arrows / `Ctrl+P/N` — the list opens with **no** row highlighted, so the first Down/Up moves onto the first/last flag
-- **Space** to toggle the highlighted flag's checked state
-- **Enter** to confirm (checked items, or the highlighted item if nothing is checked; nothing at all if neither — the picker just closes)
-- Types a letter to jump to the next flag starting with that letter
+Flags are ordinary rows in the same `InlinePicker` as every other candidate: typing narrows, Down/Up + Enter picks, one flag per TAB. A value-taking flag is displayed as `-d <N>` and carries `arg_hint`; picking it (or a lone one auto-applying) inserts `-d ` and `lineedit._complete` loops straight on to the value — the flag's value completer if one is registered, otherwise nothing, in which case the status bar already reads `-d <N>: …` (`Shell._get_arg_info`). Combined short flags (`-al`) are typed by hand.
 
-Boolean short flags are automatically merged: selecting `-a` and `-l` inserts `-al`. Flags with `arg_hint` are inserted individually followed by a space, then either a value picker or an inline hint line.
+This replaced a separate multi-select checkbox picker and an after-TAB "arg hint" line (discussion #36): a second copy of the picker's key handling and layout, three extra `Completion` fields every consumer had to respect, and a hint that repeated the status bar word for word.
 
 `OptionsCompleter` also handles:
 - **Flag deduplication** — flags already present in `ctx.args` are excluded
@@ -249,9 +243,6 @@ The rules that keep the merge from degrading the existing UX:
 | Dropped when a completer already offers the same single token | Both rows insert the same text, and the completer's is the one carrying the description. `awsut sagemaker studio <TAB>` listed `spaces` twice — once tagged `history`, once as `List the spaces in a domain`. Compared after unquoting, so `'My Documents/'` and `My Documents/` count as one token; anything spanning more (`spaces --max 5`) survives, since no per-argument completer can produce it |
 | Scoped to the current directory | The lines you ran *here* are the relevant ones; another checkout's `make deploy prod` is noise. Up/Down and `Ctrl+R` remain unscoped for the rest |
 | Suppressed when nothing is typed | A bare TAB should list available commands; Up/Down and `Ctrl+R` already cover recall with an empty line |
-| Suppressed on the flag picker (all candidates `multi_select`) | One history candidate would demote the Space-to-toggle checkbox picker to a plain list |
-| Suppressed on the arg-hint (a lone `is_arg_hint`) | The editor renders that lone candidate as a hint line; a second candidate turns it into a picker |
-| Excluded from flag-value pickers (`_prompt_for_arg`) | A history tail is not a value for the flag being filled in |
 | Never auto-applied | Every "exactly one candidate" shortcut in `lineedit._complete` counts only single-token candidates, so a unique token completion still applies on the first TAB, and a lone history candidate is always *shown* before it inserts several arguments |
 
 The last rule has a visible consequence worth knowing: when a position has
@@ -314,7 +305,7 @@ The line editor (`lineedit.py`) calls `_get_completions(line_before_cursor)` on 
 ```
 _get_completions(line_before_cursor)
   → _get_base_completions(line_before_cursor)   ← the dispatch chain below
-  → HistoryCompleter, unless the base result is a flag picker or an arg-hint
+  → HistoryCompleter, unless the line is empty
       → drop the tails the base result already offers as a single token
       → prepend what is left, anchored (verbatim=True)
 
@@ -325,10 +316,10 @@ _get_base_completions(line_before_cursor)
       → CommandNameCompleter
   → Has tokens?
       → Look up command in registry (or external completers)
+      → Last arg is a value-taking flag and prefix doesn't start with "-"?
+          → Yes, has value_completer → return value_completer.complete(ctx)
+          → Yes, no value completer  → return [] (the status bar says what to type)
       → completers[None] present AND prefix starts with "-"?
-          → Check if last arg is a value-taking flag (preceding-flag hint)
-              → Yes, has value_completer → return value_completer.complete(ctx)
-              → Yes, hint only → return [is_arg_hint=True Completion]
           → options_completer.complete(ctx) if should_activate()
       → No options matches yet, completers[arg_index] present?
           → positional_completer.complete(ctx) if should_activate()
@@ -344,11 +335,8 @@ Once completions are returned to the line editor:
 | Situation | Behaviour |
 |-----------|-----------|
 | Zero completions | Do nothing |
-| Single `is_arg_hint` completion | Show inline hint below buffer; cleared on next keypress |
-| Single `multi_select` + `arg_hint` completion | Auto-apply the flag (insert `flag `), then loop again to handle the value |
-| Single non-hint completion | Apply immediately; if it has `arg_hint`, then prompt for the value |
-| All `multi_select` | Open `InlineMultiPicker` |
-| Mixed | Open `InlinePicker` (narrows as user types more characters) |
+| Single (non-history) completion | Apply immediately; if it has `arg_hint`, loop again to complete the flag's value |
+| Several | Open `InlinePicker` (narrows as user types more characters); picking a row with `arg_hint` also loops on to its value |
 
 Every "single completion" row above counts **single-token** candidates only;
 `verbatim` (history) candidates are excluded, so they never auto-apply and never
@@ -390,7 +378,7 @@ input:
    closes itself (`InlinePicker.closed_empty`). Previously it stayed open
    rendering zero rows — invisible, but still consuming keystrokes, and Enter
    then discarded everything typed since TAB.
-2. `lineedit._complete` / `_prompt_for_arg` commit `picker.typed` into the
+2. `lineedit._complete` commits `picker.typed` into the
    buffer on **every** exit path — accept, dismiss, Esc, or empty-close — so
    the redraw on return can never erase characters the user saw echoed.
 
