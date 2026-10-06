@@ -414,26 +414,30 @@ class Command:
         remaining = [t for k, t in enumerate(tokens) if k not in consumed_indices]
         return node, remaining
 
-    def invoke(self, args: list[str] | tuple[str, ...]) -> None:
-        """Run this command (or the sub-command *args* resolve to)."""
-        node, remaining = self.resolve(list(args)) if self.children else (self, list(args))
-        node._invoke_self(remaining)
+    def invoke(self, args: list[str] | tuple[str, ...]):
+        """Run this command (or the sub-command *args* resolve to).
 
-    def _invoke_self(self, args: list[str]) -> None:
+        Returns what the handler returned — the shell takes an ``int`` as
+        the exit status — or ``2`` when argparse rejected the arguments
+        (its own convention; the error is already printed).
+        """
+        node, remaining = self.resolve(list(args)) if self.children else (self, list(args))
+        return node._invoke_self(remaining)
+
+    def _invoke_self(self, args: list[str]):
         if self.func is None:
             if self.children:
                 _print_group_help(self)
             else:
                 print(self.help_text or f"{self.name}: no handler")
-            return
+            return None
         if self.params is None:
             # A flat command declared without params: positional *args.
-            self.func(*args)
-            return
+            return self.func(*args)
         ns = _build_parser(self._full_name(), self.params, self.description or None).parse_args(args)
         if ns is None:
-            return
-        self.func(**vars(ns))
+            return 2   # usage error (or --help), already printed
+        return self.func(**vars(ns))
 
     def _full_name(self) -> str:
         """Space-separated full path from root, used in usage and errors."""

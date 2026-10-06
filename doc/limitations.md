@@ -208,33 +208,6 @@ spent in front of the user. Distinguishing "resumed and then finished" from
 "finished unobserved" needs the slot to record when it was last activated,
 which is more bookkeeping than the noise warrants today.
 
-## Python commands cannot report an exit status
-
-A `@registry.command` handler's return value is ignored.
-`PythonCommandSlot._compute_exit_code` derives the status purely from
-what escaped the handler: `SystemExit` → its code, `KeyboardInterrupt`
-→ 130, any other exception → 1, clean return → 0. So a handler has no
-way to say "I ran fine but the thing I was asked about failed", and
-`my_cmd && other` treats an unhappy-but-clean run as success.
-
-Raising `SystemExit` is not a workaround. A piped or redirected stage
-absorbs it into an exit code, but a plain foreground run re-raises it
-on the main thread (that is how `exit` works), which would take the
-shell down.
-
-Consequence for ported tools: every `awsut` leaf (`addons/awsut/`: `cli.py`,
-`sagemaker/` and `agentcore/`, all wrapped in
-`common.guard`) prints
-`error: …` to stderr and returns normally where the standalone
-`sm_jobs.py` / `sm_hub.py` scripts exited 1 or 2 —
-and where the `make` targets `studio` replaces failed the build.
-The distinction is visible to a human reading the output but not to
-`&&` / `||`. Fixing this properly means threading a return value (or a
-sentinel exception the slot understands) from `Command.invoke` through
-`_run_python_command_sync` and `PythonCommandSlot` into
-`_compute_exit_code` — worth doing, but it changes the contract for
-every Python command, not just these.
-
 ## `source-bash` imports variables and the cwd — nothing else
 
 The dump the child bash writes is `env -0` plus `$PWD`, so what comes
@@ -258,9 +231,7 @@ exits:
   alternative reading of an empty dump is "the script unset every
   variable", which would wipe the shell's environment.
 
-Two smaller edges: the child's exit status is printed but cannot become
-the shell's, per *Python commands cannot report an exit status* above; and
-a key that bash cannot bind to a variable (`not-an-identifier=1`, put in
+One smaller edge: a key that bash cannot bind to a variable (`not-an-identifier=1`, put in
 the environment by some other program) is never *removed* on import,
 because its absence from the dump doesn't prove the script unset it.
 

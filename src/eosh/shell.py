@@ -21,6 +21,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 # PTY multiplexing and raw-mode forwarding are POSIX-only.  On Windows these
 # modules are absent and the code paths that use them are never reached (the
@@ -288,6 +289,58 @@ class _PyStageHandle:
                 pass
 
 
+def _exit_status(result) -> int:
+    """A handler's return value as an exit status: an ``int`` is the status
+    (a ``bool`` is not), anything else — usually ``None`` — is success."""
+    if isinstance(result, int) and not isinstance(result, bool):
+        return result
+    return 0
+
+
+def run_handler(
+    fn: Callable[[], object],
+    label: str,
+    *,
+    announce_interrupt: bool = False,
+    interrupted: Callable[[], bool] | None = None,
+) -> int:
+    """Call *fn* — a Python command, a decorator, a ``@bg`` body — and turn
+    how it ended into an exit status.  The one place that decides this; every
+    execution path (foreground slot, pipeline stage, background slot, the
+    main-thread path) goes through here.
+
+    * a return value → :func:`_exit_status` of it;
+    * ``SystemExit`` → its code (a string is printed, status 1) — it never
+      takes the shell down;
+    * ``KeyboardInterrupt`` → 130, saying ``<label>: interrupted`` when
+      *announce_interrupt* (the main-thread path, where nobody else does);
+    * ``BrokenPipeError`` → 0: the reader went away, as ``head`` makes it;
+    * anything else → 1, with the error and traceback on stderr — unless
+      *interrupted()* says the parent tore the stage down, in which case the
+      I/O error is expected and the status is 130.
+    """
+    try:
+        return _exit_status(fn())
+    except SystemExit as e:
+        code = e.code
+        if isinstance(code, str):
+            print(code, file=sys.stderr)
+            return 1
+        return code if isinstance(code, int) else (1 if code else 0)
+    except KeyboardInterrupt:
+        if announce_interrupt:
+            print(f"{label}: interrupted")
+        return 130
+    except BrokenPipeError:
+        return 0
+    except Exception as e:
+        if interrupted is not None and interrupted():
+            return 130
+        print(f"{label}: error: {e}", file=sys.stderr)
+        traceback.print_exc()
+        return 1
+
+
 _current_slot = threading.local()
 
 # Set on threads spawned by _execute_pipeline for Python-command stages.
@@ -442,7 +495,6 @@ class PythonCommandSlot(ExitCallbackMixin):
         self._thread: threading.Thread | None = None
         self._proxy: _StdoutProxy | None = None
         self._err_proxy: _StdoutProxy | None = None
-        self._exit_exception: BaseException | None = None
         self._finished = threading.Event()
         # Stub attributes expected by the run() loop
         self.buffer = _NullBuffer()
@@ -499,33 +551,20 @@ class PythonCommandSlot(ExitCallbackMixin):
             sys.stderr.set_override(self._err_proxy)
         _current_slot.slot = self
         try:
-            self._cmd.invoke(self._raw_args)
-        except SystemExit as e:
-            self._exit_exception = e
-        except KeyboardInterrupt as e:
-            self._exit_exception = e
-        except Exception as e:
-            self._exit_exception = e
+            # Errors are reported here, on the slot's own stderr proxy, so
+            # they land with the command's output — live or replayed later.
+            self.exit_code = run_handler(
+                lambda: self._cmd.invoke(self._raw_args), self._cmd.name)
         finally:
             _current_slot.slot = None
             if hasattr(sys.stdout, "clear_override"):
                 sys.stdout.clear_override()
             if hasattr(sys.stderr, "clear_override"):
                 sys.stderr.clear_override()
-            self.exit_code = self._compute_exit_code()
+            if self.exit_code is None:
+                self.exit_code = 130   # interrupted before run_handler returned
             self._finished.set()
             self._fire_on_exit()
-
-    def _compute_exit_code(self) -> int:
-        exc = self._exit_exception
-        if exc is None:
-            return 0
-        if isinstance(exc, SystemExit):
-            code = exc.code
-            return code if isinstance(code, int) else (1 if code else 0)
-        if isinstance(exc, KeyboardInterrupt):
-            return 130
-        return 1
 
     # --- ProcessSlot-compatible interface ------------------------------------
 
@@ -1187,7 +1226,6 @@ class PipelineSlot(PythonCommandSlot):
         # methods that touch _proxy (activate/deactivate/replay_buffer)
         # are overridden here.
         self._proxy: _StdoutProxy | None = None
-        self._exit_exception: BaseException | None = None
         self._finished = threading.Event()
         self.buffer = _NullBuffer()
         self.exit_code: int | None = None
@@ -1284,14 +1322,7 @@ class PipelineSlot(PythonCommandSlot):
             sys.stdin.set_override(in_wrapper)
         _current_slot.slot = self
         try:
-            code = self._pipeline.run()
-            self.exit_code = code if isinstance(code, int) else 0
-        except SystemExit as e:
-            self._exit_exception = e
-        except KeyboardInterrupt as e:
-            self._exit_exception = e
-        except Exception as e:
-            self._exit_exception = e
+            self.exit_code = run_handler(self._pipeline.run, self.argv[0])
         finally:
             _current_slot.slot = None
             if hasattr(sys.stdout, "clear_override"):
@@ -1327,7 +1358,7 @@ class PipelineSlot(PythonCommandSlot):
             if self._out_reader_thread is not None:
                 self._out_reader_thread.join(timeout=1.0)
             if self.exit_code is None:
-                self.exit_code = self._compute_exit_code()
+                self.exit_code = 130
             self._finished.set()
             self._fire_on_exit()
 
@@ -1438,6 +1469,8 @@ class Shell:
         # True while the line currently being executed handed its work to a
         # background context — see _execute / _notify_when_backgrounded.
         self._backgrounded = False
+        # Set by the `exit` built-in; run() ends after the current line.
+        self._exit_requested = False
         self._register_builtins()
         self.registry.mark_builtins()
         var_registry.mark_builtins()
@@ -1896,10 +1929,16 @@ class Shell:
 
         @self.registry.command(name="exit", help="Exit the shell.")
         def exit_shell():
+            # A pipeline stage is a subshell in POSIX terms: `exit | cat`
+            # does not end the shell.
+            if getattr(_in_pipeline, "flag", False):
+                return
             running = self._running_contexts()
             if running and not self._confirm_exit(running):
-                return
-            raise SystemExit(0)
+                return 1
+            # A request, not a SystemExit: a handler's SystemExit is just an
+            # exit status (see run_handler).  run() ends after this line.
+            self._exit_requested = True
 
         @self.registry.command(name="reload", help="Reload ~/.eosh/config.py.")
         def reload_config():
@@ -1986,14 +2025,14 @@ class Shell:
         def source_bash_cmd(script, command, no_cd, quiet):
             if command is not None and script:
                 print("source-bash: -c takes the whole script; don't pass a FILE too")
-                return
+                return 2
             if command is not None:
                 body = command
             elif script:
                 path = os.path.expanduser(script[0])
                 if not os.path.isfile(path):
                     print(f"source-bash: {script[0]}: no such file")
-                    return
+                    return 1
                 body = " ".join(shlex.quote(a) for a in ["source", path, *script[1:]])
             else:
                 body = passthrough_input_block(
@@ -2011,7 +2050,7 @@ class Shell:
                 print("source-bash: environment not imported (script did not exit normally)")
                 if code != 0:
                     print(f"source-bash: exit status {code}")
-                return
+                return code or 1
 
             changed, removed, new_cwd = self._apply_bash_env(
                 cwd, env, import_cwd=not no_cd
@@ -2019,7 +2058,7 @@ class Shell:
             if code != 0:
                 print(f"source-bash: exit status {code}")
             if quiet:
-                return
+                return code
             # Names only, never values — a sourced script is exactly where an
             # AWS_SESSION_TOKEN comes from, and this line lands in the scrollback.
             parts = []
@@ -2030,6 +2069,8 @@ class Shell:
             if new_cwd:
                 parts.append(f"cwd: {new_cwd}")
             print(f"source-bash: {'; '.join(parts)}" if parts else "source-bash: no changes")
+            # The script's own status is the command's — `source-bash x && …`.
+            return code
 
         @self.registry.command(
             name="alias",
@@ -2767,7 +2808,7 @@ class Shell:
         outer_out_fd = _dup_threadlocal_override_fd(sys.stdout) if _in_outer_pipe else None
 
         # Workers list contains either subprocess.Popen instances or
-        # _PyStageHandle objects (see _start_python_stage_thread).
+        # _PyStageHandle objects (see _start_stage_thread).
         workers: list = []
         for idx, stage in enumerate(stages):
             stdin_fd_pipe = pipe_fds[idx - 1][0] if idx > 0 else outer_in_fd
@@ -2782,8 +2823,10 @@ class Shell:
                 # on the stage itself — redirects belong inside the braced
                 # body where the user can scope them precisely.  An MVP-level
                 # warning would be noise; just ignore them silently.
-                worker = self._start_decorator_stage_thread(
-                    decorator_call=stage.decorator,
+                call = stage.decorator
+                worker = self._start_stage_thread(
+                    label=f"@{call.name}",
+                    fn=lambda call=call: self._invoke_decorator(call),
                     stdin_fd=stdin_fd_pipe,
                     stdout_fd=stdout_fd_pipe,
                 )
@@ -2849,15 +2892,15 @@ class Shell:
             if redirect_error:
                 pass  # leave worker=None; cleanup below closes any open files/pipes
             elif is_py_stage:
-                worker = self._start_python_stage_thread(
-                    cmd=cmd,
-                    args=tokens[1:],
+                worker = self._start_stage_thread(
+                    label=cmd.name,
+                    fn=lambda cmd=cmd, args=tokens[1:], env=env_prefix: (
+                        self._invoke_with_env(cmd, args, env)),
                     stdin_fd=stdin_fd_pipe if stdin_pipe_used else None,
                     stdout_fd=stdout_fd_pipe if stdout_pipe_used else None,
                     stdin_file=stdin_file,
                     stdout_file=stdout_file,
                     stderr_dst=stderr_dst,
-                    env_prefix=env_prefix,
                 )
             else:
                 stdin_arg = stdin_file if stdin_file else stdin_fd_pipe
@@ -2962,33 +3005,29 @@ class Shell:
             exit_code = 130
         return exit_code
 
-    def _start_python_stage_thread(
+    def _start_stage_thread(
         self,
         *,
-        cmd,
-        args: list[str],
+        label: str,
+        fn: Callable[[], object],
         stdin_fd: int | None,
         stdout_fd: int | None,
-        stdin_file,
-        stdout_file,
-        stderr_dst,
-        env_prefix: dict[str, str] | None = None,
+        stdin_file=None,
+        stdout_file=None,
+        stderr_dst=None,
     ) -> "_PyStageHandle":
-        """Run a registered Python command as one stage of a pipeline.
+        """Run *fn* — a Python command or a decorator — as one pipeline stage.
 
         The thread takes ownership of *stdin_fd* / *stdout_fd* (raw OS pipe
         ends) or, when an explicit redirect is in play, the corresponding
-        opened file object.  It binds them to thread-local
-        sys.stdin/sys.stdout/sys.stderr for the duration of cmd.invoke().
-
-        *env_prefix* (from a ``FOO=bar pycmd`` stage) is applied to the
-        process-wide ``os.environ`` around ``cmd.invoke()``.  See
-        :meth:`_temp_environ` for the sibling-visibility caveat this carries
-        in a multi-stage pipeline.
+        opened file object, and binds them to its thread-local
+        ``sys.stdin`` / ``sys.stdout`` / ``sys.stderr`` for the duration of
+        *fn*.  A decorator body that re-enters ``_execute_pipeline`` through
+        ``Pipeline.run()`` inherits that binding, so its output flows on to
+        the next stage.  The exit status comes from :func:`run_handler`.
         """
-        # Decide which underlying object the thread owns.  Exactly one of
-        # (stdin_fd, stdin_file) is set when this stage has any stdin source,
-        # and similarly for stdout.
+        # Exactly one of (stdin_fd, stdin_file) is set when this stage has
+        # any stdin source, and similarly for stdout.
         in_obj = None
         if stdin_file is not None:
             in_obj = stdin_file
@@ -3001,9 +3040,9 @@ class Shell:
         elif stdout_fd is not None:
             out_obj = os.fdopen(stdout_fd, "wb", buffering=0, closefd=True)
 
-        err_obj = stderr_dst  # may be a file, "stdout" sentinel (subprocess.STDOUT), or None
+        err_obj = stderr_dst  # a file, subprocess.STDOUT (2>&1), or None
 
-        handle = _PyStageHandle(cmd_name=cmd.name)
+        handle = _PyStageHandle(cmd_name=label)
         in_wrapper = io.TextIOWrapper(in_obj, encoding="utf-8", errors="replace") if in_obj is not None else None
         out_wrapper = io.TextIOWrapper(out_obj, encoding="utf-8", errors="replace", write_through=True) if out_obj is not None else None
         err_wrapper = None
@@ -3025,44 +3064,22 @@ class Shell:
                     sys.stderr.set_override(out_wrapper if out_wrapper is not None else sys.stdout)
                 elif err_wrapper is not None:
                     sys.stderr.set_override(err_wrapper)
-
-                try:
-                    with self._temp_environ(env_prefix or {}):
-                        cmd.invoke(args)
-                    handle.exit_code = 0
-                except SystemExit as e:
-                    # Don't propagate; an `exit | cat` should not kill the shell.
-                    code = e.code
-                    handle.exit_code = code if isinstance(code, int) else (1 if code else 0)
-                except BrokenPipeError:
-                    handle.exit_code = 0
-                except KeyboardInterrupt:
-                    handle.exit_code = 130
-                except Exception as e:
-                    if handle.interrupted:
-                        # The parent closed our wrappers as part of Ctrl+C
-                        # handling.  Any I/O the worker did afterward will
-                        # raise (ValueError: closed file, or OSError) — that's
-                        # expected, not an error to report.
-                        handle.exit_code = 130
-                    else:
-                        print(f"{cmd.name}: error: {e}", file=sys.stderr)
-                        traceback.print_exc()
-                        handle.exit_code = 1
+                # After interrupt() closed our wrappers, an I/O error is the
+                # expected way out, not one to report.
+                handle.exit_code = run_handler(
+                    fn, label, interrupted=lambda: handle.interrupted)
             finally:
                 sys.stdin.clear_override()
                 sys.stdout.clear_override()
                 sys.stderr.clear_override()
-                # Flush wrappers so downstream readers see all output before
-                # the pipe closes.
+                # Flush, then close (which closes the underlying fds/files) —
+                # output first, so a reader pipe sees all of it and then EOF.
                 for w in (out_wrapper, err_wrapper):
                     if w is not None:
                         try:
                             w.flush()
                         except Exception:
                             pass
-                # Close the wrappers (which closes the underlying fds/files).
-                # Order matters: close output first so a reader pipe sees EOF.
                 for w in (out_wrapper, err_wrapper, in_wrapper):
                     if w is not None:
                         try:
@@ -3072,133 +3089,35 @@ class Shell:
                 _in_pipeline.flag = False
                 handle.done.set()
 
-        t = threading.Thread(target=_target, name=f"pipe-{cmd.name}", daemon=True)
+        t = threading.Thread(target=_target, name=f"pipe-{label}", daemon=True)
         handle.thread = t
         t.start()
         return handle
 
-    def _start_decorator_stage_thread(
-        self,
-        *,
-        decorator_call,
-        stdin_fd: int | None,
-        stdout_fd: int | None,
-    ) -> "_PyStageHandle":
-        """Run a ``@name`` decorator as one stage of a multi-stage pipeline.
+    def _invoke_decorator(self, decorator_call):
+        """Run a ``@name`` decorator over its body; returns its result.
 
-        Mirrors :meth:`_start_python_stage_thread` but invokes the decorator
-        function directly rather than dispatching through the command
-        registry.  The decorator's body re-enters ``_execute_pipeline`` via
-        ``Pipeline.run()``; that nested execution inherits this thread's
-        rebound ``sys.stdout`` (the pipe's write end) through the
-        thread-local routers, so the body's output flows downstream
-        transparently.
+        127 for an unknown decorator and 2 for a flag error (already printed
+        by its parser), matching what a command line would report.
         """
-        from .decorators import registry as decorator_registry, parse_decorator_args
-
-        in_obj = os.fdopen(stdin_fd, "rb", buffering=0, closefd=True) if stdin_fd is not None else None
-        out_obj = os.fdopen(stdout_fd, "wb", buffering=0, closefd=True) if stdout_fd is not None else None
-
-        handle = _PyStageHandle(cmd_name=f"@{decorator_call.name}")
-        in_wrapper = io.TextIOWrapper(in_obj, encoding="utf-8", errors="replace") if in_obj is not None else None
-        out_wrapper = io.TextIOWrapper(out_obj, encoding="utf-8", errors="replace", write_through=True) if out_obj is not None else None
-        for w in (in_wrapper, out_wrapper):
-            if w is not None:
-                handle._io_objs.append(w)
-
-        deco = decorator_registry.get(decorator_call.name)
-
-        def _target():
-            _in_pipeline.flag = True
-            try:
-                if in_wrapper is not None:
-                    sys.stdin.set_override(in_wrapper)
-                if out_wrapper is not None:
-                    sys.stdout.set_override(out_wrapper)
-
-                if deco is None:
-                    print(
-                        f"eosh: unknown decorator: @{decorator_call.name}",
-                        file=sys.stderr,
-                    )
-                    handle.exit_code = 127
-                    return
-
-                kwargs = parse_decorator_args(deco, decorator_call.flag_tokens)
-                if kwargs is None:
-                    handle.exit_code = 2
-                    return
-
-                try:
-                    deco.func(decorator_call.body, **kwargs)
-                    handle.exit_code = 0
-                except SystemExit as e:
-                    code = e.code
-                    handle.exit_code = code if isinstance(code, int) else (1 if code else 0)
-                except BrokenPipeError:
-                    handle.exit_code = 0
-                except KeyboardInterrupt:
-                    handle.exit_code = 130
-                except Exception as e:
-                    if handle.interrupted:
-                        handle.exit_code = 130
-                    else:
-                        print(f"@{deco.name}: error: {e}", file=sys.stderr)
-                        traceback.print_exc()
-                        handle.exit_code = 1
-            finally:
-                sys.stdin.clear_override()
-                sys.stdout.clear_override()
-                sys.stderr.clear_override()
-                if out_wrapper is not None:
-                    try:
-                        out_wrapper.flush()
-                    except Exception:
-                        pass
-                for w in (out_wrapper, in_wrapper):
-                    if w is not None:
-                        try:
-                            w.close()
-                        except Exception:
-                            pass
-                _in_pipeline.flag = False
-                handle.done.set()
-
-        t = threading.Thread(
-            target=_target, name=f"pipe-@{decorator_call.name}", daemon=True
-        )
-        handle.thread = t
-        t.start()
-        return handle
-
-    def _execute_decorator_stage(self, stage: Stage) -> int:
-        """Invoke a ``@name`` decorator with its parsed body pipeline."""
         # Local import — keeps decorators-package init lazy and avoids any
         # circular-import surprises during module load.
         from .decorators import registry as decorator_registry, parse_decorator_args
 
-        deco_call = stage.decorator
-        deco = decorator_registry.get(deco_call.name)
+        deco = decorator_registry.get(decorator_call.name)
         if deco is None:
-            print(f"eosh: unknown decorator: @{deco_call.name}", file=sys.stderr)
+            print(f"eosh: unknown decorator: @{decorator_call.name}", file=sys.stderr)
             return 127
-
-        kwargs = parse_decorator_args(deco, deco_call.flag_tokens)
+        kwargs = parse_decorator_args(deco, decorator_call.flag_tokens)
         if kwargs is None:
-            return 2  # parse error already printed by CmdParser
+            return 2
+        return deco.func(decorator_call.body, **kwargs)
 
-        try:
-            deco.func(deco_call.body, **kwargs)
-        except SystemExit:
-            raise
-        except KeyboardInterrupt:
-            print(f"@{deco.name}: interrupted")
-            return 130
-        except Exception as e:
-            print(f"@{deco.name}: error: {e}", file=sys.stderr)
-            traceback.print_exc()
-            return 1
-        return 0
+    def _execute_decorator_stage(self, stage: Stage) -> int:
+        """Run a lone ``@name`` stage on the main thread."""
+        call = stage.decorator
+        return run_handler(lambda: self._invoke_decorator(call), f"@{call.name}",
+                           announce_interrupt=True)
 
     def _execute_stage(self, stage: Stage) -> int:
         """Execute a lone stage with no redirects on the terminal.
@@ -3241,8 +3160,8 @@ class Shell:
                 # context switching, so run the Python command synchronously.
                 # passthrough_run/passthrough_input fall back to direct
                 # subprocess.run/input since no slot is registered.
-                with self._temp_environ(env_prefix):
-                    return self._run_python_command_sync(cmd, command_name, args)
+                return run_handler(lambda: self._invoke_with_env(cmd, args, env_prefix),
+                                   command_name, announce_interrupt=True)
             else:
                 # Interactive Python command — run in a thread so Ctrl+] works.
                 # The per-command env prefix is applied for the duration of the
@@ -3267,32 +3186,13 @@ class Shell:
                     print(f"{command_name}: interrupted")
                     return 130
                 slot.deactivate()
-                exc = slot._exit_exception
-                if isinstance(exc, SystemExit):
-                    raise exc
-                if exc is not None and not isinstance(exc, KeyboardInterrupt):
-                    print(f"{command_name}: error: {exc}")
                 return slot.exit_code or 0
 
         return self._execute_external(command_name, args, env_prefix=env_prefix)
 
-    def _run_python_command_sync(self, cmd, command_name: str, args: list[str]) -> int:
-        """Invoke a Python command on the main thread (Windows path)."""
-        try:
-            cmd.invoke(args)
-        except SystemExit:
-            raise
-        except KeyboardInterrupt:
-            print(f"{command_name}: interrupted")
-            return 130
-        except TypeError as e:
-            print(f"{command_name}: {e}")
-            return 1
-        except Exception as e:
-            print(f"{command_name}: error: {e}")
-            traceback.print_exc()
-            return 1
-        return 0
+    def _invoke_with_env(self, cmd, args: list[str], env_prefix: dict[str, str] | None):
+        with self._temp_environ(env_prefix or {}):
+            return cmd.invoke(args)
 
     def _execute_external_windows(
         self, command_name: str, args: list[str], env_prefix: dict[str, str] | None = None
@@ -3846,15 +3746,10 @@ class Shell:
                             print(f"{slot.argv[0]}: interrupted")
                             continue
                         else:
-                            exc = slot._exit_exception
                             ctx.process_slot = None
                             self._notify_resumed_done(slot)
-                            if isinstance(exc, SystemExit):
-                                raise exc
-                            if exc is not None and not isinstance(exc, KeyboardInterrupt):
-                                print(f"\n[Python command error: {exc}]")
-                            elif slot.exit_code and slot.exit_code != 0:
-                                print(f"\n[Process exited with code {slot.exit_code}]")
+                            # An error was already reported on the slot's
+                            # own stderr, which the user just watched.
                             continue
                     else:
                         # Resume a PTY subprocess.
@@ -3903,6 +3798,8 @@ class Shell:
                 if full_text.strip():
                     self._line_editor.add_to_history(full_text)
                     self._execute(full_text.strip())
+                    if self._exit_requested:
+                        break
             except KeyboardInterrupt:
                 continue
             except EOFError:

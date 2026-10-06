@@ -1,7 +1,7 @@
 """Test-suite-wide pytest hooks.
 
 Provides the ``requires_real_stdio`` marker for tests that exercise
-eosh's in-process pipeline (``_start_python_stage_thread``).  Those
+eosh's in-process pipeline (``_start_stage_thread``).  Those
 workers route a Python stage's ``print()`` through a thread-local
 override on ``sys.stdout``; pytest's per-test stdio capture replaces
 ``sys.stdout`` with its own ``EncodedFile`` between the ``shell``

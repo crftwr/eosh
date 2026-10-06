@@ -57,9 +57,7 @@ def test_skipped_recipe_registers_a_placeholder(isolated, capsys):
     cmd = registry.get("needs_dep")
     assert cmd is not None
     assert "unavailable" in cmd.help_text
-    with pytest.raises(SystemExit) as excinfo:
-        cmd.invoke(["any", "args"])
-    assert excinfo.value.code == 127
+    assert cmd.invoke(["any", "args"]) == 127   # the exit status, not a SystemExit
     err = capsys.readouterr().err
     assert "needs_dep: needs the Python module 'eosh_no_such_dependency'" in err
 
