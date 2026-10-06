@@ -117,7 +117,7 @@ class TestDescribeSlot:
 class TestRegistration:
     def test_register_wires_smart_completer(self):
         """The recipe registers a wildcard positional + flag arg() declarations."""
-        from eosh.commands import registry as command_registry, WILDCARD, get_positional_completer
+        from eosh.commands import registry as command_registry
         from eosh.recipes import tar as tar_recipe
 
         if not _which("tar"):
@@ -127,14 +127,13 @@ class TestRegistration:
         cmd = command_registry.get("tar")
         assert cmd is not None
         # The wildcard positional serves any integer slot.
-        c0 = get_positional_completer(cmd.completers, 0)
-        c5 = get_positional_completer(cmd.completers, 5)
+        c0 = cmd.positional_completer(0)
+        c5 = cmd.positional_completer(5)
         assert c0 is c5
         assert isinstance(c0, _TarPositionalCompleter)
-        assert isinstance(cmd.completers.get(WILDCARD), _TarPositionalCompleter)
         # Flag completer is the standard OptionsCompleter built from arg() declarations.
-        assert "-c" in cmd.completers.get(None).options
-        assert "-f" in cmd.completers.get(None).args
+        assert "-c" in cmd.options_completer().options
+        assert "-f" in cmd.options_completer().args
 
 
 def _which(cmd: str) -> bool:

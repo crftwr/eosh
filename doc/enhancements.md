@@ -282,7 +282,7 @@ pick them up without re-deriving the motivation.
 
 - **Viewing two places at once.** `cp`/`mv`/`git diff` and side-by-side
   context comparison all want simultaneous views of two locations or
-  states; eosh's context stack supports *switching* but not *viewing
+  states; eosh's contexts support *switching* but not *viewing
   side by side*, and tmux-style splits are disconnected from the shell.
   Open question: should the shell own a split-view mode, or is
   "remember one side" good enough for most cases?

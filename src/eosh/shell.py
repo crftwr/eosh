@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 
 # PTY multiplexing and raw-mode forwarding are POSIX-only.  On Windows these
@@ -32,7 +33,10 @@ if not IS_WINDOWS:
     import tty
 
 from . import terminal
-from .commands import arg, CommandRegistry, get_positional_completer, registry as command_registry
+from .commands import (
+    _FLAG_PREFIXES, arg, Command, CommandRegistry, options_completer,
+    registry as command_registry,
+)
 from .completion import (
     CommandNameCompleter,
     CompletionContext,
@@ -1067,28 +1071,67 @@ def _strip_continuation(line: str) -> str:
     return line.rstrip(" \t")[:-1]
 
 
-def _positional_index(args: list[str], options_completer) -> int:
+def _positional_index(args: list[str], node: Command) -> int:
     """Return the number of positional (non-flag) arguments in *args*.
 
     Flags are skipped without counting: boolean flags advance by 1 token;
-    value-taking flags (those listed in ``options_completer.args``) advance
-    by 2 tokens because they consume the following token as their value.
+    *node*'s value-taking flags advance by 2 because they consume the
+    following token as their value.
     """
     pos = 0
     i = 0
-    value_taking = (
-        set(options_completer.args)
-        if options_completer and hasattr(options_completer, "args")
-        else set()
-    )
     while i < len(args):
         token = args[i]
-        if token.startswith(("-", "+")):
-            i += 2 if token in value_taking else 1
+        if token.startswith(_FLAG_PREFIXES):
+            i += 2 if node.takes_value(token) else 1
         else:
             pos += 1
             i += 1
     return pos
+
+
+@dataclass
+class _Slot:
+    """What one token of a command line is — the single answer that TAB
+    completion and the status bar both act on.
+
+    *kind* is one of:
+
+    * ``"delegate"`` — the command's ``delegate`` completer answers every slot;
+    * ``"flag"`` — a flag being typed, and the node has flags;
+    * ``"value"`` — the value of *flag*, the value-taking flag just before it;
+    * ``"subcommand"`` — the first positional of a group: a child's name;
+    * ``"positional"`` — positional slot *pos_idx* of *node*;
+    * ``"unknown"`` — no registered command (*node* is ``None``).
+
+    *args* are the tokens after the resolved node, sub-command names removed.
+    """
+    node: Command | None
+    args: list[str]
+    kind: str
+    flag: str = ""
+    pos_idx: int = 0
+
+
+def _resolve_slot(cmd: Command | None, args: list[str], token: str) -> _Slot:
+    """Classify *token*, typed after *args*, against command *cmd*.
+
+    A flat command is a node with no children, so the same walk covers both:
+    resolve to the deepest sub-command, then look at that node's own params.
+    """
+    if cmd is None:
+        return _Slot(None, args, "unknown", pos_idx=len(args))
+    node, rest = cmd.resolve(args)
+    if node.delegate is not None:
+        return _Slot(node, rest, "delegate")
+    if token.startswith(_FLAG_PREFIXES) and node.options_completer() is not None:
+        return _Slot(node, rest, "flag")
+    if rest and rest[-1].startswith(_FLAG_PREFIXES) and node.takes_value(rest[-1]):
+        return _Slot(node, rest, "value", flag=rest[-1])
+    pos_idx = _positional_index(rest, node)
+    if node.children and pos_idx == 0:
+        return _Slot(node, rest, "subcommand")
+    return _Slot(node, rest, "positional", pos_idx=pos_idx)
 
 
 def _flag_label(flag: str, arg_hint: str, description: str) -> str:
@@ -1123,7 +1166,7 @@ def _positional_label(cmd, pos_idx: int, command_name: str, args: list[str]) -> 
     """
     if cmd is None or cmd.params is None:
         return f"arg {pos_idx + 1}"
-    completer = get_positional_completer(cmd.completers, pos_idx)
+    completer = cmd.positional_completer(pos_idx)
     if completer is not None:
         dynamic = completer.describe_slot(args, pos_idx)
         if dynamic is not None:
@@ -1610,8 +1653,8 @@ class Shell:
 
         # Case B: cursor is on a decorator-flag token (``@watch -<TAB>``).
         if prefix.startswith(("-", "+")) and body_start >= len(tokens):
-            options_completer = deco.completers.get(None)
-            if options_completer is None:
+            deco_options = options_completer(deco.params or [])
+            if deco_options is None:
                 return "return", ([], prefix, f"@{deco_name}")
             ctx = CompletionContext(
                 command=f"@{deco_name}",
@@ -1621,8 +1664,8 @@ class Shell:
                 line=line_before_cursor,
                 shell_context=self.context_manager.current(),
             )
-            if options_completer.should_activate(ctx):
-                return "return", (options_completer.complete(ctx), prefix, f"@{deco_name} option")
+            if deco_options.should_activate(ctx):
+                return "return", (deco_options.complete(ctx), prefix, f"@{deco_name} option")
             return "return", ([], prefix, f"@{deco_name} option")
 
         # Case C: cursor is in the body.  Strip the decorator portion and
@@ -1772,72 +1815,61 @@ class Shell:
             shell_context=self.context_manager.current(),
         )
 
-        cmd = self.registry.get(command_name)
+        slot = _resolve_slot(self.registry.get(command_name), args, prefix)
+        node = slot.node
+        # Completers see the tokens after the resolved node — for a flat
+        # command that is every argument.
+        ctx = CompletionContext(
+            command=command_name,
+            args=slot.args,
+            arg_index=len(slot.args),
+            prefix=prefix,
+            line=line_before_cursor,
+            shell_context=self.context_manager.current(),
+        )
 
-        # Tree-shaped command: resolve to the current node, then offer
-        # sub-command names / positionals / inherited flags.
-        if cmd is not None and cmd.children:
-            node, remaining_args = cmd.resolve(args)
-            # Update ctx so positional completers see the correct index
-            # (the position relative to the resolved node).
-            tree_ctx = CompletionContext(
-                command=command_name,
-                args=remaining_args,
-                arg_index=len(remaining_args),
-                prefix=prefix,
-                line=line_before_cursor,
-                shell_context=self.context_manager.current(),
-            )
-            return self._complete_tree_node(node, tree_ctx, prefix)
-
-        completers_dict = cmd.completers if cmd else None
-
-        has_completer = False
+        # A registered completer that returns [] means "nothing here"; only a
+        # slot with *no* completer falls back to argcomplete and then files.
+        has_completer = slot.kind != "positional" and slot.kind != "unknown"
         completions: list[Completion] = []
-        label = command_name  # default: just show the command name
+        label = command_name
 
-        if completers_dict:
-            options_completer = completers_dict.get(None)
-            pos_idx = _positional_index(args, options_completer)
-            positional_completer = get_positional_completer(completers_dict, pos_idx)
-
-            # When the last arg is a value-taking flag (e.g. "du -d <TAB>"),
-            # the slot belongs to its value: offer the flag's value completer,
-            # or nothing — never positional/file candidates.  With nothing to
-            # offer, the status bar (``_get_arg_info``) already says what to
-            # type.  Skip when the user is already typing another flag (prefix
-            # starts with "-" or "+").
-            if (options_completer and ctx.args and not ctx.prefix.startswith(("-", "+"))
-                    and hasattr(options_completer, "get_preceding_flag_hint")):
-                hint_info = options_completer.get_preceding_flag_hint(ctx)
-                if hint_info:
-                    flag, arg_hint, description, value_completer = hint_info
-                    flag_label = _flag_label(flag, arg_hint, description)
-                    if value_completer:
-                        # Flag has a dedicated value completer (e.g. -C DIR → DirCompleter).
-                        return value_completer.complete(ctx), ctx.prefix, flag_label
-                    return [], ctx.prefix, flag_label
-
-            # Options completer takes priority when typing a flag-prefixed token.
-            if options_completer and ctx.prefix.startswith(("-", "+")):
+        if slot.kind == "delegate":
+            if node.delegate.should_activate(ctx):
+                completions = node.delegate.complete(ctx)
+        elif slot.kind == "flag":
+            flags = node.options_completer()
+            if flags.should_activate(ctx):
+                completions = flags.complete(ctx)
+            label = f"{command_name} option"
+        elif slot.kind == "value":
+            # The slot belongs to the flag's value: its value completer, or
+            # nothing — never positional/file candidates.  With nothing to
+            # offer, the status bar (``_get_arg_info``) says what to type.
+            flag, arg_hint, description, value_completer = (
+                node.options_completer().get_preceding_flag_hint(ctx))
+            if value_completer is not None:
+                completions = value_completer.complete(ctx)
+            label = _flag_label(flag, arg_hint, description)
+        elif slot.kind == "subcommand":
+            completions = [
+                Completion(value=name, description=node.children[name].description)
+                for name in sorted(node.children) if name.startswith(prefix)
+            ]
+            label = f"{command_name} subcommand"
+        elif slot.kind == "positional":
+            positional = node.positional_completer(slot.pos_idx)
+            if positional is not None:
                 has_completer = True
-                if options_completer.should_activate(ctx):
-                    completions = options_completer.complete(ctx)
-                    label = f"{command_name} option"
-
-            # Positional completer as fallback (or primary when no "-" prefix).
-            if not completions and positional_completer:
-                has_completer = True
-                if positional_completer.should_activate(ctx):
-                    completions = positional_completer.complete(ctx)
-                    label = _positional_label(cmd, pos_idx, command_name, args)
+                if positional.should_activate(ctx):
+                    completions = positional.complete(ctx)
+                label = _positional_label(node, slot.pos_idx, command_name, slot.args)
 
         # argcomplete fallback: the de-facto Python CLI completion library
         # (pipx, conda, pre-commit, tox, pdm, httpie, …).  Detection is done
         # by inspecting the script for the ``PYTHON_ARGCOMPLETE_OK`` marker,
-        # so it never invokes side-effecting tools blindly.  Only where no
-        # completer is registered: one that returned ``[]`` meant "nothing".
-        # (Cobra tools have no fallback — they are opted in per command as a
+        # so it never invokes side-effecting tools blindly.  (Cobra tools
+        # have no fallback — they are opted in per command as a
         # ``delegate``; see ``eosh.recipes.enable_cobra``.)
         if not has_completer:
             argc = get_argcomplete_fallback()
@@ -1904,114 +1936,31 @@ class Shell:
                 command_name = expansion_tokens[0]
                 preceding_args = expansion_tokens[1:] + preceding_args
 
-        cmd = self.registry.get(command_name)
-        if cmd is None:
-            return None
+        slot = _resolve_slot(self.registry.get(command_name), preceding_args, token)
+        node = slot.node
+        if slot.kind in ("unknown", "delegate"):
+            return None   # nothing declared to describe
 
-        # Resolve to the right node and options_completer.
-        if cmd.children:
-            node, remaining_args = cmd.resolve(preceding_args)
-            options_completer = node.merged_options_completer()
-        else:
-            node = cmd
-            remaining_args = preceding_args
-            options_completer = cmd.completers.get(None)
-
-        if token.startswith(("-", "+")):
-            # ── Flag token ────────────────────────────────────────────────────
-            if options_completer is None or not hasattr(options_completer, "options"):
+        if token.startswith(_FLAG_PREFIXES) or slot.kind == "value":
+            # The flag itself, or the value of the flag just before the caret.
+            flags = node.options_completer()
+            flag = slot.flag or token
+            if flags is None:
                 return None
-            desc = options_completer.options.get(token, "")
-            arg_hint = getattr(options_completer, "args", {}).get(token, "")
-            result = _flag_label(token, arg_hint, desc)
-            return result if result != token else None
+            label = _flag_label(flag, flags.args.get(flag, ""), flags.options.get(flag, ""))
+            return label if label != flag else None
 
-        # ── Non-flag token: positional arg or value for a preceding flag ───────
+        if slot.kind == "subcommand":
+            # The child's description — or, for a partial name that doesn't
+            # match a child yet, just say what the slot is.
+            child = node.children.get(token)
+            if child is None:
+                return f"{command_name} subcommand"
+            if child.description:
+                return f"{command_name} {token}: {child.description}"
+            return f"{command_name} {token}"
 
-        value_taking = set(getattr(options_completer, "args", {})) if options_completer else set()
-        if remaining_args and remaining_args[-1].startswith(("-", "+")) and remaining_args[-1] in value_taking:
-            # Caret is on a flag value — show the flag's description.
-            flag = remaining_args[-1]
-            desc = getattr(options_completer, "options", {}).get(flag, "")
-            arg_hint = getattr(options_completer, "args", {}).get(flag, "")
-            result = _flag_label(flag, arg_hint, desc)
-            return result if result != flag else None
-
-        # Caret is on a positional arg.
-        pos_idx = _positional_index(remaining_args, options_completer)
-
-        # For tree commands: if this slot is a sub-command name, show its
-        # description (or fall back to "<cmd> subcommand" for a partial token
-        # that doesn't yet match a child — mirrors _complete_tree_node).
-        if node.children and pos_idx == 0:
-            if token in node.children:
-                child = node.children[token]
-                if child.description:
-                    return f"{command_name} {token}: {child.description}"
-                return f"{command_name} {token}"
-            return f"{command_name} subcommand"
-
-        return _positional_label(node, pos_idx, command_name, remaining_args)
-
-    def _complete_tree_node(self, node, ctx, prefix):
-        """Compute completions when the user is typing within a sub-command tree.
-
-        *node* is the resolved node (the deepest sub-command in ctx.args).
-        *ctx.args* are the tokens remaining after stripping consumed
-        sub-command names; *ctx.arg_index* reflects that.
-        """
-        cmd_name = ctx.command or ""
-        # Build a merged options completer (this node + ancestors).
-        merged_options = node.merged_options_completer()
-
-        # Preceding value-taking flag known at this node or an ancestor: the
-        # slot belongs to its value — its value completer, or nothing (the
-        # status bar says what to type).
-        if (merged_options and ctx.args and not ctx.prefix.startswith("-")
-                and hasattr(merged_options, "get_preceding_flag_hint")):
-            hint_info = merged_options.get_preceding_flag_hint(ctx)
-            if hint_info:
-                flag, arg_hint, description, value_completer = hint_info
-                flag_label = _flag_label(flag, arg_hint, description)
-                if value_completer:
-                    return value_completer.complete(ctx), ctx.prefix, flag_label
-                return [], ctx.prefix, flag_label
-
-        # Typing a flag → offer all flags from this node + ancestors.
-        if ctx.prefix.startswith("-"):
-            if merged_options and merged_options.should_activate(ctx):
-                return merged_options.complete(ctx), prefix, f"{cmd_name} option"
-            return [], prefix, f"{cmd_name} option"
-
-        # Compute positional index relative to this node, ignoring flag tokens
-        # and their values.
-        pos_idx = _positional_index(ctx.args, merged_options)
-
-        # If this is an interior group, the next positional is a sub-command
-        # name.  Offer the children at the leftmost positional slot only —
-        # extra positionals after a missing match should fall back to file
-        # completion (or this node's own positional completer, if any).
-        if node.children and pos_idx == 0:
-            results = []
-            for name in sorted(node.children):
-                child = node.children[name]
-                if name.startswith(ctx.prefix):
-                    results.append(Completion(value=name, description=child.description))
-            return results, prefix, f"{cmd_name} subcommand"
-
-        # Leaf-or-deeper: use the resolved node's own positional completers.
-        positional_completer = get_positional_completer(node.completers, pos_idx)
-        if positional_completer is not None and positional_completer.should_activate(ctx):
-            return positional_completer.complete(ctx), prefix, _positional_label(node, pos_idx, cmd_name, ctx.args)
-
-        # If the node has no positional completer registered for this slot,
-        # fall back to file completion only when the node has no positional
-        # completers at all (i.e. it didn't declare any positionals).  This
-        # matches the flat-command behaviour where a registered completer
-        # returning [] suppresses file fallback.
-        if not any(k is not None for k in node.completers):
-            return self._file_completer.complete(ctx), prefix, cmd_name
-        return [], prefix, cmd_name
+        return _positional_label(node, slot.pos_idx, command_name, slot.args)
 
     def _register_builtins(self) -> None:
         from .completion import (
@@ -2261,10 +2210,10 @@ class Shell:
 
         @self.registry.command(
             name="context",
-            help="Manage shell contexts: push, pop, switch, list, kill.",
+            help="Manage shell contexts: new, close, switch, list, kill.",
             params=[
                 arg("subcommand", nargs="?", default="",
-                    completer=ChoiceCompleter(["push", "pop", "switch", "list", "kill"])),
+                    completer=ChoiceCompleter(["new", "close", "switch", "list", "kill"])),
                 arg("name", nargs="?", default="",
                     completer=ContextNameCompleter(self.context_manager)),
             ],
@@ -2279,43 +2228,34 @@ class Shell:
                     print("No active context.")
                 return
 
-            if subcommand == "push":
+            if subcommand == "new":
                 if not name:
-                    print("Usage: context push <name>")
+                    print("Usage: context new <name>")
                     return
                 if name in self.context_manager.contexts:
                     print(f"Context '{name}' already exists.")
                     return
-                parent = self.context_manager.current()
-                inherited = dict(parent.variables) if parent else {}
-                inherited_history = list(parent.history) if parent else []
-                self.context_manager.create(
-                    name, variables=inherited, history=inherited_history
-                )
-                self.context_manager.push(name)
-                print(f"Pushed context '{name}'")
+                self.context_manager.new(name)
+                self.context_manager.switch(name)
+                print(f"Created context '{name}'")
 
-            elif subcommand == "pop":
-                ctx = self.context_manager.current()
-                if ctx is None:
-                    print("No active context.")
+            elif subcommand == "close":
+                # The current context unless one is named; the same rules as
+                # Ctrl+D in the Ctrl+] picker.
+                target = name or self.context_manager.current_name
+                if target not in self.context_manager.contexts:
+                    print(f"No context named '{target}'")
                     return
                 if len(self.context_manager.list_contexts()) <= 1:
-                    print("Cannot remove the last context.")
+                    print("Cannot close the last context.")
                     return
-                popped_name = ctx.name
-                self.context_manager.pop()
-                self.context_manager.remove(popped_name)
-                prev = self.context_manager.current()
-                if prev is None:
-                    remaining = self.context_manager.list_contexts()
-                    if remaining:
-                        self.context_manager.switch(remaining[0])
-                        prev = self.context_manager.current()
-                if prev:
-                    print(f"Popped '{popped_name}', now in '{prev.name}'")
-                else:
-                    print(f"Popped '{popped_name}'")
+                slot = self.context_manager.contexts[target].process_slot
+                if slot is not None and slot.is_alive():
+                    print(f"Context '{target}' has a running process "
+                          f"(context kill {target} first).")
+                    return
+                self.context_manager.remove(target)
+                print(f"Closed '{target}', now in '{self.context_manager.current_name}'")
 
             elif subcommand == "switch":
                 if not name:
@@ -2734,12 +2674,7 @@ class Shell:
             target = existing[name]
             target.process_slot = slot
         else:
-            parent = self.context_manager.current()
-            inherited = dict(parent.variables) if parent else {}
-            inherited_history = list(parent.history) if parent else []
-            target = self.context_manager.create(
-                name, variables=inherited, history=inherited_history
-            )
+            target = self.context_manager.new(name)
             target.process_slot = slot
         # ``@bg`` returns immediately, so the enclosing line's own timing says
         # nothing about the body; the slot's exit callback is what reports it.
@@ -3955,15 +3890,8 @@ class Shell:
         target_name, is_new = result
 
         if is_new:
-            parent = self.context_manager.current()
-            inherited = dict(parent.variables) if parent else {}
-            inherited_history = list(parent.history) if parent else []
-            self.context_manager.create(
-                target_name, variables=inherited, history=inherited_history
-            )
-            self.context_manager.push(target_name)
-        else:
-            self.context_manager.switch(target_name)
+            self.context_manager.new(target_name)
+        self.context_manager.switch(target_name)
 
         new_ctx = self.context_manager.current()
         # Don't activate a new-context slot here — leave that to run()'s resume

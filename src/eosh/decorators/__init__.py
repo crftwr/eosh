@@ -26,7 +26,7 @@ Public API::
 from __future__ import annotations
 
 import importlib.util
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Callable
@@ -35,11 +35,9 @@ from ..commands import (
     Arg,
     CmdParser,
     _VALUE_ACTIONS,
-    _build_completers,
     _build_help_text,
     _effective_description,
 )
-from ..completion import Completer
 from ..paths import config_dir
 from ..pipeline import Pipeline, set_decorator_value_flag_lookup
 
@@ -76,7 +74,6 @@ class Decorator:
     name: str
     func: Callable
     params: list[Arg] | None = None
-    completers: dict[int | None, Completer] = field(default_factory=dict)
     help_text: str = ""
     description: str = ""
 
@@ -94,29 +91,18 @@ class DecoratorRegistry:
 
     def decorator(
         self,
-        name: str | None = None,
+        name: str,
         params: list[Arg] | None = None,
         help: str | None = None,
     ):
-        """Register a decorator function.
+        """Register a decorator function: ``@registry.decorator("watch", params=[...])``
+        (or ``name="watch"``).  Returns the function unchanged."""
+        if not isinstance(name, str):
+            raise TypeError("registry.decorator() needs a name: "
+                            "@registry.decorator('name', ...)")
 
-        Three call forms, identical in shape to :meth:`CommandRegistry.command`:
-
-        * ``@registry.decorator`` — uses the function's ``__name__``.
-        * ``@registry.decorator(name="watch", params=[...])`` — explicit name.
-        * ``@registry.decorator(params=[...])`` — uses the function's
-          ``__name__`` with params.
-        """
-        # Form: @registry.decorator  (no parens at all)
-        if callable(name):
-            func = name
-            self._register(func.__name__, func, params=None, help=None)
-            return func
-
-        # Form: registry.decorator("name", ...) or @registry.decorator(name=...)
         def wrap(func: Callable) -> Callable:
-            cmd_name = name if isinstance(name, str) else func.__name__
-            self._register(cmd_name, func, params=params, help=help)
+            self._register(name, func, params=params, help=help)
             return func
         return wrap
 
@@ -127,12 +113,10 @@ class DecoratorRegistry:
         params: list[Arg] | None,
         help: str | None,
     ) -> Decorator:
-        completers = _build_completers(params) if params else {}
         deco = Decorator(
             name=name,
             func=func,
             params=params,
-            completers=completers,
             help_text=_build_help_text(help, func, f"@{name}", params),
             description=_effective_description(help, func),
         )

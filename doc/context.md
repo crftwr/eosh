@@ -42,28 +42,35 @@ A context captures:
 class ContextManager:
     contexts: dict[str, Context]     # all known contexts by name
     current_name: str | None         # which context is active
-    stack: list[str]                 # name history for push/pop
 ```
 
 The manager maintains:
 - A **named collection** of all contexts (addressable by name)
 - A **current pointer** indicating the active context
-- A **stack** for push/pop navigation (stores names, not copies)
-- A **display order** list (current context always first in `context list`)
+- A **most-recently-used order** (current first). The `Ctrl+]` picker lists
+  contexts in this order, and it decides which context becomes current when
+  the current one is closed.
+
+There is no push/pop stack. Its only effect was choosing the next current
+context after a removal, and the MRU order already answers that (discussion
+#41).
 
 ## Operations
 
-### Push (create + switch)
+### New (create + switch)
 
 ```
-context push prod
+context new prod
 ```
 
-Creates a new context named `prod` with variables inherited from the current context. The current context's name is appended to the stack before switching. The `cwd` is captured at creation time.
+Creates a context named `prod` and switches to it. It inherits the current
+context's variables and its Up/Down history, and starts in the current
+directory (`ContextManager.new`). `Ctrl+N` in the picker and `@bg` create
+contexts the same way.
 
-> **Note:** Variables are not set at push time. Use the `var` command after pushing:
+> **Note:** set the new context's own variables with `var` afterwards:
 > ```
-> eosh> context push prod
+> eosh> context new prod
 > [prod] eosh> var ACCOUNT=123456 REGION=us-east-1
 > ```
 
@@ -73,17 +80,19 @@ Creates a new context named `prod` with variables inherited from the current con
 context switch staging
 ```
 
-Directly sets the current pointer to any existing context. Does not modify the stack. The previous context remains available — nothing is lost.
+Makes any existing context current. Nothing is removed.
 
-### Pop
+### Close
 
 ```
-context pop
+context close [name]
 ```
 
-Removes the current context, then switches to the name at the top of the stack (or to the first remaining context if the stack is empty). The popped context is **deleted**, not just deactivated.
-
-> **Contrast with push:** `push` saves to the stack; `pop` removes from the collection. Think of push/pop as "enter a temporary sub-environment and discard it when done."
+Deletes the named context, or the current one when no name is given. When it
+was current, the most recently used remaining context becomes current. It
+follows the same rules as `Ctrl+D` in the picker: it refuses the last
+remaining context, and a context with a live process (`context kill` it
+first).
 
 ### Kill
 
@@ -119,7 +128,7 @@ The picker also shows a small **preview pane** below the list — the last few b
 While the picker is open, three action keys mutate the context list in place and re-open the picker:
 
 - `Ctrl+N` — create a new context. Opens an inline prompt for the name and creates the context inheriting the current context's variables (same effect as the old `+ new context` row).
-- `Ctrl+D` — delete the highlighted context (including the current one — when the current context is deleted the manager promotes the next-stacked or first-remaining context to current). Refused when the highlighted context has a live process or is the only remaining context.
+- `Ctrl+D` — delete the highlighted context (including the current one — when the current context is deleted, the most recently used remaining one becomes current). Refused when the highlighted context has a live process or is the only remaining context.
 - `Ctrl+R` — rename the highlighted context. Opens an inline prompt pre-filled with the current name.
 
 `Ctrl+N` overrides the picker's default Ctrl+N → "down" alias for the duration of the context-switch picker; the down arrow still works for navigation.
@@ -175,15 +184,15 @@ This pattern lets commands work both ways:
 ```
 Shell starts → "default" context created (IDLE, current)
                     │
-               context push prod
+               context new prod
                     │
                     ▼
-         "default" ← stack ← "prod" (IDLE, current)
+         "prod" (IDLE, current), "default" (IDLE)
                     │
                run vim  (vim launches in PTY)
                     │
                     ▼
-         "default" ← stack ← "prod" (RUNNING, current)
+         "prod" (RUNNING, current), "default" (IDLE)
                     │
                Ctrl+] → switch to "default"
                     │
@@ -196,10 +205,11 @@ Shell starts → "default" context created (IDLE, current)
                     ▼
          "prod" (RUNNING, current) ← vim resumes in foreground
                     │
-               context pop  (vim still running)
+               quit vim, then: context close
                     │
                     ▼
          "default" (IDLE, current), "prod" deleted
+         (close refuses while vim is still running)
 ```
 
 ## Prompt Integration

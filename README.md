@@ -16,7 +16,7 @@
 
 - **Rich tab completion** — per-argument completers with descriptions, inline picker UI
 - **Flag completion** — TAB on `-` lists every flag with its description; a flag that takes a value goes straight on to completing that value
-- **Context switching** — named environments with variables and working directories, with push/pop and `Ctrl+]` live switching
+- **Context switching** — named environments with variables and working directories, switched by name or live with `Ctrl+]`
 - **PTY process multiplexing** — run processes in contexts and switch between them without killing them
 - **Pipelines and redirections** — `|`, `>`, `>>`, `<`, `2>`, `2>&1`, `;`, `&&`, `||`, globs (`*`, `?`, `**`), and `\`-line-continuation
 - **Pipeline decorators** — wrap any pipeline with `@watch`, `@time`, `@retry`, `@quiet`, or `@bg`; authoring your own is a few lines of Python
@@ -110,26 +110,27 @@ eosh> source-bash -c 'export A=$(date +%s)'
 Contexts let you define named environments with variables that are exported to `os.environ` and a remembered working directory.
 
 ```
-eosh> context push prod
-Pushed context 'prod'
+eosh> context new prod
+Created context 'prod'
 [prod] eosh> var ACCOUNT=123456 REGION=us-east-1
-[prod] eosh> context push staging
-Pushed context 'staging'
+[prod] eosh> context new staging
+Created context 'staging'
 [staging] eosh> var ACCOUNT=789012 REGION=us-west-2
-[staging] eosh> context pop
-Popped 'staging', now in 'prod'
-[prod] eosh> context list
-  * prod {'ACCOUNT': '123456', 'REGION': 'us-east-1'}
-    staging {'ACCOUNT': '789012', 'REGION': 'us-west-2'}
+[staging] eosh> context list
+  * staging {'ACCOUNT': '789012', 'REGION': 'us-west-2'}
+    prod {'ACCOUNT': '123456', 'REGION': 'us-east-1'}
+    default
+[staging] eosh> context close
+Closed 'staging', now in 'prod'
 ```
 
 Context subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `context push <name>` | Create a new context (inheriting current vars) and switch to it |
-| `context pop` | Return to the previous context and remove the current one |
-| `context switch <name>` | Switch to an existing context without modifying the stack |
+| `context new <name>` | Create a context (inheriting the current one's variables and history) and switch to it |
+| `context close [name]` | Remove a context (default: the current one); the most recently used remaining one becomes current |
+| `context switch <name>` | Switch to an existing context |
 | `context list` | Show all contexts with their state and variables |
 | `context kill <name>` | Send SIGTERM to the running process in a context |
 

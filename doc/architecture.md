@@ -49,7 +49,7 @@
 │  └── SIGWINCH (POSIX) / kbhit polling (Windows)    │
 ├─────────────────────────────────────────────────────┤
 │  Context Manager (context.py)                       │
-│  ├── Context stack                                 │
+│  ├── Contexts in most-recently-used order          │
 │  ├── Context-aware variable resolution             │
 │  ├── CWD save/restore on switch                    │
 │  └── env var apply/unapply on switch               │
@@ -90,12 +90,12 @@ Entry point and orchestrator. Owns the REPL cycle: read input, parse, dispatch, 
 
 Provides the `CommandRegistry` class and a global `registry` singleton.
 
-- `@registry.command(name, *, help=None, params=None, delegate=None)` — register a Python function (with handler) or an external recipe (no handler). `params=[arg(...)]` declares positionals and flags; the registry derives both an argparse parser and the per-position completer dict from the same list. `delegate=Completer` installs a single completer at every slot (used when an external tool drives its own completion protocol).
+- `registry.command(name, *, help=None, params=None, delegate=None) -> Command` — plain call for a group or external recipe, decorator to attach a handler; a name is always required. `params=[arg(...)]` declares positionals and flags; argparse parses with it and completion reads it on demand. `delegate=Completer` (a `Command` attribute) answers every completion slot, for a tool with its own completion protocol.
 - `arg(*names, completer=None, **argparse_kwargs)` builder used inside `params=`. `metavar=` becomes the inline hint for value-taking flags; `choices=` auto-populates a `ChoiceCompleter` when `completer=` is omitted.
-- Sub-command tree: `Command.command(name, ...)` registers a child sub-command. Used by `git`, `awsut`, and any nested CLI; see [subcommands.md](subcommands.md).
+- Sub-command tree: `Command.command(name, ...)` registers a child sub-command. Used by `git`, `awsut`, and any nested CLI; see [subcommands.md](subcommands.md). A node's flags are its own (no inheritance), and a node has either a handler or children, never both.
 - Aliases: `registry.alias(name, value)`, `registry.unalias(name)`, `get_alias`, `list_aliases`.
 - `registry.mark_builtins()` / `registry.clear_user_commands()` for hot-reload support.
-- Each `Command` holds: name, optional callable, `params: list[Arg] | None`, derived per-argument completers dict, help text, description.
+- Each `Command` holds: name, optional callable, `params: list[Arg] | None`, `help`, optional `delegate`, help text, description, parent and children.
 - Description comes from the explicit `help=` kwarg, falling back to the function's docstring.
 
 A handler-less `Command` (no callable attached) is treated by the dispatch path as an external recipe — `Shell._execute` falls through to the system-command path so the registered completion + flag metadata drive TAB completion while the actual program runs as an OS process. There is no separate `register_external_completers()` API.
@@ -121,7 +121,7 @@ Defines the `Completer` protocol, `CompletionContext`, and built-in completers.
 Manages named environments with variables, working directories, and optional running processes.
 
 - `Context` dataclass: name, variables dict, saved cwd, optional `ProcessSlot`, `state` property (`IDLE`/`RUNNING`/`EXITED`)
-- `ContextManager`: named collection with current pointer and push/pop stack
+- `ContextManager`: named collection with a current pointer, kept in most-recently-used order; `new(name)` creates a context inheriting the current one's variables and history, and removing the current context makes the MRU next one current
 - On switch: saves current cwd, restores target cwd, swaps environment variables
 - Environment variable backup/restore to avoid leaking between contexts
 - `set_variable` / `unset_variable` update both the current context and `os.environ`
@@ -223,10 +223,10 @@ User presses TAB
           → split_for_completion(stage) → (tokens, prefix)
           → No tokens? → CommandNameCompleter
           → Has tokens?
-              → Look up command (registered or external completers)
-              → Check completers[None] for OptionsCompleter (if prefix starts with "-")
-              → Check completers[arg_index] for positional completer
-              → No completer registered? → FileCompleter fallback
+              → Look up command; Command.resolve() to the deepest sub-command
+              → _resolve_slot(): delegate | flag | value | subcommand | positional
+                (one classifier, shared with the status bar's _get_arg_info)
+              → No completer for the slot? → argcomplete, then FileCompleter
       → HistoryCompleter (current context's history, cwd-scoped, tail from the anchor)
           → prepended, unless the line is empty
           → minus the tails the base result already offers as a single token
@@ -321,7 +321,7 @@ eosh/
 
 2. **Completer receives full context** — `CompletionContext` carries all parsed state so completers make decisions based on command name, preceding args, and shell context without global state.
 
-3. **Dict-based positional completers with `None` key for options** — `{arg_index: Completer}` for positional args; `{None: OptionsCompleter(...)}` for flags at any position. A completer at position N inspects `ctx.args[:N]` to see prior selections.
+3. **`params` is the one source of truth for a command** — argparse parses with it and completion reads flag/positional completers off it on demand; each node owns its flags. Flat commands and trees resolve the same way, so completion and the status bar share one classifier. A completer at position N inspects `ctx.args[:N]` to see prior selections.
 
 4. **Config as Python** — `~/.eosh/config.py` is plain Python importing eosh APIs. No DSL to learn; full language power for defining completers with caching, API calls, conditional logic. `reload` applies changes without restarting.
 

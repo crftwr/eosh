@@ -28,21 +28,25 @@ def test_switch_nonexistent():
         cm.switch("nope")
 
 
-def test_push_pop():
+def test_closing_the_current_context_returns_to_the_last_one_used():
     cm = ContextManager()
     cm.create("prod")
     cm.create("staging")
+    cm.create("dev")
+    cm.switch("staging")
     cm.switch("prod")
-    cm.push("staging")
-    assert cm.current().name == "staging"
-    cm.pop()
-    assert cm.current().name == "prod"
+    cm.new("tmp")
+    cm.switch("tmp")
+    cm.remove("tmp")
+    assert cm.current_name == "prod"      # most recently used, not creation order
+    cm.remove("prod")
+    assert cm.current_name == "staging"
 
 
-def test_pop_empty_stack():
+def test_removing_the_last_context_leaves_none():
     cm = ContextManager()
     cm.create("prod")
-    result = cm.pop()
+    cm.remove("prod")
     assert cm.current_name is None
 
 
@@ -68,7 +72,7 @@ def test_remove_current():
     cm.create("prod")
     cm.create("staging")
     cm.switch("prod")
-    cm.push("staging")
+    cm.switch("staging")
     cm.remove("staging")
     assert cm.current_name == "prod"
 
@@ -91,18 +95,16 @@ def test_rename_current_updates_pointer():
     assert cm.current().name == "production"
 
 
-def test_rename_updates_stack():
+def test_rename_keeps_the_usage_order():
     cm = ContextManager()
     cm.create("a")
     cm.create("b")
     cm.create("c")
-    cm.switch("a")
-    cm.push("b")
-    cm.push("c")
-    # stack: [a, b]; current: c
+    cm.switch("b")
+    cm.switch("c")
     cm.rename("b", "B")
-    assert cm.stack == ["a", "B"]
-    cm.pop()  # → B
+    assert cm.list_contexts() == ["c", "B", "a"]
+    cm.remove("c")
     assert cm.current_name == "B"
 
 
@@ -172,26 +174,28 @@ def test_variables_saved_and_restored_on_switch():
     os.environ.pop("EOSH_TEST_VAR", None)
 
 
-def test_variables_saved_and_restored_on_push_pop():
+def test_variables_restored_when_the_current_context_is_closed():
     cm = ContextManager()
     os.environ.pop("EOSH_TEST_VAR", None)
     cm.create("base")
     cm.set_variable("EOSH_TEST_VAR", "base_val")
     cm.create("child")
-    cm.push("child")
+    cm.switch("child")
     assert os.environ.get("EOSH_TEST_VAR") is None
-    cm.pop()
+    cm.remove("child")
     assert os.environ.get("EOSH_TEST_VAR") == "base_val"
     os.environ.pop("EOSH_TEST_VAR", None)
 
 
-def test_push_inherits_parent_variables():
+def test_new_inherits_variables_and_history():
     cm = ContextManager()
     os.environ.pop("EOSH_TEST_VAR", None)
-    cm.create("base")
+    cm.create("base", history=["make test"])
     cm.set_variable("EOSH_TEST_VAR", "base_val")
-    cm.create("child", variables=dict(cm.current().variables))
-    cm.push("child")
+    child = cm.new("child")
+    assert cm.current_name == "base"      # new() does not switch
+    assert child.history == ["make test"]
+    cm.switch("child")
     assert cm.current().variables.get("EOSH_TEST_VAR") == "base_val"
     assert os.environ.get("EOSH_TEST_VAR") == "base_val"
     os.environ.pop("EOSH_TEST_VAR", None)
@@ -224,34 +228,29 @@ def test_cwd_saved_and_restored_on_switch():
     os.chdir(original_cwd)
 
 
-def test_cwd_saved_and_restored_on_push_pop():
+def test_cwd_restored_when_the_current_context_is_closed():
     original_cwd = os.getcwd()
-    with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as dir_b:
-        real_a = os.path.realpath(dir_a)
-        real_b = os.path.realpath(dir_b)
+    try:
+        with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as dir_b:
+            real_a = os.path.realpath(dir_a)
+            real_b = os.path.realpath(dir_b)
 
-        os.chdir(real_a)
-        cm = ContextManager()
-        cm.create("ctx_a")  # current=ctx_a, cwd=real_a
+            os.chdir(real_a)
+            cm = ContextManager()
+            cm.create("ctx_a")  # current=ctx_a, cwd=real_a
 
-        cm.create("ctx_b")
-        cm.switch("ctx_b")
-        os.chdir(real_b)    # in ctx_b, move to real_b
+            cm.create("ctx_b")
+            cm.switch("ctx_b")
+            os.chdir(real_b)    # in ctx_b, move to real_b
 
-        cm.switch("ctx_a")  # back to ctx_a at real_a
-        assert os.getcwd() == real_a
+            cm.remove("ctx_b")  # closing ctx_b restores ctx_a -> real_a
+            assert os.getcwd() == real_a
 
-        cm.push("ctx_b")    # push saves ctx_a, restores ctx_b -> real_b
-        assert os.getcwd() == real_b
-
-        cm.pop()            # pop saves ctx_b, restores ctx_a -> real_a
-        assert os.getcwd() == real_a
-
-        # Leave the temp dirs before the context manager cleans them up:
-        # Windows refuses to remove a directory that is the process cwd.
+            # Leave the temp dirs before the context manager cleans them up:
+            # Windows refuses to remove a directory that is the process cwd.
+            os.chdir(original_cwd)
+    finally:
         os.chdir(original_cwd)
-
-    os.chdir(original_cwd)
 
 
 def test_create_with_history_snapshot():
@@ -289,3 +288,33 @@ def test_child_history_diverges_from_parent():
     child.history.append("child-only")
     assert parent.history == ["shared", "parent-only"]
     assert child.history == ["shared", "child-only"]
+
+
+# ── `context` command: new / close ───────────────────────────────────────────
+
+def test_context_new_and_close_commands(capsys):
+    from eosh.shell import Shell
+
+    original_cwd = os.getcwd()
+    try:
+        sh = Shell()
+        cm = sh.context_manager
+        sh.registry.get("context").invoke(["new", "review"])
+        assert cm.current_name == "review"
+        sh.registry.get("context").invoke(["close"])
+        assert cm.current_name == "default"
+        assert "review" not in cm.contexts
+        out = capsys.readouterr().out
+        assert "Created context 'review'" in out
+        assert "Closed 'review', now in 'default'" in out
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_context_close_refuses_the_last_context(capsys):
+    from eosh.shell import Shell
+
+    sh = Shell()
+    sh.registry.get("context").invoke(["close"])
+    assert sh.context_manager.current_name == "default"
+    assert "Cannot close the last context." in capsys.readouterr().out
