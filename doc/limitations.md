@@ -58,14 +58,6 @@ those helpers can't do their job. They raise `RuntimeError` if called
 from inside a pipeline thread. Use plain `subprocess.run` (with the
 `stdout=sys.stdout` workaround above) for non-interactive children.
 
-**`passthrough_input` can't read a line at or above `MAX_CANON`** (1024
-bytes on macOS). It reads in the terminal's cooked mode, and the line
-discipline discards an over-long line entirely rather than truncating it
-— the caller sees nothing, not a partial line. Fine for the y/N answers
-it exists for; use `passthrough_input_block`, which reads off the raw key
-stream, for anything a user might *paste* (a session token, a policy
-document, a URL with a long query). Line editing there is backspace only.
-
 ## `awsut sagemaker jobs` — a category the loaded model doesn't declare costs a round-trip
 
 `JobCategory` is required by ListJobs and DescribeJob, so a job cannot be

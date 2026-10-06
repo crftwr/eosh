@@ -1,131 +1,187 @@
-"""Tests for slot-side stdin reads — passthrough_input / passthrough_input_block."""
+"""Tests for reading user input from a command — passthrough_input / _block.
+
+Both read the raw key stream (discussion #38): off the slot's key buffer,
+which the forwarding loop feeds, or — on the main thread — the terminal
+itself.  ``_read_typed`` does the line assembly for every source.
+"""
 
 from __future__ import annotations
 
-import os
 import threading
+import time
 import types
 
 import pytest
 
-from eosh.shell import PythonCommandSlot, passthrough_input_block
+from eosh.shell import (
+    PythonCommandSlot, _read_typed, passthrough_input, passthrough_input_block,
+)
 
 
-class _StubProxy:
-    """The bits of _StdoutProxy that _run_input drives."""
+def _feed(*chunks: bytes):
+    """A next_bytes() that hands out *chunks*, then nothing."""
+    it = iter(chunks)
+    return lambda: next(it, b"")
 
-    def deactivate(self) -> None: ...
-    def replay(self) -> None: ...
-    def activate(self) -> None: ...
+
+def _line(keys: bytes) -> str:
+    return _read_typed(_feed(keys), "", block=False)
+
+
+def _block(keys: bytes) -> str:
+    return _read_typed(_feed(keys), "", block=True)
 
 
 def _slot() -> PythonCommandSlot:
-    slot = PythonCommandSlot(types.SimpleNamespace(name="stub"), [])
-    slot._proxy = _StubProxy()
-    slot._err_proxy = _StubProxy()
-    return slot
+    return PythonCommandSlot(types.SimpleNamespace(name="stub"), [])
 
 
 # ---------------------------------------------------------------------------
-# _run_input — one line, through the terminal's cooked mode
+# One line
 # ---------------------------------------------------------------------------
 
-def _read_line(slot: PythonCommandSlot, text: bytes, monkeypatch) -> str:
-    """Run _run_input with a pipe for stdin and the main loop's half faked."""
-    read_fd, write_fd = os.pipe()
-    os.write(write_fd, text)
-    os.close(write_fd)          # so an unterminated tail still reaches EOF
-    monkeypatch.setattr("eosh.shell.sys.stdin",
-                        types.SimpleNamespace(fileno=lambda: read_fd))
-
-    def release():
-        slot._input_request.wait(5)
-        slot._input_released.set()
-
-    releaser = threading.Thread(target=release, daemon=True)
-    releaser.start()
-    try:
-        return slot._run_input("")
-    finally:
-        releaser.join(1)
-        os.close(read_fd)
+def test_a_line_ends_at_enter():
+    assert _line(b"yes\r") == "yes"
 
 
-def test_single_line_read_stops_at_the_first_newline(monkeypatch):
-    assert _read_line(_slot(), b"first\nsecond\n", monkeypatch) == "first"
+def test_a_line_may_arrive_in_pieces():
+    assert _read_typed(_feed(b"y", b"", b"es", b"\r"), "", block=False) == "yes"
 
 
-def test_single_line_read_takes_an_unterminated_tail(monkeypatch):
-    assert _read_line(_slot(), b"no newline", monkeypatch) == "no newline"
-
-
-def test_single_line_read_raises_eof_on_empty_stdin(monkeypatch):
+def test_ctrl_d_on_an_empty_line_is_eof():
     with pytest.raises(EOFError):
-        _read_line(_slot(), b"", monkeypatch)
+        _line(b"\x04")
+
+
+def test_ctrl_d_mid_line_is_ignored_like_a_tty():
+    assert _line(b"ab\x04c\r") == "abc"
+
+
+def test_line_editing_backspace_ctrl_u_ctrl_w():
+    assert _line(b"abx\x7f\r") == "ab"
+    assert _line(b"junk\x15ok\r") == "ok"
+    assert _line(b"delete my-cluster\x17keep\r") == "delete keep"
+
+
+def test_ctrl_c_echoes_and_raises(capsys):
+    with pytest.raises(KeyboardInterrupt):
+        _line(b"ab\x03")
+    assert capsys.readouterr().out.endswith("^C\n")
+
+
+def test_prompt_and_echo(capsys):
+    _read_typed(_feed(b"y\r"), "Delete? [y/N] ", block=False)
+    assert capsys.readouterr().out == "Delete? [y/N] y\n"
+
+
+def test_wide_characters_are_erased_by_their_width(capsys):
+    _line("日\x7f\r".encode())
+    assert capsys.readouterr().out == "日\b\b  \b\b\n"
 
 
 # ---------------------------------------------------------------------------
-# _run_input_block — a pasted block, off the raw key stream
+# A pasted block
 # ---------------------------------------------------------------------------
-
-def _read_block(keys: bytes, capsys=None) -> str:
-    """Feed *keys* to a slot's key buffer the way the forwarding loop does."""
-    slot = _slot()
-    slot.write_stdin(keys)
-    return slot._run_input_block()
-
 
 def test_block_ends_at_the_blank_line():
-    assert _read_block(b'export A="1"\rexport B="2"\r\r') == 'export A="1"\nexport B="2"'
+    assert _block(b'export A="1"\rexport B="2"\r\r') == 'export A="1"\nexport B="2"'
 
 
 def test_block_takes_a_line_far_past_the_cooked_mode_limit():
-    # The reason this path is raw: MAX_CANON (1024 on macOS) discards an
-    # over-long line whole, and a real session token is longer than that.
+    # MAX_CANON (1024 on macOS) discards an over-long line whole in cooked
+    # mode, and a real session token is longer than that.
     token = "F" * 4000
-    assert _read_block(f'export AWS_SESSION_TOKEN="{token}"\r\r'.encode()) == (
+    assert _block(f'export AWS_SESSION_TOKEN="{token}"\r\r'.encode()) == (
         f'export AWS_SESSION_TOKEN="{token}"'
     )
 
 
 def test_block_ends_at_ctrl_d_without_a_blank_line():
-    assert _read_block(b"one\rtwo\x04") == "one\ntwo"
+    assert _block(b"one\rtwo\x04") == "one\ntwo"
 
 
 def test_block_of_nothing_is_empty():
-    assert _read_block(b"\r") == ""
+    assert _block(b"\r") == ""
 
 
 def test_crlf_pasted_text_is_one_line_ending_not_two():
-    assert _read_block(b"one\r\ntwo\r\n\r\n") == "one\ntwo"
+    assert _block(b"one\r\ntwo\r\n\r\n") == "one\ntwo"
 
 
 def test_bracketed_paste_markers_and_arrow_keys_are_dropped():
     keys = b"\x1b[200~export A=1\r\x1b[Aexport B=2\r\x1b[201~\r"
-    assert _read_block(keys) == "export A=1\nexport B=2"
+    assert _block(keys) == "export A=1\nexport B=2"
 
 
 def test_backspace_edits_the_current_line_only():
-    assert _read_block(b"abx\x7f\rcd\x7f\x7f\x7fef\r\r") == "ab\nef"
+    assert _block(b"abx\x7f\rcd\x7f\x7f\x7fef\r\r") == "ab\nef"
 
 
 def test_ctrl_c_cancels_the_block():
     with pytest.raises(KeyboardInterrupt):
-        _read_block(b"export A=1\r\x03")
+        _block(b"export A=1\r\x03")
 
 
 def test_block_echoes_what_it_reads(capsys):
-    _read_block(b"abc\r\r")
+    _block(b"abc\r\r")
     assert capsys.readouterr().out == "abc\n\n"
 
 
-def test_block_falls_back_to_input_outside_a_slot_thread(monkeypatch):
+# ---------------------------------------------------------------------------
+# From a slot: the forwarding loop's key buffer
+# ---------------------------------------------------------------------------
+
+def test_a_slot_block_reads_a_paste_that_landed_before_the_first_poll():
+    slot = _slot()
+    slot.write_stdin(b"export A=1\r\r")
+    assert slot._read_typed("", block=True) == "export A=1"
+
+
+def test_a_slot_line_ignores_keys_typed_before_the_question():
+    """Typeahead was not an answer to a question not yet asked."""
+    slot = _slot()
+    slot.write_stdin(b"y\r")            # typed while the command was busy
+
+    def answer():
+        time.sleep(0.05)
+        slot.write_stdin(b"n\r")
+
+    threading.Thread(target=answer, daemon=True).start()
+    assert slot._read_typed("", block=False) == "n"
+
+
+def test_a_slot_marks_itself_reading_so_ctrl_c_reaches_the_reader():
+    slot = _slot()
+    seen = []
+
+    def answer():
+        time.sleep(0.05)
+        seen.append(slot._reading_input)
+        slot.write_stdin(b"\x03")
+
+    threading.Thread(target=answer, daemon=True).start()
+    with pytest.raises(KeyboardInterrupt):
+        slot._read_typed("", block=False)
+    assert seen == [True]
+    assert slot._reading_input is False
+
+
+# ---------------------------------------------------------------------------
+# Fallbacks — no terminal to read keys from
+# ---------------------------------------------------------------------------
+
+def test_line_falls_back_to_input_without_a_terminal(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "typed")
+    assert passthrough_input("? ") == "typed"
+
+
+def test_block_falls_back_to_input_without_a_terminal(monkeypatch):
     lines = iter(["export A=1", "export B=2", "", "later"])
     monkeypatch.setattr("builtins.input", lambda *a: next(lines))
     assert passthrough_input_block() == "export A=1\nexport B=2"
 
 
-def test_block_falls_back_to_input_when_stdin_is_not_a_terminal(monkeypatch):
+def test_block_falls_back_to_input_in_a_slot_when_stdin_is_not_a_terminal(monkeypatch):
     slot = _slot()
     monkeypatch.setattr("eosh.shell._current_slot",
                         types.SimpleNamespace(slot=slot))

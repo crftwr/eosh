@@ -409,26 +409,25 @@ def passthrough_run(argv: list[str], **popen_kwargs) -> int:
 
 
 def passthrough_input(prompt: str = "") -> str:
-    """Read a line from real stdin from inside a Python command thread.
+    """Read one line of user input from a Python command.
 
-    Built-in ``input()`` would race the main forwarding thread for stdin
-    bytes, and even when it won, raw mode would suppress echo and turn
-    Enter into ``\\r``.  ``passthrough_input`` coordinates with the main
-    forwarding loop: it asks the loop to surrender stdin and restore
-    cooked terminal mode, calls :func:`input` on the slot thread, then
-    hands control back.
+    Built-in ``input()`` would race the main forwarding loop for stdin (the
+    loop holds the terminal in raw mode and reads every key).  This reads
+    the line off that same key stream instead — see :func:`_read_typed` —
+    with echo and Backspace / Ctrl+U / Ctrl+W editing.  Ctrl+C raises
+    ``KeyboardInterrupt`` and Ctrl+D on an empty line ``EOFError``, as
+    ``input()`` would.
 
-    Outside a Python command thread, falls back to plain ``input(prompt)``.
+    On the main thread (a synchronous command) the terminal is read
+    directly, in the same raw mode.  With stdin not a terminal — or on
+    Windows — it is plain ``input(prompt)``.
     """
     if getattr(_in_pipeline, "flag", False):
         raise RuntimeError(
             "passthrough_input cannot be used inside a piped Python command "
             "(stdin/stdout are wired to pipes, not the terminal)"
         )
-    slot = getattr(_current_slot, "slot", None)
-    if slot is None:
-        return input(prompt)
-    return slot._run_input(prompt)
+    return _read_from_user(prompt, block=False)
 
 
 def _stdin_is_tty() -> bool:
@@ -440,31 +439,38 @@ def _stdin_is_tty() -> bool:
 
 
 def passthrough_input_block(prompt: str = "") -> str:
-    """Read a *block* of lines from real stdin, ending at a blank line or EOF.
+    """Read a *block* of lines from the user, ending at a blank line or EOF.
 
-    The multi-line sibling of :func:`passthrough_input`, for commands whose
-    input is pasted rather than typed (a set of ``export KEY=…`` lines, a
-    policy document, …).  Two things rule out looping over
-    ``passthrough_input``: between two calls the main forwarding loop takes
-    stdin back into raw mode, so the tail of a paste still in the tty buffer
-    is read as keystrokes instead of input — and the cooked mode each call
-    asks for caps a line at ``MAX_CANON``, which a pasted session token
-    exceeds.  This reads the block off the raw key stream instead; see
-    :meth:`PythonCommandSlot._run_input_block`.
+    The multi-line sibling of :func:`passthrough_input`, for input that is
+    pasted rather than typed (a set of ``export KEY=…`` lines, a policy
+    document, …).  It reads the same raw key stream, so there is no
+    ``MAX_CANON`` limit: cooked mode caps a line at 1024 bytes on macOS and
+    discards an over-long one whole, which a pasted session token exceeds.
 
     Returns the lines joined by ``\\n``, without the terminating blank line
-    (so an immediate blank line or Ctrl+D yields ``""``).  Outside a Python
-    command thread — or with stdin not a terminal — falls back to reading
-    :data:`sys.stdin` line by line.
+    (so an immediate blank line or Ctrl+D yields ``""``).  With stdin not a
+    terminal — or on Windows — falls back to reading :data:`sys.stdin` line
+    by line.
     """
     if getattr(_in_pipeline, "flag", False):
         raise RuntimeError(
             "passthrough_input_block cannot be used inside a piped Python command "
             "(stdin/stdout are wired to pipes, not the terminal)"
         )
-    slot = getattr(_current_slot, "slot", None)
-    if slot is not None and _stdin_is_tty():
-        return slot._run_input_block(prompt)
+    return _read_from_user(prompt, block=True)
+
+
+def _read_from_user(prompt: str, *, block: bool) -> str:
+    """Route a :func:`passthrough_input` / ``_block`` call to a key source."""
+    if _stdin_is_tty():
+        slot = getattr(_current_slot, "slot", None)
+        if slot is not None:
+            return slot._read_typed(prompt, block=block)
+        if not IS_WINDOWS:
+            with _terminal_keys() as next_bytes:
+                return _read_typed(next_bytes, prompt, block=block)
+    if not block:
+        return input(prompt)
     if prompt:
         sys.stdout.write(prompt)
         sys.stdout.flush()
@@ -478,6 +484,116 @@ def passthrough_input_block(prompt: str = "") -> str:
             break
         lines.append(line)
     return "\n".join(lines)
+
+
+@contextlib.contextmanager
+def _terminal_keys():
+    """The main thread's own key source: the terminal, in raw-input /
+    cooked-output mode for the duration (so a typed Ctrl+C arrives as a
+    key rather than a signal, and echoed newlines still get their CR)."""
+    fd = sys.stdin.fileno()
+    saved = terminal.get_mode(fd)
+    terminal.set_raw_input_cooked_output(fd)
+    try:
+        yield lambda: os.read(fd, 1024) if terminal.wait_readable(fd, 0.2) else b""
+    finally:
+        terminal.restore_mode(fd, saved)
+
+
+def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool) -> str:
+    """Assemble typed or pasted text off a raw key stream, echoing it.
+
+    *next_bytes* returns whatever keys have arrived (possibly ``b""`` after a
+    short wait — the bounded wait is what lets an injected
+    ``KeyboardInterrupt`` land between calls instead of blocking in C).
+
+    One line when not *block*: Enter ends it, Ctrl+D on an empty line raises
+    ``EOFError``.  Otherwise lines until a blank line or Ctrl+D.  Editing is
+    Backspace, Ctrl+U (the line) and Ctrl+W (a word).  Ctrl+C echoes ``^C``
+    and raises ``KeyboardInterrupt``.  Escape sequences — arrow keys, the
+    terminal's bracketed-paste markers — are dropped, and a CRLF in pasted
+    text is one line ending, not two.
+    """
+    from .lineedit import _wcswidth
+
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    lines: list[str] = []
+    current: list[str] = []
+    in_escape = False
+    after_cr = False
+
+    def echo(text: str) -> None:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def erase(chars: list[str]) -> None:
+        width = _wcswidth("".join(chars))
+        if width:
+            echo("\b" * width + " " * width + "\b" * width)
+
+    if prompt:
+        echo(prompt)
+
+    while True:
+        data = next_bytes()
+        if not data:
+            continue
+        for ch in decoder.decode(data):
+            if in_escape:
+                if ch.isalpha() or ch == "~":
+                    in_escape = False
+                continue
+            if ch == "\x1b":
+                in_escape = True
+                continue
+            if ch == "\x03":                         # Ctrl+C
+                echo("^C\n")
+                raise KeyboardInterrupt
+            if ch == "\x04":                         # Ctrl+D
+                if not block:
+                    if current:
+                        continue                     # like a tty: only ends an empty line
+                    echo("\n")
+                    raise EOFError
+                if current:
+                    lines.append("".join(current))
+                echo("\n")
+                return "\n".join(lines)
+            if ch in ("\r", "\n"):
+                if ch == "\n" and after_cr:
+                    continue
+                after_cr = ch == "\r"
+                echo("\n")
+                line = "".join(current)
+                current = []
+                if not block:
+                    return line
+                if not line.strip():
+                    return "\n".join(lines)
+                lines.append(line)
+                continue
+            after_cr = False
+            if ch in ("\x7f", "\x08"):              # Backspace
+                if current:
+                    erase([current.pop()])
+                continue
+            if ch == "\x15":                         # Ctrl+U — the whole line
+                erase(current)
+                current = []
+                continue
+            if ch == "\x17":                         # Ctrl+W — the word before the caret
+                cut = len(current)
+                while cut and current[cut - 1].isspace():
+                    cut -= 1
+                while cut and not current[cut - 1].isspace():
+                    cut -= 1
+                erase(current[cut:])
+                del current[cut:]
+                continue
+            if ch < " " and ch != "\t":
+                continue                             # other C0 controls
+            current.append(ch)
+            echo(ch)
 
 
 class PythonCommandSlot(ExitCallbackMixin):
@@ -509,21 +625,13 @@ class PythonCommandSlot(ExitCallbackMixin):
         self._pty_last_byte: bytes = b"\n"
         self._pty_active = False
         self._pty_lock = threading.Lock()
-        # passthrough_input() coordination — events are flipped by the
-        # slot thread; the main forwarding loop watches _input_request.
-        self._input_request = threading.Event()
-        self._input_released = threading.Event()
-        self._input_resume = threading.Event()
-        # Set by the main forwarding loop's SIGINT handler when Ctrl+C is
-        # pressed during a passthrough_input() prompt.  _run_input polls
-        # for it and raises KeyboardInterrupt on the slot thread instead
-        # of leaving the user with an unresponsive prompt.
-        self._input_interrupted = threading.Event()
+        # True while the command is reading a line or block from the user
+        # (passthrough_input / _block): the forwarding loop then hands
+        # Ctrl+C to the reader instead of interrupting the command.
+        self._reading_input = False
         # Raw stdin bytes the main forwarding loop received while no PTY
         # subprocess was active.  :meth:`poll_key` drains them — that is
-        # how ``passthrough_input_block`` reads a paste off the raw key
-        # stream.  Cleared each time the slot thread picks up a Python
-        # command.
+        # how ``passthrough_input`` / ``_block`` read the user's keys.
         self._keybuf: bytearray = bytearray()
         self._keybuf_lock = threading.Lock()
         self._keybuf_event = threading.Event()
@@ -852,150 +960,23 @@ class PythonCommandSlot(ExitCallbackMixin):
                 except OSError:
                     pass
 
-    # --- passthrough_input() implementation ---------------------------------
+    # --- passthrough_input() / _block() -------------------------------------
 
-    def _run_input(self, prompt: str) -> str:
-        """Read a line of input while the main loop yields stdin and cooked mode.
-
-        The naive ``input()`` call would leave Ctrl+C unresponsive: the main
-        forwarding loop has SIGINT ignored, and the slot thread's blocking
-        ``read()`` can't be interrupted from outside.  Instead we poll fd 0
-        through ``select`` so the slot can periodically check
-        ``_input_interrupted`` (set by the main loop's SIGINT handler) and
-        raise ``KeyboardInterrupt`` promptly.
-
-        Cooked terminal mode is still in effect, so the kernel handles line
-        editing (backspace, delete-word, etc.) and ``select`` reports the
-        fd readable only once the user hits Enter.  That gives us full line
-        editing without reimplementing it.
-
-        The kernel's line buffer is also the limit of this method: a line at
-        or above ``MAX_CANON`` (1024 bytes on macOS) is discarded by the line
-        discipline, not truncated.  Prompts answered by a word or two never
-        approach it; :meth:`_run_input_block`, which has to take a pasted
-        credential block, reads raw for exactly that reason.
-        """
-        import select as _select
-        # Drain pending output so the prompt isn't preceded by buffered text.
-        self._proxy.deactivate()
-        self._proxy.replay()
-        if self._err_proxy:
-            self._err_proxy.deactivate()
-            self._err_proxy.replay()
-        self._input_interrupted.clear()
-        self._input_resume.clear()
-        self._input_released.clear()
-        self._input_request.set()
-        # Wait for the main loop to release stdin and restore cooked mode.
-        self._input_released.wait()
+    def _read_typed(self, prompt: str, *, block: bool) -> str:
+        """Read a line (or a pasted block) off the keys the forwarding loop
+        feeds this slot — see :func:`_read_typed`."""
+        if not block:
+            # Keys typed while the command was busy were not meant as the
+            # answer to a question it hadn't asked yet ("y" to a delete
+            # prompt).  A paste, by contrast, may land before the first poll.
+            with self._keybuf_lock:
+                self._keybuf.clear()
+                self._keybuf_event.clear()
+        self._reading_input = True
         try:
-            # Print the prompt directly to the real terminal.
-            real = getattr(sys.stdout, "_real", sys.stdout)
-            real.write(prompt)
-            real.flush()
-            fd = sys.stdin.fileno()
-            buf = b""
-            while True:
-                if self._input_interrupted.is_set():
-                    raise KeyboardInterrupt
-                rlist, _, _ = _select.select([fd], [], [], 0.1)
-                if fd not in rlist:
-                    continue
-                try:
-                    chunk = os.read(fd, 4096)
-                except OSError:
-                    raise EOFError
-                if not chunk:
-                    if buf:
-                        return buf.decode("utf-8", errors="replace")
-                    raise EOFError
-                buf += chunk
-                # In cooked mode, select fires only on full lines (terminal
-                # delivers everything up to and including the newline).
-                if b"\n" in buf:
-                    line, _, _rest = buf.partition(b"\n")
-                    return line.decode("utf-8", errors="replace")
+            return _read_typed(lambda: self.poll_key(0.2), prompt, block=block)
         finally:
-            self._input_request.clear()
-            self._input_resume.set()
-            self._proxy.activate()
-            if self._err_proxy:
-                self._err_proxy.activate()
-
-    def _run_input_block(self, prompt: str = "") -> str:
-        """Read lines until a blank line or Ctrl+D, off the raw key stream.
-
-        Not a loop around :meth:`_run_input`, and not a cooked-mode read at
-        all, because the terminal's canonical line buffer is too small for
-        what this is for: at ``MAX_CANON`` (1024 bytes on macOS) the line
-        discipline throws the *whole* over-long line away rather than
-        truncating it, and one pasted ``export AWS_SESSION_TOKEN=…`` line
-        clears that on its own.  So the block is read in the raw mode the
-        forwarding loop already holds — no line discipline in the way — and
-        the echo and line assembly the kernel would have done happen here.
-
-        Bytes arrive through :meth:`poll_key`, which is fed by the main
-        loop's stdin reader, so a paste that lands before the first poll is
-        already buffered rather than lost.  Line editing is deliberately
-        minimal (backspace only): this reads pasted text, not typed text.
-        """
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        lines: list[str] = []
-        current: list[str] = []
-        in_escape = False
-        after_cr = False
-
-        def echo(text: str) -> None:
-            sys.stdout.write(text)
-            sys.stdout.flush()
-
-        if prompt:
-            echo(prompt)
-
-        while True:
-            # A bounded wait, so an injected KeyboardInterrupt (slot.kill()
-            # on Ctrl+C) lands between calls instead of blocking in C.
-            data = self.poll_key(0.2)
-            if not data:
-                continue
-            for ch in decoder.decode(data):
-                if in_escape:
-                    # Swallow the rest of an escape sequence — arrow keys and
-                    # the terminal's bracketed-paste markers alike.
-                    if ch.isalpha() or ch == "~":
-                        in_escape = False
-                    continue
-                if ch == "\x1b":
-                    in_escape = True
-                    continue
-                if ch == "\x03":
-                    raise KeyboardInterrupt
-                if ch == "\x04":                     # Ctrl+D — end the block
-                    if current:
-                        lines.append("".join(current))
-                    return "\n".join(lines)
-                if ch in ("\r", "\n"):
-                    # CRLF in pasted text is one line ending, not two.
-                    if ch == "\n" and after_cr:
-                        continue
-                    after_cr = ch == "\r"
-                    echo("\n")
-                    line = "".join(current)
-                    current = []
-                    if not line.strip():
-                        return "\n".join(lines)
-                    lines.append(line)
-                    continue
-                after_cr = False
-                if ch in ("\x7f", "\x08"):
-                    if current:
-                        current.pop()
-                        echo("\b \b")
-                    continue
-                if ch < " " and ch != "\t":
-                    continue                          # other C0 controls
-                current.append(ch)
-                echo(ch)
+            self._reading_input = False
 
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parent / "_config.py"
@@ -1239,10 +1220,7 @@ class PipelineSlot(PythonCommandSlot):
         self._pty_last_byte: bytes = b"\n"
         self._pty_active = False
         self._pty_lock = threading.Lock()
-        self._input_request = threading.Event()
-        self._input_released = threading.Event()
-        self._input_resume = threading.Event()
-        self._input_interrupted = threading.Event()
+        self._reading_input = False
         self._keybuf: bytearray = bytearray()
         self._keybuf_lock = threading.Lock()
         self._keybuf_event = threading.Event()
@@ -3326,10 +3304,9 @@ class Shell:
           • other keys    — forwarded to slot.write_stdin, which writes to
             a passthrough_run() PTY master if active (no-op otherwise).
 
-        If the command thread enters passthrough_input(), the loop restores
-        cooked terminal mode and stops reading stdin until the input() call
-        returns.  That gives the slot thread direct, line-buffered access
-        to the terminal for the prompt.
+        A command reading input (passthrough_input / _block) gets the keys
+        through ``slot.write_stdin`` like everything else; the loop keeps
+        raw mode throughout.
 
         Returns 'exited' when the thread finishes, 'switched' on Ctrl+].
         """
@@ -3346,19 +3323,6 @@ class Shell:
             except OSError:
                 pass
 
-        # SIGINT handler used only while the slot is in passthrough_input().
-        # The main loop is waiting on _input_resume; the slot is polling fd 0.
-        # Setting _input_interrupted causes the slot's poll loop to raise
-        # KeyboardInterrupt and unwind.  Cooked mode's ECHOCTL already
-        # prints "^C" on the user's terminal — we just need to bump down a
-        # line so the next prompt doesn't overwrite the input line.
-        def on_sigint_during_input(signum, frame):
-            try:
-                os.write(fd, b"\r\n")
-            except OSError:
-                pass
-            slot._input_interrupted.set()
-
         try:
             # Raw INPUT (so the main loop sees Ctrl+] / Ctrl+C / etc one key
             # at a time) but COOKED OUTPUT (kernel ONLCR re-adds CRs to bare
@@ -3372,22 +3336,6 @@ class Shell:
             slot.activate()
 
             while slot.is_alive():
-                if slot._input_request.is_set():
-                    # Hand stdin and cooked mode over to the slot thread for
-                    # the duration of its input() call.  Replace SIGINT
-                    # handling for the input window: the slot thread polls
-                    # _input_interrupted and raises KeyboardInterrupt.
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
-                    signal.signal(signal.SIGINT, on_sigint_during_input)
-                    slot._input_released.set()
-                    while slot.is_alive() and not slot._input_resume.is_set():
-                        slot._input_resume.wait(timeout=0.1)
-                    signal.signal(signal.SIGINT, signal.SIG_IGN)
-                    if not slot.is_alive():
-                        break
-                    terminal.set_raw_input_cooked_output(fd)
-                    continue
-
                 rlist, _, _ = select.select([fd], [], [], 0.1)
                 if fd in rlist:
                     data = os.read(fd, 1024)
@@ -3396,9 +3344,12 @@ class Shell:
                     if b"\x1d" in data:
                         result = "switched"
                         break
-                    if b"\x03" in data and not slot._pty_active:
-                        # No passthrough subprocess is running — interrupt
-                        # the Python command itself.
+                    if (b"\x03" in data and not slot._pty_active
+                            and not slot._reading_input):
+                        # No passthrough subprocess is running and the
+                        # command isn't asking a question (whose reader
+                        # turns Ctrl+C into its own KeyboardInterrupt) —
+                        # interrupt the Python command itself.
                         slot.deactivate()
                         slot.kill()
                         result = "interrupted"
