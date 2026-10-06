@@ -15,7 +15,7 @@ class ProcessCompleter(Completer):
         try:
             result = subprocess.run(
                 ["ps", "-e", "-o", "pid=,comm="],
-                capture_output=True, text=True, timeout=2,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2,
             )
         except (OSError, subprocess.TimeoutExpired):
             return []
@@ -42,7 +42,7 @@ class ProcessNameCompleter(Completer):
         try:
             result = subprocess.run(
                 ["ps", "-e", "-o", "comm="],
-                capture_output=True, text=True, timeout=2,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2,
             )
         except (OSError, subprocess.TimeoutExpired):
             return []

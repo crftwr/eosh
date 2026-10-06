@@ -26,7 +26,7 @@ def _run_terraform(args: list[str], timeout: float = 2.0) -> list[str]:
     try:
         result = subprocess.run(
             ["terraform"] + args,
-            capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
         )
         return [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
     except (OSError, subprocess.TimeoutExpired):

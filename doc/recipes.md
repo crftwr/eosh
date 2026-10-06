@@ -2,12 +2,21 @@
 
 A **recipe** adds TAB completion to an external (system) command — one that runs as a subprocess rather than a Python function registered with `@registry.command`. Recipes live in `src/eosh/recipes/` and are activated in the user's config with `enable("name")`.
 
-> **Before you write a recipe, check the protocol fallbacks.** eosh ships two automatic fallbacks that handle large families of tools without any per-command code:
+> **Before you write a recipe, check the two protocols.** They handle large families of tools without any per-command code:
 >
-> - **Cobra** — covers Go-based CLIs that expose a `__complete` subcommand: `docker`, `kubectl`, `helm`, `gh`, `argocd`, `k9s`, `doctl`, `linkerd`, `istioctl`, `hcloud`, `op`, `hugo`, `oras`, `gitleaks`, … See [cobra-fallback.md](cobra-fallback.md).
-> - **argcomplete** — covers Python CLIs that ship completions via the [argcomplete](https://kislyuk.github.io/argcomplete/) library: `pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, `nox`, `virtualenv`, … See [argcomplete-fallback.md](argcomplete-fallback.md).
+> - **Cobra** — Go-based CLIs that expose a `__complete` subcommand (`docker`, `kubectl`, `helm`, `gh`, `argocd`, `doctl`, `linkerd`, `istioctl`, `hcloud`, `hugo`, `oras`, …). Opt-in by name, because detecting one would mean running it: the built-in `cobra` recipe lists the well-known tools, and one line covers yours. See [cobra.md](cobra.md).
 >
-> Both activate automatically — no recipe needed. Write a recipe only when neither fallback applies (most classic Unix tools, or when you want richer UX like multi-select flag pickers).
+>   ```python
+>   # ~/.eosh/recipes/mytools.py  (or straight in config.py)
+>   from eosh.recipes import enable_cobra
+>
+>   def register():
+>       enable_cobra("mytool", "othertool")
+>   ```
+>
+> - **argcomplete** — Python CLIs that ship completions via the [argcomplete](https://kislyuk.github.io/argcomplete/) library (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, `nox`, `virtualenv`, …). Automatic: eosh reads the script for the marker without running it. See [argcomplete-fallback.md](argcomplete-fallback.md).
+>
+> Write a recipe only when neither applies (most classic Unix tools), or when you want richer UX like multi-select flag pickers.
 
 ## Anatomy of a Recipe File
 

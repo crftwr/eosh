@@ -271,3 +271,21 @@ because its absence from the dump doesn't prove the script unset it.
 
 Windows needs a `bash` on `PATH` (Git Bash's, typically); without one the
 command reports `no 'bash' on PATH` and does nothing.
+
+## argcomplete completion borrows the shell's fd 8
+
+argcomplete hard-codes fd 8 as the channel for its candidates. To hand the
+child a pipe there, `ArgcompleteCompleter._invoke` `dup2`s the pipe's write
+end onto fd 8 *in the shell process*, spawns the child with `pass_fds=(8,)`,
+then restores or closes fd 8. For that window, fd 8 means something else
+process-wide. A background slot thread that happens to open a file, socket
+or pipe and get fd 8 back can have it clobbered, or leak into the child.
+The window is a single `Popen`, so this is unlikely, but it isn't
+impossible.
+
+`subprocess` has no "map this fd to child fd N" option. The race-free fixes
+are a tiny exec wrapper that does the `dup2` in the child (e.g.
+`sh -c 'exec "$@" 8>&3' -- tool` with the pipe on fd 3), or newer
+argcomplete's `_ARGCOMPLETE_STDOUT_FILENAME`, which writes to a path
+instead of fd 8 (version-dependent). Not done yet: the fallback's real-world
+use hasn't been confirmed (see discussion #34).

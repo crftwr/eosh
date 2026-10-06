@@ -49,7 +49,7 @@ change.
 │  ├── Argument completion (per-command completers)  │
 │  ├── Options completion (flags, multi-select TUI)  │
 │  ├── HistoryCompleter — past lines, cwd-scoped     │
-│  ├── CobraCompleter — drives <cmd> __complete      │
+│  ├── CobraCompleter — <cmd> __complete (opt-in)    │
 │  ├── ArgcompleteCompleter — drives argcomplete IPC │
 │  └── Filesystem completion (fallback)              │
 ├─────────────────────────────────────────────────────┤
@@ -767,12 +767,13 @@ from eosh.recipes import enable
 enable("make", "git", "ssh", "kill", "tail", "ls", "grep", "find", "du", "df", "aws")
 ```
 
-Available built-in recipes: `aws`, `awsut`, `chmod`, `chown`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/eosh/recipes/__init__.py` for descriptions). Use `enable("*")` to load all built-ins plus user recipes.
+Available built-in recipes: `aws`, `awsut`, `chmod`, `chown`, `cobra`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/eosh/recipes/__init__.py` for descriptions). Use `enable("*")` to load all built-ins plus user recipes.
 
-**Protocol fallbacks** — auto-activate after recipes, no `enable()` required:
+**Cobra-based CLIs — opt-in by name.** `CobraCompleter` drives `<cmd> __complete` for cobra-based CLIs (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …), but only for commands that have been named. The `cobra` recipe lists the well-known ones, and `enable_cobra("mytool")` adds more, from `config.py` or a user recipe's `register()`. Each name becomes a completion-only recipe with the completer as its `delegate`. It is skipped when the name isn't on `PATH` or is already registered. The tool's directive decides whether an empty answer falls back to files. Nothing is ever probed, because finding out whether a tool speaks the protocol means running it with `__complete` as an argument (`touch`, `./deploy.sh`). See `doc/cobra.md`.
 
-- **`CobraCompleter`** drives `<cmd> __complete` for cobra-based CLIs (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …). See `doc/cobra-fallback.md`.
-- **`ArgcompleteCompleter`** drives the argcomplete protocol (env vars + fd 8) for Python CLIs marked with `# PYTHON_ARGCOMPLETE_OK` (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, …). See `doc/argcomplete-fallback.md`.
+**argcomplete fallback** — auto-activates where no completer is registered, no `enable()` required: **`ArgcompleteCompleter`** drives the argcomplete protocol (env vars + fd 8) for Python CLIs marked with `# PYTHON_ARGCOMPLETE_OK` (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, …). Detection reads the script and never runs it. See `doc/argcomplete-fallback.md`.
+
+Every subprocess run at completion time gets `stdin=subprocess.DEVNULL`, so a misbehaving child can never take over the terminal.
 
 Each recipe calls `registry.command(name, help=..., params=[...])` (with no handler attached) to register completion + flag metadata for an external command.  The shell's dispatch path (`shell.py:_execute`) treats handler-less Commands as external recipes and falls through to the system-command path.
 
@@ -1080,6 +1081,7 @@ eosh/
 │       │   │                      #        replace-nodes|upgrade-ami|delete|
 │       │   │                      #        list|describe|watch|log|ssm|ssh|run|
 │       │   │                      #        search-capacity|kubeconfig|events
+│       │   ├── cobra.py       # opt-in list of cobra CLIs + enable_cobra()
 │       │   ├── df.py
 │       │   ├── du.py
 │       │   ├── find.py
