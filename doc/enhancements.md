@@ -184,13 +184,6 @@ of [architecture.md](architecture.md).
   is small; cuts ~100 lines and removes a bug class (any fix
   today must be applied twice).
 
-- **`_open_redirects(stage)` helper in `pipeline.py`.** The
-  redirect-open code is duplicated in `_execute_pipeline` and
-  `_execute_stage` with subtly different sentinels
-  (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`).
-  Pull both call sites onto one helper, single sentinel. *Risk:*
-  trivial.
-
 - **Move the Ctrl+] context-switch UI into a `switcher.py`** (or
   back into `context.py`). `_show_switch_menu`, `_resume_pty_slot`,
   `_handle_switch`, `_NEW_CTX_SENTINEL`, `_running_contexts`,

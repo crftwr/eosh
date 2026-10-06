@@ -2927,14 +2927,27 @@ class Shell:
         otherwise grab a real PTY).
         """
         stages = pipeline.stages
-        if len(stages) == 1 and not _in_outer_pipe:
-            return self._execute_stage(stages[0], stdin_fd=None, stdout_fd=None)
+        single = stages[0] if len(stages) == 1 else None
+        # A lone stage gets the terminal (PTY / PythonCommandSlot) unless it
+        # has redirects.  A redirected stage is a one-stage pipeline: the
+        # loop below already binds a Python stage's stdio through the
+        # thread-local routers and an external one through Popen, so there
+        # is no second redirect path that swaps the process-global
+        # ``sys.stdout`` under every other thread.  Decorator stages keep
+        # the direct path — their redirects live inside the braced body.
+        if (
+            single is not None
+            and not _in_outer_pipe
+            and (not single.redirects or single.decorator is not None)
+        ):
+            return self._execute_stage(single)
 
-        # Multi-stage pipeline (or single-stage decorator body running
-        # under an outer pipe): connect with OS pipes.  External stages
-        # run via subprocess.Popen; registered Python commands run in
-        # worker threads that rebind sys.stdin/stdout/stderr to the pipe
-        # ends via the thread-local routers installed in __init__.
+        # Multi-stage pipeline, redirected single stage, or single-stage
+        # decorator body running under an outer pipe: connect with OS
+        # pipes.  External stages run via subprocess.Popen; registered
+        # Python commands run in worker threads that rebind
+        # sys.stdin/stdout/stderr to the pipe ends (or redirect files) via
+        # the thread-local routers installed in __init__.
 
         n = len(stages)
         pipe_fds: list[tuple[int, int]] = []
@@ -2977,6 +2990,18 @@ class Shell:
 
             tokens = self._tokenize_stage(stage)
             if not tokens:
+                continue
+
+            # ``FOO=bar > x`` at top level is still an assignment, as it is
+            # without the redirect.  (Inside a real pipeline it is not —
+            # POSIX would run it in a subshell, so it is left to fail as a
+            # command, as before.)
+            if n == 1 and not _in_outer_pipe and all(
+                self._ASSIGNMENT_RE.match(t) for t in tokens
+            ):
+                for token in tokens:
+                    m = self._ASSIGNMENT_RE.match(token)
+                    self._set_variable(m.group(1), m.group(2))
                 continue
 
             # Per-command env prefix (``FOO=bar cmd``) applies to this stage only.
@@ -3373,11 +3398,13 @@ class Shell:
             return 1
         return 0
 
-    def _execute_stage(self, stage: Stage, stdin_fd, stdout_fd) -> int:
-        """Execute a single stage (no pipe neighbours).
+    def _execute_stage(self, stage: Stage) -> int:
+        """Execute a lone stage with no redirects on the terminal.
 
-        stdin_fd / stdout_fd are file descriptors or None (meaning inherit terminal).
-        Returns exit code.
+        External commands get a PTY (``ProcessSlot``), Python commands a
+        ``PythonCommandSlot``, so either can be backgrounded with Ctrl+].
+        Redirected stages never reach here — :meth:`_execute_pipeline` runs
+        them as a one-stage pipeline.  Returns the exit code.
         """
         if stage.decorator is not None:
             return self._execute_decorator_stage(stage)
@@ -3400,42 +3427,6 @@ class Shell:
         command_name = tokens[0]
         args = tokens[1:]
 
-        # Resolve redirections
-        stdin_override = stdout_override = stderr_override = None
-        try:
-            for redir in stage.redirects:
-                if redir.kind == "<":
-                    stdin_override = open(redir.target, "rb")
-                elif redir.kind == ">":
-                    stdout_override = open(redir.target, "wb")
-                elif redir.kind == ">>":
-                    stdout_override = open(redir.target, "ab")
-                elif redir.kind == "2>":
-                    stderr_override = open(redir.target, "wb")
-                elif redir.kind == "2>>":
-                    stderr_override = open(redir.target, "ab")
-                elif redir.kind == "2>&1":
-                    stderr_override = "stdout"
-        except OSError as e:
-            print(
-                f"eosh: {redir.target}: {e.strerror or e}",
-                file=sys.stderr,
-            )
-            for f in (stdin_override, stdout_override):
-                if f is not None:
-                    try:
-                        f.close()
-                    except Exception:
-                        pass
-            if stderr_override and stderr_override != "stdout":
-                try:
-                    stderr_override.close()
-                except Exception:
-                    pass
-            return 1
-
-        has_redirects = any([stdin_override, stdout_override, stderr_override])
-
         cmd = self.registry.get(command_name)
         # External recipes are stored as Command nodes too (for unified
         # completion), but have no Python handler anywhere — fall through to
@@ -3443,49 +3434,7 @@ class Shell:
         if cmd is not None and not cmd.has_any_handler():
             cmd = None
         if cmd:
-            if has_redirects:
-                # Redirected Python command — run synchronously with overridden streams.
-                old_stdout = sys.stdout
-                old_stdin = sys.stdin
-                old_stderr = sys.stderr
-                exit_code = 0
-                try:
-                    if stdout_override:
-                        sys.stdout = io.TextIOWrapper(stdout_override)
-                    if stdin_override:
-                        sys.stdin = io.TextIOWrapper(stdin_override)
-                    if stderr_override == "stdout":
-                        sys.stderr = sys.stdout
-                    elif stderr_override:
-                        sys.stderr = io.TextIOWrapper(stderr_override)
-                    with self._temp_environ(env_prefix):
-                        cmd.invoke(args)
-                except SystemExit:
-                    raise
-                except TypeError as e:
-                    print(f"{command_name}: {e}")
-                    exit_code = 1
-                except Exception as e:
-                    print(f"{command_name}: error: {e}")
-                    traceback.print_exc()
-                    exit_code = 1
-                finally:
-                    sys.stdout = old_stdout
-                    sys.stdin = old_stdin
-                    sys.stderr = old_stderr
-                    for f in (stdout_override, stdin_override):
-                        if f:
-                            try:
-                                f.close()
-                            except Exception:
-                                pass
-                    if stderr_override and stderr_override != "stdout":
-                        try:
-                            stderr_override.close()
-                        except Exception:
-                            pass
-                return exit_code
-            elif IS_WINDOWS:
+            if IS_WINDOWS:
                 # Windows lacks the PTY-backed slot used for thread-based
                 # context switching, so run the Python command synchronously.
                 # passthrough_run/passthrough_input fall back to direct
@@ -3523,45 +3472,7 @@ class Shell:
                     print(f"{command_name}: error: {exc}")
                 return slot.exit_code or 0
 
-        # External command
-        if has_redirects:
-            import subprocess
-            stdin_arg = stdin_override or None
-            stdout_arg = stdout_override or None
-            if stderr_override == "stdout":
-                stderr_arg = subprocess.STDOUT
-            else:
-                stderr_arg = stderr_override or None
-            try:
-                p = subprocess.run(
-                    [command_name] + args,
-                    stdin=stdin_arg,
-                    stdout=stdout_arg,
-                    stderr=stderr_arg,
-                    env=self._merged_env(env_prefix),
-                    cwd=os.getcwd(),
-                )
-            except FileNotFoundError:
-                print(f"eosh: command not found: {command_name}")
-                return 127
-            except OSError as e:
-                print(f"eosh: {e}")
-                return 1
-            finally:
-                for f in (stdin_override, stdout_override):
-                    if f:
-                        try:
-                            f.close()
-                        except Exception:
-                            pass
-                if stderr_override and stderr_override != "stdout":
-                    try:
-                        stderr_override.close()
-                    except Exception:
-                        pass
-            return p.returncode
-        else:
-            return self._execute_external(command_name, args, env_prefix=env_prefix)
+        return self._execute_external(command_name, args, env_prefix=env_prefix)
 
     def _run_python_command_sync(self, cmd, command_name: str, args: list[str]) -> int:
         """Invoke a Python command on the main thread (Windows path)."""

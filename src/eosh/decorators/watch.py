@@ -340,16 +340,12 @@ def register() -> None:
         ],
     )
     def watch(pipeline, *, interval: float, no_clear: bool) -> None:
-        # Capture the *real* terminal stdout up front.  When ``@watch``
-        # wraps a registered Python command (e.g. ``awsut sagemaker
-        # hyperpod describe``), the shell's redirect path rebinds ``sys.stdout``
-        # process-wide to the temp file we use to capture each
-        # iteration's output — so writes via ``sys.stdout`` from this
-        # function would land in that file, not on screen, and the
-        # captured "command output" would be polluted with our own UI
-        # bytes.  ``sys.__stdout__`` is Python's untouched original
-        # stream and stays bound to the terminal regardless.
-        out = sys.__stdout__
+        # Each iteration's capture (``> tmpfile``) rebinds stdout only on
+        # the stage's own thread, so this thread's ``sys.stdout`` stays
+        # wherever ``@watch`` itself writes: the terminal, or the outer
+        # pipe in ``@watch {ls} | grep py`` (where it isn't a tty, so we
+        # stream into the pipe instead of drawing a UI).
+        out = sys.stdout
         is_tty = out.isatty()
         use_alt_screen = is_tty and not no_clear
         cmd_text = _pipeline_text(pipeline)
