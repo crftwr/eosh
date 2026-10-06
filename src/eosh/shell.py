@@ -1894,6 +1894,7 @@ class Shell:
 
         @self.registry.command(
             name="cd",
+            sync=True,
             help="Change directory.",
             params=[arg("path", nargs="?", default="~", completer=DirCompleter())],
         )
@@ -1905,7 +1906,7 @@ class Shell:
             except OSError as e:
                 print(f"cd: {e}")
 
-        @self.registry.command(name="exit", help="Exit the shell.")
+        @self.registry.command(name="exit", help="Exit the shell.", sync=True)
         def exit_shell():
             # A pipeline stage is a subshell in POSIX terms: `exit | cat`
             # does not end the shell.
@@ -1918,7 +1919,7 @@ class Shell:
             # exit status (see run_handler).  run() ends after this line.
             self._exit_requested = True
 
-        @self.registry.command(name="reload", help="Reload ~/.eosh/config.py.")
+        @self.registry.command(name="reload", help="Reload ~/.eosh/config.py.", sync=True)
         def reload_config():
             from . import recipes
             self.registry.clear_user_commands()
@@ -1930,6 +1931,7 @@ class Shell:
 
         @self.registry.command(
             name="var",
+            sync=True,
             help=(
                 "Set, unset, or list context variables.\n\n"
                 "  var              list all registered vars and env vars\n"
@@ -1978,6 +1980,7 @@ class Shell:
 
         @self.registry.command(
             name="source-bash",
+            sync=True,
             help=(
                 "Run a bash script and import its environment into this shell.\n\n"
                 "  source-bash                 paste lines, end with a blank line or Ctrl+D\n"
@@ -2052,6 +2055,7 @@ class Shell:
 
         @self.registry.command(
             name="alias",
+            sync=True,
             help=(
                 "Define or list command aliases.\n\n"
                 "  alias                  list all aliases\n"
@@ -2087,6 +2091,7 @@ class Shell:
 
         @self.registry.command(
             name="unalias",
+            sync=True,
             help="Remove one or more aliases.",
             params=[arg("names", nargs="+", metavar="NAME",
                         completer=CallbackCompleter(
@@ -2099,6 +2104,7 @@ class Shell:
 
         @self.registry.command(
             name="help",
+            sync=True,
             help="Show help for a command, or list all commands.",
             params=[arg("command_name", nargs="?", default="",
                         completer=CallbackCompleter(lambda: sorted(self.registry.list_commands())))],
@@ -2143,6 +2149,7 @@ class Shell:
 
         @self.registry.command(
             name="context",
+            sync=True,
             help="Manage shell contexts: new, close, switch, list, kill.",
             params=[
                 arg("subcommand", nargs="?", default="",
@@ -3133,11 +3140,13 @@ class Shell:
         if cmd is not None and not cmd.has_any_handler():
             cmd = None
         if cmd:
-            if IS_WINDOWS:
-                # Windows lacks the PTY-backed slot used for thread-based
-                # context switching, so run the Python command synchronously.
-                # passthrough_run/passthrough_input fall back to direct
-                # subprocess.run/input since no slot is registered.
+            if IS_WINDOWS or cmd.sync:
+                # On the main thread: a `sync` command (the built-ins — they
+                # finish at once or change the shell's own state), and every
+                # command on Windows, which lacks the PTY-backed slot used for
+                # thread-based context switching.  passthrough_run falls back
+                # to subprocess.run and passthrough_input reads the terminal
+                # directly, since no slot is registered.
                 return run_handler(lambda: self._invoke_with_env(cmd, args, env_prefix),
                                    command_name, announce_interrupt=True)
             else:
