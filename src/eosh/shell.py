@@ -69,13 +69,16 @@ from .prompt import get_prompt_func, set_prompt
 # Thread-local stdout routing + per-slot buffering proxy
 # ---------------------------------------------------------------------------
 
-class _ThreadLocalStdout(io.TextIOBase):
-    """A sys.stdout replacement that routes writes per thread.
+class _ThreadLocalStream(io.TextIOBase):
+    """A ``sys.stdin`` / ``sys.stdout`` / ``sys.stderr`` replacement that
+    routes I/O per thread.
 
-    The main thread (no override set) writes directly to *real*.
-    A Python-command thread sets an override via set_override() so its
-    print() calls go to a _StdoutProxy, keeping them separate from the
-    main thread's terminal output.
+    A thread with no override (the main thread) uses *real*.  A thread that
+    sets one — a Python command's slot thread (a :class:`_StdoutProxy`), a
+    pipeline stage (a TextIOWrapper around its pipe end or redirect file) —
+    reads and writes there instead, so concurrent commands never trample
+    each other or the terminal.  One class serves all three streams; each
+    wraps its own *real*.
     """
 
     def __init__(self, real: io.TextIOBase) -> None:
@@ -86,60 +89,25 @@ class _ThreadLocalStdout(io.TextIOBase):
     def _target(self) -> io.TextIOBase:
         return getattr(self._local, "override", None) or self._real
 
+    def set_override(self, stream) -> None:
+        self._local.override = stream
+
+    def clear_override(self) -> None:
+        self._local.override = None
+
+    def close(self) -> None:
+        # Never close (or flush on finalization) the stream we wrap: the
+        # router is replaced and collected while the real stream lives on.
+        pass
+
+    # writing
     def write(self, s: str) -> int:
         return self._target.write(s)
 
     def flush(self) -> None:
         self._target.flush()
 
-    def fileno(self) -> int:
-        return self._real.fileno()
-
-    @property
-    def buffer(self):
-        return self._real.buffer
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._real, "encoding", "utf-8")
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._real, "errors", "strict")
-
-    def isatty(self) -> bool:
-        # A pipe-end override is never a tty.  When no override is active
-        # (main thread) or the override forwards to the real stdout
-        # (_StdoutProxy in a PythonCommandSlot), defer to the real stream.
-        target = getattr(self._local, "override", None)
-        if target is not None:
-            return target.isatty()
-        return self._real.isatty()
-
-    def set_override(self, proxy) -> None:
-        self._local.override = proxy
-
-    def clear_override(self) -> None:
-        self._local.override = None
-
-
-class _ThreadLocalStdin(io.TextIOBase):
-    """A sys.stdin replacement that routes reads per thread.
-
-    The main thread (no override set) reads from *real*.  A pipeline
-    thread sets an override pointing at a TextIOWrapper around its pipe
-    fd so ``input()`` / ``sys.stdin.read()`` consume from the pipe
-    instead of the terminal.
-    """
-
-    def __init__(self, real: io.TextIOBase) -> None:
-        self._real = real
-        self._local = threading.local()
-
-    @property
-    def _target(self) -> io.TextIOBase:
-        return getattr(self._local, "override", None) or self._real
-
+    # reading
     def read(self, size: int = -1) -> str:
         return self._target.read(size)
 
@@ -155,13 +123,16 @@ class _ThreadLocalStdin(io.TextIOBase):
     def __next__(self):
         return next(self._target)
 
+    # file-like plumbing
     def fileno(self) -> int:
         return self._real.fileno()
 
     @property
     def buffer(self):
-        target = getattr(self._local, "override", None)
-        return getattr(target, "buffer", None) or self._real.buffer
+        # The override's own binary layer when it has one (a pipe end); a
+        # _StdoutProxy has none, so bytes from a slot thread reach the real
+        # terminal, as the PTY passthrough reader relies on.
+        return getattr(self._target, "buffer", None) or self._real.buffer
 
     @property
     def encoding(self) -> str:
@@ -172,60 +143,12 @@ class _ThreadLocalStdin(io.TextIOBase):
         return getattr(self._real, "errors", "strict")
 
     def isatty(self) -> bool:
-        target = getattr(self._local, "override", None)
-        if target is not None:
+        # An override answers for itself: a pipe end is never a tty, and a
+        # _StdoutProxy forwards to the real stream and says so.
+        try:
+            return self._target.isatty()
+        except (AttributeError, ValueError):
             return False
-        return self._real.isatty()
-
-    def set_override(self, stream) -> None:
-        self._local.override = stream
-
-    def clear_override(self) -> None:
-        self._local.override = None
-
-
-class _ThreadLocalStderr(io.TextIOBase):
-    """A sys.stderr replacement that routes writes per thread.
-
-    Mirrors :class:`_ThreadLocalStdout` for stderr so a pipeline thread
-    can redirect its diagnostic output independently of the main
-    thread.
-    """
-
-    def __init__(self, real: io.TextIOBase) -> None:
-        self._real = real
-        self._local = threading.local()
-
-    @property
-    def _target(self) -> io.TextIOBase:
-        return getattr(self._local, "override", None) or self._real
-
-    def write(self, s: str) -> int:
-        return self._target.write(s)
-
-    def flush(self) -> None:
-        self._target.flush()
-
-    def fileno(self) -> int:
-        return self._real.fileno()
-
-    @property
-    def buffer(self):
-        return self._real.buffer
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._real, "encoding", "utf-8")
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._real, "errors", "strict")
-
-    def set_override(self, stream) -> None:
-        self._local.override = stream
-
-    def clear_override(self) -> None:
-        self._local.override = None
 
 
 class _StdoutProxy(io.TextIOBase):
@@ -609,10 +532,9 @@ class PythonCommandSlot(ExitCallbackMixin):
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def activate(self, raw_mode: bool = False) -> None:  # noqa: ARG002
-        # ``raw_mode`` is part of the slot interface (``ProcessSlot`` and
-        # ``PipelineSlot`` use it); a Python command's output needs no
-        # translation — the kernel adds CRs (see ``_StdoutProxy``).
+    def activate(self) -> None:
+        # No newline translation: the forwarding loop keeps the kernel's
+        # ONLCR on (raw input, cooked output), which adds the CRs.
         if self._proxy:
             self._proxy.activate()
         if self._err_proxy:
@@ -1289,11 +1211,11 @@ class PipelineSlot(PythonCommandSlot):
         # Body output capture: an OS pipe so external subprocess output goes
         # to a fd we own rather than the real terminal.  The reader thread
         # buffers bytes while the slot is inactive and streams them live to
-        # stdout (with raw-mode \n→\r\n conversion) once the user switches in.
+        # stdout once the user switches in.  No \n→\r\n conversion: the
+        # forwarding loop keeps the kernel's ONLCR on.
         self._out_lock = threading.Lock()
         self._out_buffer = OutputBuffer()
         self._out_active = False
-        self._out_raw_mode = False
         self._out_read_fd: int = -1
         self._out_write_fd: int = -1
         self._out_reader_thread: threading.Thread | None = None
@@ -1329,9 +1251,8 @@ class PipelineSlot(PythonCommandSlot):
                     break
                 with self._out_lock:
                     if self._out_active:
-                        chunk = data.replace(b"\n", b"\r\n") if self._out_raw_mode else data
                         try:
-                            sys.stdout.buffer.write(chunk)
+                            sys.stdout.buffer.write(data)
                             sys.stdout.buffer.flush()
                         except OSError:
                             pass
@@ -1410,14 +1331,11 @@ class PipelineSlot(PythonCommandSlot):
             self._finished.set()
             self._fire_on_exit()
 
-    def activate(self, raw_mode: bool = False) -> None:
+    def activate(self) -> None:
         with self._out_lock:
             chunks = self._out_buffer.drain()
             self._out_active = True
-            self._out_raw_mode = raw_mode
         for chunk in chunks:
-            if raw_mode:
-                chunk = chunk.replace(b"\n", b"\r\n")
             try:
                 sys.stdout.buffer.write(chunk)
             except OSError:
@@ -1430,11 +1348,10 @@ class PipelineSlot(PythonCommandSlot):
     def deactivate(self) -> None:
         with self._out_lock:
             self._out_active = False
-            self._out_raw_mode = False
 
     def replay_buffer(self) -> None:
-        # Cooked-mode replay (no \n→\r\n conversion): used by run() once the
-        # slot has exited and the terminal is back in cooked mode.
+        # Used by run() once the slot has exited and the terminal is back in
+        # cooked mode.
         chunks = self._out_buffer.drain()
         for chunk in chunks:
             try:
@@ -1530,12 +1447,9 @@ class Shell:
         # Install thread-local stdio routers so Python command threads can
         # rebind their own stdin/stdout/stderr (for buffering proxies or pipe
         # ends) without disturbing the main thread.
-        if not isinstance(sys.stdout, _ThreadLocalStdout):
-            sys.stdout = _ThreadLocalStdout(sys.stdout)
-        if not isinstance(sys.stdin, _ThreadLocalStdin):
-            sys.stdin = _ThreadLocalStdin(sys.stdin)
-        if not isinstance(sys.stderr, _ThreadLocalStderr):
-            sys.stderr = _ThreadLocalStderr(sys.stderr)
+        for stream in ("stdin", "stdout", "stderr"):
+            if not isinstance(getattr(sys, stream), _ThreadLocalStream):
+                setattr(sys, stream, _ThreadLocalStream(getattr(sys, stream)))
 
         history_path = config_dir() / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3555,7 +3469,7 @@ class Shell:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGWINCH, on_resize)
             # Replay any output buffered before raw mode was set
-            slot.activate(raw_mode=True)
+            slot.activate()
 
             while slot.is_alive():
                 if slot._input_request.is_set():
@@ -3875,7 +3789,7 @@ class Shell:
             # path do the right thing for the new context's slot.  Otherwise
             # re-activate PTY slots so their reader thread can stream output
             # again.  PythonCommandSlots stay deactivated: their buffered
-            # output will be replayed correctly (with raw_mode=True) the next
+            # output will be replayed correctly the next
             # time _enter_python_forwarding_mode is called from run().
             new_ctx = self.context_manager.current()
             if new_ctx is None or (new_ctx.name != original_name):

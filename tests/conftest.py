@@ -10,7 +10,7 @@ fixture's ``Shell()`` call and the test body, breaking the routing.
 When a test is marked, this plugin suspends global stdio capture for
 the duration of the *call* phase (after setup, before teardown), so
 ``sys.stdout`` stays at the real ``TextIOWrapper`` that ``Shell.__init__``
-wraps with ``_ThreadLocalStdout``.  Output from the test still appears
+wraps with ``_ThreadLocalStream``.  Output from the test still appears
 on the terminal, but the routing keeps working.
 """
 
@@ -81,16 +81,13 @@ def pytest_pyfunc_call(pyfuncitem):
         yield
         return
     import sys
-    from eosh.shell import _ThreadLocalStdin, _ThreadLocalStdout, _ThreadLocalStderr
+    from eosh.shell import _ThreadLocalStream
 
     capman.suspend_global_capture(in_=True)
     saved = (sys.stdin, sys.stdout, sys.stderr)
-    if not isinstance(sys.stdout, _ThreadLocalStdout):
-        sys.stdout = _ThreadLocalStdout(sys.stdout)
-    if not isinstance(sys.stdin, _ThreadLocalStdin):
-        sys.stdin = _ThreadLocalStdin(sys.stdin)
-    if not isinstance(sys.stderr, _ThreadLocalStderr):
-        sys.stderr = _ThreadLocalStderr(sys.stderr)
+    for stream in ("stdin", "stdout", "stderr"):
+        if not isinstance(getattr(sys, stream), _ThreadLocalStream):
+            setattr(sys, stream, _ThreadLocalStream(getattr(sys, stream)))
     try:
         yield
     finally:

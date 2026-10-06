@@ -670,13 +670,13 @@ def test_python_command_slot_poll_key_returns_buffered_bytes():
 
 
 def test_thread_local_stdout_isatty_falls_through(monkeypatch):
-    """``_ThreadLocalStdout`` must forward ``isatty()`` to either the
+    """``_ThreadLocalStream`` must forward ``isatty()`` to either the
     real stream (no override) or the thread-local override — not return
     the io.TextIOBase default of ``False``."""
     import sys as _sys
-    from eosh.shell import _ThreadLocalStdout, _StdoutProxy
+    from eosh.shell import _ThreadLocalStream, _StdoutProxy
 
-    tls = _ThreadLocalStdout(_sys.__stdout__)
+    tls = _ThreadLocalStream(_sys.__stdout__)
     # No override: reflect the real stream.
     assert tls.isatty() == _sys.__stdout__.isatty()
 
