@@ -2451,7 +2451,9 @@ class Shell:
                 print("Config load interrupted by Ctrl+C; exiting.", file=sys.stderr)
                 sys.exit(130)
             except Exception as e:
-                print(f"Error loading config: {e}", file=sys.stderr)
+                from .user_errors import format_user_exception
+                print(f"Error loading config ({config_path}):", file=sys.stderr)
+                print(format_user_exception(e), file=sys.stderr, end="")
 
     _ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)")
 

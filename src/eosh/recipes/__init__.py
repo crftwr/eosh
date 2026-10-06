@@ -107,21 +107,45 @@ def enable(*recipe_names: str) -> None:
     registered, and running it explains what is missing and prints the
     install command for *this* environment (``uv tool``, ``pipx`` or pip —
     see :mod:`eosh.recipes._missing`).  It also shows up in ``help``.
+
+    A *user* recipe that fails under ``"*"`` — for any reason, including an
+    import failing inside a helper module it imports — is reported on stderr
+    with a traceback through the user's files, and the remaining recipes
+    still load.  Only a built-in recipe's missing dependency is skipped
+    quietly: that is an optional extra not installed, while a user recipe's
+    ``ModuleNotFoundError`` is as likely a typo as a missing package.
     """
     wildcard = "*" in recipe_names
     names = _discover_all_recipes() if wildcard else recipe_names
     for name in names:
         try:
             module = _load_recipe(name)
-        except ModuleNotFoundError as e:
+            skipped_recipes.pop(name, None)
+            module.register()
+        except Exception as e:
             if not wildcard:
                 raise
-            missing = e.name or str(e)
-            skipped_recipes[name] = missing
-            _register_unavailable(name, missing)
-            continue
-        skipped_recipes.pop(name, None)
-        module.register()
+            builtin = _is_builtin(name)
+            if not builtin:
+                _report_user_recipe_error(name, e)
+            if isinstance(e, ModuleNotFoundError):
+                missing = e.name or str(e)
+                skipped_recipes[name] = missing
+                _register_unavailable(name, missing)
+            elif builtin:
+                raise  # a bug in eosh itself — don't hide it
+
+
+def _is_builtin(name: str) -> bool:
+    here = Path(__file__).parent
+    return (here / f"{name}.py").exists() or (here / name / "__init__.py").exists()
+
+
+def _report_user_recipe_error(name: str, exc: Exception) -> None:
+    from ..user_errors import format_user_exception
+
+    print(f"eosh: recipe {name!r} failed to load and was skipped:", file=sys.stderr)
+    print(format_user_exception(exc), file=sys.stderr, end="")
 
 
 # Recipes ``enable("*")`` skipped because a dependency could not be imported:
