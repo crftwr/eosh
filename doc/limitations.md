@@ -222,9 +222,9 @@ absorbs it into an exit code, but a plain foreground run re-raises it
 on the main thread (that is how `exit` works), which would take the
 shell down.
 
-Consequence for ported tools: every `awsut` leaf (`awsut.py`,
-`_awsut_sagemaker/` and `_awsut_agentcore/`, all wrapped in
-`_awsut_common.guard`) prints
+Consequence for ported tools: every `awsut` leaf (`addons/awsut/`: `cli.py`,
+`sagemaker/` and `agentcore/`, all wrapped in
+`common.guard`) prints
 `error: …` to stderr and returns normally where the standalone
 `sm_jobs.py` / `sm_hub.py` scripts exited 1 or 2 —
 and where the `make` targets `studio` replaces failed the build.

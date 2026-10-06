@@ -292,8 +292,8 @@ path.
 
 ## Migration of Existing Recipes
 
-`recipes/git.py` and `recipes/awsut.py` are the recipes that hand-roll
-sub-command dispatch using the tree API. (`recipes/aws.py` no longer
+`recipes/git.py` and the `awsut` add-on (`addons/awsut/cli.py`) build
+their sub-command dispatch with the tree API. (`recipes/aws.py` no longer
 defines its own subcommand tree — it now drives the AWS CLI v2
 `aws_completer` binary directly, which knows every service, operation,
 and flag.)

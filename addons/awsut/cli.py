@@ -23,13 +23,13 @@ Provides the ``awsut`` command tree:
 * ``awsut bedrock-agentcore memory list|describe|strategies|watch|delete|
   actors|sessions|events|event|records|record|search|jobs``
 
-Each service group lives in its own subpackage — ``_awsut_sagemaker``,
-``_awsut_agentcore`` (this module is already long enough) — and is attached
+Each service group lives in its own subpackage — ``sagemaker``,
+``agentcore`` (this module is already long enough) — and is attached
 from :func:`register` because ``CommandRegistry`` roots cannot be re-opened
 from a second module.
 
 Every group prints to one contract — header line, table, ``error:`` on stderr —
-defined in :mod:`eosh.recipes._awsut_common`.  The leaves here were ported
+defined in :mod:`eosh_addons.awsut.common`.  The leaves here were ported
 from a shell that printed colon-separated one-liners; they render through those
 helpers now, so ``awsut ec2 list`` and ``awsut sagemaker studio apps`` line up
 column for column.
@@ -47,7 +47,7 @@ they don't leak into subprocesses.
 
 User-customisable defaults (read from ``~/.eosh/config.py`` if set):
 
-    from eosh.recipes import awsut
+    from eosh_addons.awsut import cli as awsut
     awsut.console_pages = {"home": "https://...", ...}
     awsut.console_url_modifier_func = lambda account, role, url: ...
     awsut.awscli = ["aws"]
@@ -66,23 +66,15 @@ import urllib.parse
 import webbrowser
 from typing import Callable
 
-try:
-    import boto3
-    import botocore.exceptions
-except ModuleNotFoundError as e:
-    # Keep ``e.name`` so ``enable("*")`` still recognises a missing dependency.
-    from ._missing import install_command
-    raise ModuleNotFoundError(
-        f"awsut needs {e.name} (the [aws] extra): {install_command(extra='aws')}",
-        name=e.name,
-    ) from e
+import boto3
+import botocore.exceptions
 
-from ..commands import registry as command_registry, arg
-from ..completion import Completer, Completion, CompletionContext, FileCompleter
-from ..completion_cache import aws_env_key, get_or_fetch
-from ..shell import passthrough_input_block
-from ..variables import Var, registry as var_registry
-from ._awsut_common import (
+from eosh.commands import registry as command_registry, arg
+from eosh.completion import Completer, Completion, CompletionContext, FileCompleter
+from eosh.completion_cache import aws_env_key, get_or_fetch
+from eosh import passthrough_input_block
+from eosh.variables import Var, registry as var_registry
+from .common import (
     RED,
     RESET,
     YELLOW,
@@ -97,14 +89,14 @@ from ._awsut_common import (
     print_table,
     section,
 )
-from .aws import AWS_REGIONS, AwsProfileCompleter
+from eosh.recipes.aws import AWS_REGIONS, AwsProfileCompleter
 
 
 # ─── User-customisable module-level config ──────────────────────────────────
 #
 # Override from ~/.eosh/config.py:
 #
-#     from eosh.recipes import awsut
+#     from eosh_addons.awsut import cli as awsut
 #     awsut.console_pages = {...}
 #     awsut.console_url_modifier_func = lambda account, role, url: ...
 
@@ -942,8 +934,8 @@ def register() -> None:
 
     # Lazy: these subpackages do `from .. import awsut`, so they can only be
     # imported once this module is fully loaded.  Each registers its own Vars.
-    from ._awsut_agentcore import register_agentcore
-    from ._awsut_sagemaker import register_sagemaker
+    from .agentcore import register_agentcore
+    from .sagemaker import register_sagemaker
     register_sagemaker(awsut)
     register_agentcore(awsut)
 

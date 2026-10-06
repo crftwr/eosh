@@ -31,7 +31,7 @@ $(info Using Python bootstrap: $(PYTHON_BOOTSTRAP))
 
 help:
 	@echo "Eolith Shell utility commands:"
-	@echo "  make install          - create the venv and install eosh (editable, with dev + aws deps)"
+	@echo "  make install          - create the venv and install eosh (editable, with dev + awsut deps)"
 	@echo "  make test             - run the test suite"
 	@echo "  make run              - run eosh from the venv"
 	@echo "  make install-launcher - put an eosh launcher on PATH"

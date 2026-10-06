@@ -23,8 +23,8 @@ import pytest
 from eosh.commands import CmdParser, _collect_inherited_params
 from eosh.commands import registry as command_registry
 from eosh.completion import CompletionContext
-from eosh.recipes import awsut as awsut_recipe
-from eosh.recipes._awsut_sagemaker import hub, hyperpod, jobs, render, studio
+from eosh_addons.awsut import cli as awsut_recipe
+from eosh_addons.awsut.sagemaker import hub, hyperpod, jobs, render, studio
 from eosh.tui import _compose_meta, _meta_col_widths
 
 

@@ -27,10 +27,10 @@ import sys
 
 import botocore.exceptions
 
-from ...commands import arg
-from ...completion import Completer, Completion, CompletionContext
-from ...completion_cache import aws_env_key, get_or_fetch
-from .. import awsut
+from eosh.commands import arg
+from eosh.completion import Completer, Completion, CompletionContext
+from eosh.completion_cache import aws_env_key, get_or_fetch
+from .. import cli as awsut
 from .jobs import _JobNameCompleter, describe_job, job_categories
 from .render import (
     NOT_FOUND_CODES,

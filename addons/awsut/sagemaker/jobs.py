@@ -53,11 +53,11 @@ from datetime import datetime, timezone
 
 import botocore.exceptions
 
-from ...completion import ChoiceCompleter, Completer, Completion, CompletionContext
-from ...commands import arg
-from ...completion_cache import aws_env_key, get_or_fetch
-from ...shell import passthrough_input
-from .. import awsut
+from eosh.completion import ChoiceCompleter, Completer, Completion, CompletionContext
+from eosh.commands import arg
+from eosh.completion_cache import aws_env_key, get_or_fetch
+from eosh import passthrough_input
+from .. import cli as awsut
 from .render import (
     DOT_INTERVAL,
     Heartbeat,
@@ -95,7 +95,7 @@ from .render import (
 # from it — so an endpoint whose model this botocore release does not carry can
 # still be queried by naming its categories from ``~/.eosh/config.py``:
 #
-#     from eosh.recipes._awsut_sagemaker import jobs
+#     from eosh_addons.awsut.sagemaker import jobs
 #     jobs.EXTRA_JOB_CATEGORIES = ["SomeCategory", "SomeOtherCategory"]
 #
 # Kept apart from :func:`declared_categories` because the two fail differently: a

@@ -82,6 +82,10 @@ change.
 │  Recipes (recipes/)                                 │
 │  └── Completion recipes for external commands      │
 ├─────────────────────────────────────────────────────┤
+│  Add-ons (addons/ → eosh_addons.*)                  │
+│  ├── Python applications on the public API only    │
+│  └── awsut — AWS utility commands                  │
+├─────────────────────────────────────────────────────┤
 │  Decorators (decorators/)                           │
 │  ├── @name [flags] body — wrap pipeline at runtime │
 │  └── Built-ins: @watch, @time, @retry, @quiet, @bg │
@@ -767,7 +771,7 @@ from eosh.recipes import enable
 enable("make", "git", "ssh", "kill", "tail", "ls", "grep", "find", "du", "df", "aws")
 ```
 
-Available built-in recipes: `aws`, `awsut`, `chmod`, `chown`, `cobra`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/eosh/recipes/__init__.py` for descriptions). Use `enable("*")` to load all built-ins plus user recipes.
+Available built-in recipes: `aws`, `chmod`, `chown`, `cobra`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/eosh/recipes/__init__.py` for descriptions). Bundled add-ons (`awsut`) are enabled by name the same way (see **addons/** below). Use `enable("*")` to load all built-ins, add-ons and user recipes.
 
 **Cobra-based CLIs — opt-in by name.** `CobraCompleter` drives `<cmd> __complete` for cobra-based CLIs (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …), but only for commands that have been named. The `cobra` recipe lists the well-known ones, and `enable_cobra("mytool")` adds more, from `config.py` or a user recipe's `register()`. Each name becomes a completion-only recipe with the completer as its `delegate`. It is skipped when the name isn't on `PATH` or is already registered. The tool's directive decides whether an empty answer falls back to files. Nothing is ever probed, because finding out whether a tool speaks the protocol means running it with `__complete` as an argument (`touch`, `./deploy.sh`). See `doc/cobra.md`.
 
@@ -821,28 +825,61 @@ enable("my_tool")      # found in ~/.eosh/recipes/ or /team/shared/recipes/
 
 `recipe_search_path` is a plain `list[Path]` and can be read or manipulated directly when finer control is needed.
 
-**Missing dependencies.** Under `enable("*")`, a recipe whose import fails
-with `ModuleNotFoundError` (`awsut` without the `[aws]` extra, a user recipe
-importing `requests`) is skipped, recorded in `recipes.skipped_recipes`, and
-replaced by a placeholder command of the same name — unless that name is
-already registered or on `PATH`, so a completion-only recipe never shadows
-the real executable. Running the placeholder prints the missing module and
-an install command for *this* environment (`recipes/_missing.py`): for a
-`uv tool` venv it rebuilds `uv tool install … --with …` from
-`uv-receipt.toml` (because `--with` replaces rather than appends), for pipx
-it's `pipx inject`, otherwise `<sys.executable> -m pip install`. Built-in
-recipes backed by an eosh extra are listed in `_missing.RECIPE_EXTRAS` so
-the hint names `eosh[<extra>]` rather than the bare module.
+**Missing dependencies.** Under `enable("*")`, a recipe or add-on whose
+import fails with `ModuleNotFoundError` (`awsut` without the `eosh[awsut]`
+extra, a user recipe importing `requests`) is skipped, recorded in
+`recipes.skipped_recipes`, and replaced by a placeholder command of the same
+name — unless that name is already registered or on `PATH`, so a
+completion-only recipe never shadows the real executable. Running the
+placeholder prints one line from `recipes.missing_message`. For an add-on it
+names the extra, which by convention is named after the add-on
+(`awsut: needs the Python module 'boto3' — install eosh[awsut]`), so the core
+holds no table of which add-on needs what. Naming an add-on explicitly
+(`enable("awsut")`) raises with the same message.
 
 **User recipe errors are never silent.** Under `enable("*")`, *any* exception
 from a user recipe (search-path, not built-in) — including a
 `ModuleNotFoundError` raised by a helper it imports, which is as likely a typo
 as a missing package — is printed to stderr with a traceback, and the loop
-moves on to the next recipe. Only a built-in's missing dependency stays quiet.
+moves on to the next recipe. Only an add-on's missing dependency stays quiet.
 Config-load failures print a traceback too. Both go through
 `user_errors.format_user_exception`, which drops eosh-internal and
 `<frozen importlib>` frames so the report shows the chain through the user's
 own files.
+
+### addons/ — Bundled Add-ons
+
+An add-on is a Python *application* that plugs into eosh — a command tree
+with handlers, settings and its own output contract — as opposed to a recipe
+(completion metadata for an external command). They live at the top of the
+repository, one directory each, and install as `eosh_addons.<name>`:
+
+```
+addons/awsut/      →  import eosh_addons.awsut      enable("awsut")
+```
+
+- **Packaging.** `addons/` has no `__init__.py`; `eosh_addons` is a
+  namespace package so an add-on can later become its own distribution
+  without renaming. `setup.py` maps `addons/` onto it (the one thing
+  `pyproject.toml` can't express). Each add-on has an
+  `[project.entry-points."eosh.addons"]` entry in `pyproject.toml`, which is
+  how `enable()` finds it. Scanning the namespace finds nothing in an
+  editable install. Its third-party dependencies go in an extra **named after
+  the add-on**.
+- **Public API only.** An add-on imports from `eosh`, `eosh.commands`,
+  `eosh.completion`, `eosh.completion_cache`, `eosh.variables`,
+  `eosh.recipes` and `eosh.recipes.aws`, and nothing else from the core.
+  `tests/addons/test_boundary.py` parses every add-on source to enforce this.
+  It also rejects relative imports that leave the add-on, imports of another
+  add-on, and add-on directories without an entry point. Something an add-on
+  needs that isn't public is made public in the core first.
+- **awsut** (`addons/awsut/`) — `whoami`, `console`, `credentials`, `ec2`,
+  `logs`, `cloudformation`, `sagemaker {jobs,hub,studio,hyperpod}`,
+  `bedrock-agentcore {harness,memory}`. Layout and its output contract
+  (`common.py`: `print_header` / `print_table` / `guard` …) are in
+  `addons/awsut/README.md`; its tests are in `tests/addons/awsut/`.
+
+See [doc/addons.md](doc/addons.md).
 
 ### decorators/ — Pipeline Decorators
 
@@ -999,6 +1036,7 @@ eosh/
 ├── LICENSE                     # MIT
 ├── Makefile                    # install/test/run + build and release targets
 ├── pyproject.toml              # version + readme are dynamic (see Packaging & Release)
+├── setup.py                    # package list only: maps addons/ → eosh_addons
 ├── scripts/
 │   ├── install_launcher.py     # put a `eosh` launcher on PATH
 │   ├── _version_source.py      # read/rewrite the single __version__ literal
@@ -1035,52 +1073,7 @@ eosh/
 │       ├── tui.py              # InlinePicker, InlineMultiPicker, InlineArgPrompt
 │       ├── recipes/
 │       │   ├── __init__.py     # enable(*names) helper
-│       │   ├── _missing.py     # install hint for a recipe's missing dependency
-│       │   │                   # (uv tool / pipx / pip aware)
 │       │   ├── aws.py
-│       │   ├── awsut.py
-│       │   ├── _awsut_common.py   # the output contract for the whole `awsut`
-│       │   │                      # tree: print_header/print_table/
-│       │   │                      # print_labeled/section, guard + SmError,
-│       │   │                      # fmt_time/fmt_dur/fmt_bytes — plus what is
-│       │   │                      # about AWS shapes rather than one service
-│       │   │                      # (paged, model introspection, yaml_lines,
-│       │   │                      # Heartbeat, flag_value/positionals).  Above
-│       │   │                      # awsut.py and every service subpackage, and
-│       │   │                      # builds no AWS client, so any of them
-│       │   │                      # imports it without a cycle
-│       │   ├── _awsut_agentcore/  # `awsut bedrock-agentcore` group
-│       │   │   ├── __init__.py    # register_agentcore(awsut) — called by awsut.register()
-│       │   │   ├── render.py      # AgentCore-specific: a client per *plane*
-│       │   │   │                  # (control_client creates/describes,
-│       │   │   │                  # data_client reaches inside — two boto3
-│       │   │   │                  # services, one Var each), the status
-│       │   │   │                  # vocabulary shared across resource types,
-│       │   │   │                  # render_detail/print_reasons, cache_key
-│       │   │   ├── harness.py     # harness list|describe|versions|endpoints|
-│       │   │   │                  #         watch|delete
-│       │   │   └── memory.py      # memory list|describe|strategies|watch|
-│       │   │                      #        delete (control plane) + actors|
-│       │   │                      #        sessions|events|event|records|
-│       │   │                      #        record|search|jobs (data plane)
-│       │   ├── _awsut_sagemaker/  # `awsut sagemaker` group.  Leading `_`, like
-│       │   │   │                  # every support module here: enable("*")
-│       │   │   │                  # offers only stems without one, since it
-│       │   │   │                  # calls register() on whatever it finds
-│       │   │   ├── __init__.py    # register_sagemaker(awsut) — called by awsut.register()
-│       │   │   ├── render.py      # SageMaker-specific: clients, pagination,
-│       │   │   │                  # document rendering, ARN shapes — and
-│       │   │   │                  # re-exports _awsut_common for this package
-│       │   │   ├── jobs.py        # jobs list|describe|log|watch|stop
-│       │   │   ├── hub.py         # hub hubs|list|versions|describe|files|trace
-│       │   │   ├── studio.py      # studio domains|spaces|apps|profiles|log|
-│       │   │   │                  #        watch|start|url|open|stop
-│       │   │   │                  #        (Domain/Space/App)
-│       │   │   └── hyperpod.py    # hyperpod create|update|scale|add-ig|
-│       │   │                      #        remove-ig|delete-nodes|reboot-nodes|
-│       │   │                      #        replace-nodes|upgrade-ami|delete|
-│       │   │                      #        list|describe|watch|log|ssm|ssh|run|
-│       │   │                      #        search-capacity|kubeconfig|events
 │       │   ├── cobra.py       # opt-in list of cobra CLIs + enable_cobra()
 │       │   ├── df.py
 │       │   ├── du.py
@@ -1099,7 +1092,18 @@ eosh/
 │           ├── retry.py        # @retry built-in
 │           ├── quiet.py        # @quiet built-in
 │           └── bg.py           # @bg built-in
+├── addons/                     # bundled add-ons → eosh_addons.<name>
+│   │                           # (namespace package: no __init__.py)
+│   └── awsut/                  # `awsut` — see addons/awsut/README.md
+│       ├── __init__.py         # exposes register()
+│       ├── cli.py              # the awsut root + its own leaves
+│       ├── common.py           # output contract + AWS-shape helpers
+│       ├── sagemaker/          # jobs | hub | studio | hyperpod
+│       └── agentcore/          # harness | memory (control + data plane)
 └── tests/
+    ├── addons/
+    │   ├── test_boundary.py    # add-ons use the public API only
+    │   └── awsut/
     ├── test_commands.py
     ├── test_completion.py
     ├── test_completion_cache.py
@@ -1187,9 +1191,14 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
   `pyproject.toml` reads it via `dynamic = ["version"]`. Between releases it
   carries a `.devN` suffix (`0.1.0.dev0`), so `make tag VERSION=0.1.0` is
   "ahead" of it for `release_preflight.py`.
-- **Extras**: the core is stdlib-only. `[aws]` (boto3, pexpect) powers
-  `awsut`; without it `enable("*")` skips `awsut` and records it in
-  `recipes.skipped_recipes`. `[dev]` = pytest + `[aws]`.
+- **Extras**: the core is stdlib-only. Each add-on's dependencies are an
+  extra named after it. `[awsut]` (boto3, pexpect) powers `awsut`; without it
+  `enable("*")` skips `awsut` and records it in `recipes.skipped_recipes`.
+  `[dev]` = pytest + `[awsut]`.
+- **Add-ons are in the same wheel** (`eosh_addons.*`, via `setup.py`), so
+  there is one release pipeline. Adding an add-on means adding its
+  `eosh.addons` entry point to `pyproject.toml` and re-running
+  `make install`.
 - **PyPI readme** is `README.pypi.md`, generated by `make build` from
   `README.md` with relative links pinned to the version tag; gitignored.
 - **Release**, in order: `make tag VERSION=x.y.z` (preflight, tests, bump,

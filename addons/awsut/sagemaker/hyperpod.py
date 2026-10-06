@@ -9,7 +9,7 @@ paid every time someone read the tree.
 This module used to print with instruments of its
 own — colon-separated one-liners where its neighbours printed tables — so the
 same question answered about two SageMaker resources came back in two formats.
-It now renders through :mod:`render` (i.e. :mod:`.._awsut_common`) like the rest
+It now renders through :mod:`render` (i.e. :mod:`..common`) like the rest
 of the tree.  What is still its own is the machinery underneath: the client
 factories (``awsut._get_sagemaker_client`` / ``awsut._get_boto3_client``) and
 the pexpect-driven SSM plumbing (:func:`_ssm_run`).
@@ -34,17 +34,17 @@ import sys
 import threading
 import time
 
-from ...commands import arg
-from ...completion import (
+from eosh.commands import arg
+from eosh.completion import (
     ChoiceCompleter,
     Completer,
     Completion,
     CompletionContext,
     FileCompleter,
 )
-from ...completion_cache import aws_env_key, get_or_fetch
-from ...shell import passthrough_input, passthrough_run
-from .. import awsut
+from eosh.completion_cache import aws_env_key, get_or_fetch
+from eosh import passthrough_input, passthrough_run
+from .. import cli as awsut
 from .render import (
     INSTANCE_TYPE_CHOICES,
     RED,

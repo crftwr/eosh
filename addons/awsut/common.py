@@ -25,8 +25,8 @@ this module is the only place that shape is defined:
 * **Timestamps** are local and second-precision (:func:`fmt_time`); the change
   lines a ``watch`` loop emits are stamped ``[HH:MM:SS]``.
 
-It lives at the top of ``recipes/`` — above ``awsut.py`` and above every
-per-service subpackage (``_awsut_sagemaker``, ``_awsut_agentcore``) — and
+It lives at the top of the add-on — above ``cli.py`` and above every
+per-service subpackage (``sagemaker``, ``agentcore``) — and
 deliberately builds no AWS clients, so any of them can import it without an
 import cycle.  Each subpackage's ``render`` module re-exports these names, since
 its own modules already read their instruments from there.

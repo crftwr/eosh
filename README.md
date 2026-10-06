@@ -35,14 +35,14 @@ Requires Python 3.12+. The core has no dependencies beyond the standard library.
 
 ```bash
 pip install eosh               # or: pipx install eosh / uv tool install eosh
-pip install "eosh[aws]"        # + the `awsut` recipe (boto3, pexpect)
-uv tool install "eosh[aws]"    # same, as an isolated uv tool
+pip install "eosh[awsut]"      # + the `awsut` add-on (boto3, pexpect)
+uv tool install "eosh[awsut]"  # same, as an isolated uv tool
 ```
 
 On first launch `eosh` writes a starter `~/.eosh/config.py` that enables
-every built-in recipe. Without the `[aws]` extra, `awsut` is skipped and
-everything else loads normally; running `awsut` then prints the install
-command for the environment eosh lives in (`uv tool`, `pipx`, or pip).
+every built-in recipe and bundled add-on. Without the `[awsut]` extra,
+`awsut` is skipped and everything else loads normally; running `awsut` then
+says which module is missing and which extra provides it.
 
 `uv tool` and `pipx` install eosh into its own virtualenv, so a
 `pip install boto3` in another shell does not reach it — add packages with

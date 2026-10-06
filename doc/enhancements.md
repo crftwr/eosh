@@ -45,9 +45,9 @@ here in enhancements.md until each item lands.
 ## `awsut bedrock-agentcore` — the rest of the service
 
 Two groups are shipped read-only plus `delete`:
-`harness` (`_awsut_agentcore/harness.py`: `list`, `describe`, `versions`,
+`harness` (`addons/awsut/agentcore/harness.py`: `list`, `describe`, `versions`,
 `endpoints`, `watch`, `delete`) and `memory`
-(`_awsut_agentcore/memory.py`: `list`, `describe`, `strategies`, `watch`,
+(`addons/awsut/agentcore/memory.py`: `list`, `describe`, `strategies`, `watch`,
 `delete` on the control plane; `actors`, `sessions`, `events`, `event`,
 `records`, `record`, `search`, `jobs` on the data plane). What is
 deliberately not in those cuts, roughly in the order it becomes worth
@@ -94,7 +94,7 @@ having:
   interpreters, runtimes. Each is a sibling group under
   `bedrock-agentcore`, and the shared plumbing they need (a client per
   plane, status vocabulary, `cache_key`, `mark_for`, `render_detail`) is
-  already in `_awsut_agentcore/render.py` — `statuses(operation, list_key)`
+  already in `addons/awsut/agentcore/render.py` — `statuses(operation, list_key)`
   reads a resource's status enum out of whatever list operation it has, so
   a new group inherits the marks without hard-coding words. Note that
   **browser and code-interpreter sessions are a different thing from

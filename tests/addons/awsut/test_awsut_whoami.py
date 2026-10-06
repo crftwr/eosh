@@ -8,7 +8,8 @@ import botocore.exceptions
 import pytest
 
 from eosh.commands import registry as command_registry
-from eosh.recipes import awsut, enable
+from eosh.recipes import enable
+from eosh_addons.awsut import cli as awsut
 
 
 UTC = datetime.timezone.utc
