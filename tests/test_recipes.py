@@ -203,6 +203,67 @@ class TestEnableAll:
         assert recipes_pkg.skipped_recipes == {
             "aaa_needs_dep": "eosh_no_such_dependency"}
 
+    def test_user_recipe_failure_is_reported_with_its_file_and_line(
+            self, tmp_path, monkeypatch, capsys):
+        """Issue #45: a failing import *inside a helper* the user recipe
+        imports used to be skipped without a word.  The report must name both
+        files on the way down, not just the missing module."""
+        (tmp_path / "my_tool.py").write_text(
+            "import eosh_test_helper_45\n"
+            "def register(): pass\n"
+        )
+        helper_dir = tmp_path / "lib"
+        helper_dir.mkdir()
+        (helper_dir / "eosh_test_helper_45.py").write_text("import requets\n")
+        monkeypatch.syspath_prepend(str(helper_dir))
+        _reset_search_path(monkeypatch, [tmp_path])
+        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["my_tool"])
+        monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
+
+        recipes_pkg.enable("*")
+
+        err = capsys.readouterr().err
+        assert "recipe 'my_tool' failed to load" in err
+        assert "my_tool.py\", line 1" in err
+        assert "eosh_test_helper_45.py\", line 1" in err
+        assert "No module named 'requets'" in err
+        assert "frozen" not in err
+
+    def test_user_recipe_error_skips_only_that_recipe(
+            self, tmp_path, monkeypatch, _result_module, capsys):
+        """Any exception — not just a missing module — in a user recipe is
+        reported and the recipes after it still load."""
+        (tmp_path / "aaa_broken.py").write_text(
+            "def register():\n"
+            "    raise ValueError('boom in register')\n"
+        )
+        _make_recipe(tmp_path, "zzz_ok")
+        _reset_search_path(monkeypatch, [tmp_path])
+        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes",
+                            lambda: ["aaa_broken", "zzz_ok"])
+
+        recipes_pkg.enable("*")
+
+        assert _result_module.results == ["zzz_ok"]
+        err = capsys.readouterr().err
+        assert "recipe 'aaa_broken' failed to load" in err
+        assert "ValueError: boom in register" in err
+
+    def test_builtin_missing_dependency_stays_quiet(self, monkeypatch, capsys):
+        """``awsut`` without the [aws] extra is a choice, not an error."""
+        import sys
+        monkeypatch.setitem(sys.modules, "boto3", None)
+        monkeypatch.delitem(sys.modules, "eosh.recipes.awsut", raising=False)
+        _reset_search_path(monkeypatch, [])
+        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["awsut"])
+        monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
+        monkeypatch.setattr(recipes_pkg, "_register_unavailable", lambda *a: None)
+
+        recipes_pkg.enable("*")
+
+        assert recipes_pkg.skipped_recipes == {"awsut": "boto3"}
+        assert capsys.readouterr().err == ""
+
     def test_missing_dependency_still_raises_when_named(
             self, tmp_path, monkeypatch):
         (tmp_path / "needs_dep.py").write_text(

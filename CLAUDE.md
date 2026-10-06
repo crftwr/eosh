@@ -833,6 +833,16 @@ it's `pipx inject`, otherwise `<sys.executable> -m pip install`. Built-in
 recipes backed by an eosh extra are listed in `_missing.RECIPE_EXTRAS` so
 the hint names `eosh[<extra>]` rather than the bare module.
 
+**User recipe errors are never silent.** Under `enable("*")`, *any* exception
+from a user recipe (search-path, not built-in) — including a
+`ModuleNotFoundError` raised by a helper it imports, which is as likely a typo
+as a missing package — is printed to stderr with a traceback, and the loop
+moves on to the next recipe. Only a built-in's missing dependency stays quiet.
+Config-load failures print a traceback too. Both go through
+`user_errors.format_user_exception`, which drops eosh-internal and
+`<frozen importlib>` frames so the report shows the chain through the user's
+own files.
+
 ### decorators/ — Pipeline Decorators
 
 A **decorator** is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how that pipeline is run. The leading `@` makes the syntax visually distinct from regular commands so parsing priority is unambiguous and the construct doesn't collide with POSIX command names.
@@ -1003,6 +1013,8 @@ eosh/
 │       ├── __init__.py         # public API exports + __version__ (single source)
 │       ├── __main__.py         # entry point (`eosh`, `eosh --version`)
 │       ├── paths.py            # config_dir() — the one place naming ~/.eosh
+│       ├── user_errors.py      # traceback of a config/recipe error, eosh
+│       │                       # frames stripped
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
 │       ├── commands.py         # command registry, @command decorator
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter

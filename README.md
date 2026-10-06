@@ -541,6 +541,11 @@ recipe's name (unless that name is already a command or an executable on
 `PATH`); running it says which module is missing and how to install it.
 Naming the recipe explicitly — `enable("my_tool")` — still raises.
 
+Any error in one of *your* recipes — a typo in an import (even one inside a
+helper module the recipe imports), an exception in `register()`, a syntax
+error — is printed at startup with a traceback through your files, and under
+`enable("*")` the remaining recipes still load.
+
 ### Writing a Custom Completer
 
 Subclass `Completer` and implement `complete()`. The `CompletionContext` gives you:
