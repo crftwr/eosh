@@ -273,6 +273,5 @@ Two rules from that world still apply to recipes:
 | `DirCompleter()` | `completion` | Directory-only arguments (`-C DIR`) |
 | `ChoiceCompleter(list)` | `completion` | Static value lists |
 | `CallbackCompleter(fn)` | `completion` | Dynamic value list from a `() -> list[str]` |
-| `ConditionalCompleter(mapping)` | `completion` | Values that depend on a preceding arg |
 | `OptionsCompleter(dict, args)` | `completion` | Custom flag completer (only when a recipe has unusual flag rules — the registry auto-builds this from `arg(...)` flag entries) |
 | Custom `Completer` subclass | — | Live data from subprocesses or files |

@@ -461,7 +461,6 @@ The function is called each time the prompt is displayed, so it reflects dynamic
 | `FileCompleter()` | Complete filesystem paths (files and directories) |
 | `DirCompleter()` | Complete directory paths only |
 | `OptionsCompleter(options, args)` | Complete flags with multi-select TUI; `args` declares value-taking flags |
-| `ConditionalCompleter(mapping)` | Pick a sub-completer based on preceding args |
 | `HistoryCompleter(history_fn, limit, ran_here_fn)` | Continue the typed line from past command lines (may span several arguments), scoped to the ones run in the cwd |
 
 ### Completion Recipes

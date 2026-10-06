@@ -36,7 +36,7 @@
 │  TUI Widgets (tui.py)                               │
 │  ├── InlinePicker — single-select inline list      │
 │  ├── InlineMultiPicker — multi-select with Space   │
-│  └── InlineArgPrompt — flag-argument text input    │
+│  └── InlineArgPrompt — single-line text input      │
 ├─────────────────────────────────────────────────────┤
 │  Line Editor (lineedit.py)                          │
 │  ├── Raw-mode key dispatch                         │
@@ -91,11 +91,10 @@ Entry point and orchestrator. Owns the REPL cycle: read input, parse, dispatch, 
 
 Provides the `CommandRegistry` class and a global `registry` singleton.
 
-- `@registry.command(name, *, help=None, params=None, delegate=None, options_completer=None)` — register a Python function (with handler) or an external recipe (no handler). `params=[arg(...)]` declares positionals and flags; the registry derives both an argparse parser and the per-position completer dict from the same list. `delegate=Completer` installs a single completer at every slot (used when an external tool drives its own completion protocol). `options_completer=OptionsCompleter` overrides the auto-built flag completer when a custom subclass is needed.
+- `@registry.command(name, *, help=None, params=None, delegate=None)` — register a Python function (with handler) or an external recipe (no handler). `params=[arg(...)]` declares positionals and flags; the registry derives both an argparse parser and the per-position completer dict from the same list. `delegate=Completer` installs a single completer at every slot (used when an external tool drives its own completion protocol).
 - `arg(*names, completer=None, **argparse_kwargs)` builder used inside `params=`. `metavar=` becomes the inline hint for value-taking flags; `choices=` auto-populates a `ChoiceCompleter` when `completer=` is omitted.
 - Sub-command tree: `Command.command(name, ...)` registers a child sub-command. Used by `git`, `awsut`, and any nested CLI; see [subcommands.md](subcommands.md).
 - Aliases: `registry.alias(name, value)`, `registry.unalias(name)`, `get_alias`, `list_aliases`.
-- `registry.register(cmd)` for imperative registration of a pre-built `Command`.
 - `registry.mark_builtins()` / `registry.clear_user_commands()` for hot-reload support.
 - Each `Command` holds: name, optional callable, `params: list[Arg] | None`, derived per-argument completers dict, help text, description.
 - Description comes from the explicit `help=` kwarg, falling back to the function's docstring.
@@ -112,7 +111,7 @@ Defines the `Completer` protocol, `CompletionContext`, and built-in completers.
 
 - `CompletionContext` carries full parse state to every completer
 - `Completer` ABC with `complete()` and optional `should_activate()` guard
-- Built-in completers: `FileCompleter`, `DirCompleter`, `CommandNameCompleter`, `ChoiceCompleter`, `CallbackCompleter`, `OptionsCompleter`, `ConditionalCompleter`
+- Built-in completers: `FileCompleter`, `DirCompleter`, `CommandNameCompleter`, `ChoiceCompleter`, `CallbackCompleter`, `OptionsCompleter`
 - `OptionsCompleter` supports multi-select flag TUI, flag arg-hints, value completers, and flag deduplication
 - **Protocol completers**:
   - `CobraCompleter` drives `<cmd> __complete <words>` for cobra-based CLIs (docker, kubectl, helm, gh, argocd, …). It is opt-in per command, installed as a `delegate` by the `cobra` recipe or `enable_cobra(...)`. See `doc/cobra.md`.
@@ -145,7 +144,7 @@ Inline-rendered widgets anchored with DECSC/DECRC (no alternate screen). Cancel 
 
 - `InlinePicker` — single-select list; supports narrowing by typing, scrollbar, `meta_fn` labels (one string, or cells laid out as columns aligned across rows). `select_first=False` opens with no row highlighted (Enter → None); `closed_empty` reports "narrowed to zero candidates"; `empty_placeholder` keeps the picker open on zero candidates, rendering that text instead (used by `Ctrl+R`, whose query lives only in the picker); `typed` exposes the chars the picker echoed for the caller to commit
 - `InlineMultiPicker` — multi-select with Space; jump-to by letter; returns checked items (or the highlighted one, or None when neither); `select_first=False` as above
-- `InlineArgPrompt` — single-line text prompt for a flag's argument value
+- `InlineArgPrompt` — single-line text prompt (naming a context in the switch picker)
 
 ### process.py — PTY Process Slots
 
@@ -280,7 +279,6 @@ eosh/
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
 │       ├── completion.py       # Completer ABC, CompletionContext, built-in completers, cobra/argcomplete fallbacks
 │       ├── context.py          # Context, ContextManager, ContextState
-│       ├── history.py          # history storage and search
 │       ├── lineedit.py         # DIY raw-mode line editor, History (+ history.dirs side table), TAB completion glue
 │       ├── parsing.py          # line tokenization, quote handling, var expansion
 │       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run()

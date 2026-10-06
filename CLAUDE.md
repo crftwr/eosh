@@ -56,7 +56,7 @@ change.
 │  TUI Widgets (tui.py)                               │
 │  ├── InlinePicker — single-select inline list      │
 │  ├── InlineMultiPicker — multi-select with Space   │
-│  └── InlineArgPrompt — flag-argument text input    │
+│  └── InlineArgPrompt — single-line text input      │
 ├─────────────────────────────────────────────────────┤
 │  Line Editor (lineedit.py)                          │
 │  ├── Raw-mode key dispatch                         │
@@ -166,8 +166,7 @@ def hello(name):
 ```
 
 Methods:
-- `command(name, *, help=None, params=None, delegate=None, options_completer=None)` — register a Python function (with handler) or an external recipe (no handler attached). `params=[arg(...)]` declares positionals and flags; the registry derives both an argparse parser and the per-position completer dict from the same list. `delegate=Completer` installs a single completer at every slot (used when an external tool drives its own completion protocol). `options_completer=OptionsCompleter` overrides the auto-built flag completer when a custom subclass is needed.
-- `register(cmd: Command)` — register a pre-built `Command` object (mirrors `var_registry.register(var_object)`)
+- `command(name, *, help=None, params=None, delegate=None)` — register a Python function (with handler) or an external recipe (no handler attached). `params=[arg(...)]` declares positionals and flags; the registry derives both an argparse parser and the per-position completer dict from the same list. `delegate=Completer` installs a single completer at every slot (used when an external tool drives its own completion protocol).
 - `mark_builtins()` — snapshot current commands as builtins (not removed on `reload`)
 - `clear_user_commands()` — remove non-builtin commands and aliases
 
@@ -392,7 +391,6 @@ class HistoryCompleter(Completer):         # tails of past command lines (verbat
 class OptionsCompleter(Completer):         # flags with optional arg-hints and multi-select TUI
     def __init__(self, options: dict[str, str],
                  args: dict[str, str | tuple[str, Completer]] | None = None): ...
-class ConditionalCompleter(Completer):     # pick sub-completer based on preceding args
     def __init__(self, mapping: dict[tuple, Completer]): ...
 ```
 
@@ -431,10 +429,7 @@ registry.command(
 )
 ```
 
-Two escape hatches on `registry.command()` cover the cases where flags or positional dispatch can't be expressed via `params` alone:
-
-* `delegate=Completer` — install a single completer at **every** slot (flags + every positional index).  Used when an external tool ships its own completion protocol that decides per-call what to return (e.g. `aws_completer`).
-* `options_completer=OptionsCompleter` — override the auto-built flag completer at the `None` slot.  Reserved for cases that need a custom :class:`OptionsCompleter` subclass; no built-in recipe currently uses it.
+One escape hatch on `registry.command()` covers the case where flags and positional dispatch can't be expressed via `params` alone: `delegate=Completer` installs a single completer at **every** slot (flags + every positional index). It's used when an external tool ships its own completion protocol that decides per-call what to return (e.g. `aws_completer`, cobra's `__complete`).
 
 #### OptionsCompleter — Multi-Select Flag Picker
 
@@ -534,29 +529,6 @@ class EC2InstanceCompleter(Completer):
         ...
 ```
 
-#### Completer Composition
-
-Completers can be combined for complex scenarios:
-
-```python
-class ConditionalCompleter(Completer):
-    """Picks a sub-completer based on preceding args."""
-    def __init__(self, mapping: dict[tuple, Completer]):
-        self.mapping = mapping
-
-    def complete(self, ctx: CompletionContext) -> list[Completion]:
-        key = tuple(ctx.args)
-        completer = self.mapping.get(key)
-        if completer:
-            return completer.complete(ctx)
-        # Fall back to longest matching prefix
-        for length in range(len(ctx.args), 0, -1):
-            partial_key = tuple(ctx.args[:length])
-            if partial_key in self.mapping:
-                return self.mapping[partial_key].complete(ctx)
-        return []
-```
-
 ### context.py — Context Switch
 
 Contexts represent an environment (e.g., AWS account + region, k8s cluster). Each context stores:
@@ -615,7 +587,7 @@ class EC2InstanceCompleter(Completer):
 
 DIY raw-mode line editor. No prompt_toolkit or readline.
 
-- `LineEditor.prompt()` — read one line; returns the line string, `SWITCH_SENTINEL` on `Ctrl+]`, raises `EOFError` (Ctrl+D on empty) or `KeyboardInterrupt` (Ctrl+C)
+- `LineEditor.prompt()` — read one line; returns the line string (not added to history — the shell joins continuation lines and records the result), `CONTEXT_CHANGED_SENTINEL` when a `Ctrl+]` switch needs the new context's process resumed, raises `EOFError` (Ctrl+D on empty) or `KeyboardInterrupt` (Ctrl+C)
 - Key bindings: `Ctrl+A/E`, `Ctrl+B/F`, `Alt+B/F`, `Ctrl+W`, `Ctrl+K`, `Ctrl+U`, `Ctrl+L`, arrow keys, `Ctrl+P/N`, `Ctrl+R`
 - TAB opens an `InlinePicker` (or `InlineMultiPicker` for flags) with **no candidate pre-selected**, so Enter dismisses the list instead of inserting the first item; only Down/Up make a selection; typing narrows the list; TAB inside the picker extends the common prefix and never moves the selection; Backspace can close the picker; narrowing to zero candidates closes it (a zero-row picker would be invisible but still eat keys). Characters typed inside a picker are committed to the buffer on every exit path.
 - TAB candidates include **past command lines** matching everything typed so far (from the current context's history, scoped to the lines run in the cwd — see `HistoryCompleter`), listed first and tagged `history`. Only the tail from the completion anchor is offered, and applying one splices it in verbatim (`Completion.verbatim`); they are never auto-applied without being shown
@@ -646,7 +618,7 @@ No alternate screen; all rendering anchored with DECSC/DECRC (`ESC 7` / `ESC 8`)
 
 - **`InlinePicker`** — single-select list rendered inline below the current line. Supports narrowing by typing, TAB-extend common prefix (via `value_fn` + `completion_prefix`, or an `extend_fn(items, typed)` callback when the caller must recompute the value space per press), scrollbar, optional `meta_fn` for the labels beside each row (returning either one string or a sequence of cells, which the picker lays out as columns aligned across rows). `select_first=False` (used by the completion pickers) opens with no row highlighted, so Enter returns `None`; `closed_empty` signals "narrowing left zero candidates, I closed myself"; `typed` exposes the characters the picker echoed so the caller can commit them to its buffer.
 - **`InlineMultiPicker`** — multi-select list with Space to toggle checkboxes. Jump-to by typing a letter. Returns checked items (or the highlighted item if nothing is checked, or `None` when nothing is checked *and* nothing is highlighted). Takes the same `select_first` flag.
-- **`InlineArgPrompt`** — single-line text prompt for a flag's argument. Shows an optional description line above.
+- **`InlineArgPrompt`** — single-line text prompt (used by the context-switch picker to name or rename a context). Shows an optional description line above.
 
 ### process.py — PTY Process Slots (POSIX only)
 
@@ -1060,7 +1032,6 @@ eosh/
 │       ├── completion.py       # Completer ABC, CompletionContext, built-in completers
 │       ├── completion_cache.py # TTL store for completer fetches; invalidated after every command
 │       ├── context.py          # Context, ContextManager, ContextState
-│       ├── history.py          # history storage and search
 │       ├── lineedit.py         # DIY raw-mode line editor, History (+ directory side table), TAB completion glue
 │       ├── notify.py           # OS notification when a slow command finishes;
 │       │                       # native backends, skip list, `notify` +

@@ -5,7 +5,6 @@ from eosh.completion import (
     ChoiceCompleter,
     CommandNameCompleter,
     CompletionContext,
-    ConditionalCompleter,
     FileCompleter,
     OptionsCompleter,
 )
@@ -57,19 +56,6 @@ def test_file_completer():
             assert "subdir/" in values
         finally:
             os.chdir(old_cwd)
-
-
-def test_conditional_completer():
-    c = ConditionalCompleter({
-        ("prod",): ChoiceCompleter(["us-east-1", "us-west-2"]),
-        ("staging",): ChoiceCompleter(["eu-west-1"]),
-    })
-    results = c.complete(make_ctx(prefix="us", args=["prod"]))
-    assert len(results) == 2
-
-    results = c.complete(make_ctx(prefix="", args=["staging"]))
-    assert len(results) == 1
-    assert results[0].value == "eu-west-1"
 
 
 def test_options_completer_shows_value_taking_flags():

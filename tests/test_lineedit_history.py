@@ -139,7 +139,7 @@ def test_directory_list_per_line_is_capped(tmp_path):
     for i in range(MAX_DIRS_PER_LINE + 5):
         hist.add("make test", cwd=f"/repo/d{i}")
 
-    dirs = hist.dirs_for("make test")
+    dirs = hist._dirs["make test"]
     assert len(dirs) == MAX_DIRS_PER_LINE
     # The oldest directories are the ones dropped.
     assert not hist.ran_here("make test", cwd="/repo/d0")
@@ -154,7 +154,7 @@ def test_repeating_a_directory_refreshes_rather_than_duplicates(tmp_path):
     hist.add("make test", cwd="/repo/b")
     hist.add("make test", cwd="/repo/a")
 
-    assert hist.dirs_for("make test") == [_norm_dir("/repo/b"), _norm_dir("/repo/a")]
+    assert hist._dirs["make test"] == [_norm_dir("/repo/b"), _norm_dir("/repo/a")]
 
 
 def test_side_table_drops_lines_the_history_file_no_longer_has(tmp_path):

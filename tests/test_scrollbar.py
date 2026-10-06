@@ -25,8 +25,8 @@ TRACK = (40, 40, 40)
 _HALF_BAR = dict(h=8, pos=0.625, ratio=0.5)
 
 
-def _kinds(h, pos, ratio, subcell=True):
-    return list(vbar_cells(h, pos, ratio, subcell))
+def _kinds(h, pos, ratio):
+    return list(vbar_cells(h, pos, ratio))
 
 
 def test_thumb_body_is_a_background_fill():
@@ -86,13 +86,6 @@ def test_short_thumb_keeps_its_one_cell_minimum():
 
 def test_full_ratio_fills_the_track():
     assert all(kind == "thumb" for _, kind, _ in _kinds(6, 0.0, 1.0))
-
-
-def test_no_color_falls_back_to_whole_cells():
-    # Without sub-cell there is no cap to draw with two colors in one cell.
-    for pos in (0.0, 0.33, 0.5, 0.9, 1.0):
-        kinds = {kind for _, kind, _ in _kinds(10, pos, 0.37, subcell=False)}
-        assert kinds <= {"thumb", "track"}
 
 
 def test_geometry_is_total_and_contiguous():
