@@ -603,8 +603,8 @@ class PythonCommandSlot(ExitCallbackMixin):
     run() loop and context machinery can treat both uniformly.
     """
 
-    def __init__(self, cmd, raw_args: list[str]) -> None:
-        self._init_exit_callback()
+    def __init__(self, cmd, raw_args: list[str], on_exit=None) -> None:
+        self._init_exit_callback(on_exit)
         self._cmd = cmd
         self._raw_args = raw_args
         self.argv: list[str] = [cmd.name] + raw_args
@@ -1192,11 +1192,11 @@ class PipelineSlot(PythonCommandSlot):
     ``@bg``'s capture and racing the main thread for stdin.
     """
 
-    def __init__(self, pipeline: "Pipeline", display_text: str) -> None:
+    def __init__(self, pipeline: "Pipeline", display_text: str, on_exit=None) -> None:
         # Bypass PythonCommandSlot.__init__ — it expects a Command, which we
         # don't have.  We mirror its attribute set ourselves.  ``argv`` is what
         # the context list / picker shows as the "command line" for the slot.
-        self._init_exit_callback()
+        self._init_exit_callback(on_exit)
         self._cmd = None  # never used; kept so ``_pty_lock``/etc. branches are safe
         self._raw_args: list[str] = []
         self.argv: list[str] = [display_text]
@@ -1445,7 +1445,7 @@ class Shell:
         self.context_manager = ContextManager()
         self.context_manager.create("default")
         # True while the line currently being executed handed its work to a
-        # background context — see _execute / _notify_when_backgrounded.
+        # background context — see _execute / _park.
         self._backgrounded = False
         # Set by the `exit` built-in; run() ends after the current line.
         self._exit_requested = False
@@ -2484,48 +2484,35 @@ class Shell:
 
     # --- long-command notifications ------------------------------------------
 
-    def _notify_when_backgrounded(self, slot) -> None:
-        """Arrange a desktop notification for *slot* finishing out of sight.
+    def _park(self, slot, ctx) -> None:
+        """Hand *slot* to *ctx* to keep running in the background (Ctrl+],
+        ``@bg``).  From here on the slot's exit handler reports it, so the
+        line that started it doesn't (see :meth:`_execute`)."""
+        ctx.process_slot = slot
+        slot.parked = True
+        self._backgrounded = True
 
-        Called right after the slot is parked on a context (``Ctrl+]`` or
-        ``@bg``).  The callback runs on the slot's own thread, so it must not
-        touch the terminal — :func:`notify.command_done` only spawns a
-        notification helper.
+    def _slot_finished(self, slot) -> None:
+        """Exit handler every slot is constructed with; runs on the slot's
+        own thread, so it must not touch the terminal —
+        :func:`notify.command_done` only spawns a notification helper.
+
+        A slot that was never parked ran in the foreground, and
+        :meth:`_execute` timed the whole line.  A parked one is reported
+        here, with its context's name when that context isn't the current
+        one — the user was looking elsewhere when it ended.  The owner is
+        looked up, not remembered: a slot can move between contexts.
         """
-        slot.arm_exit_callback(lambda: self._notify_slot_done(slot))
-
-    def _notify_slot_done(self, slot) -> None:
-        """Notify that a backgrounded *slot* finished, if the user isn't watching.
-
-        The owning context is looked up rather than remembered: a slot can be
-        moved between contexts, and "which context holds it *now*" is exactly
-        the question that decides whether the user saw it finish.  A slot with
-        no owner ran in the foreground (``_execute`` already timed it), and a
-        slot owned by the current context finished on screen — neither needs a
-        popup.
-        """
+        if not slot.parked:
+            return
         owner = next(
-            (
-                name
-                for name, ctx in self.context_manager.contexts.items()
-                if ctx.process_slot is slot
-            ),
+            (name for name, ctx in self.context_manager.contexts.items()
+             if ctx.process_slot is slot),
             None,
         )
-        if owner is None or owner == self.context_manager.current_name:
-            return
-        notify.command_done(
-            " ".join(slot.argv), slot.elapsed(), slot.exit_code or 0, context=owner
-        )
-
-    def _notify_resumed_done(self, slot) -> None:
-        """Notify for a slot that was resumed into the foreground and then ended.
-
-        Its exit callback stayed silent (the slot's context was current by
-        then), and ``_execute`` returned when the slot was backgrounded, so
-        this is the only path that can report the total runtime.
-        """
-        notify.command_done(" ".join(slot.argv), slot.elapsed(), slot.exit_code or 0)
+        out_of_sight = owner is not None and owner != self.context_manager.current_name
+        notify.command_done(" ".join(slot.argv), slot.elapsed(), slot.exit_code or 0,
+                            context=owner if out_of_sight else None)
 
     def _tokenize_stage(self, stage: Stage) -> list[str]:
         """Expand variables, tokenize, alias-expand, and glob-expand a stage's text."""
@@ -2610,16 +2597,10 @@ class Shell:
             # the helper already printed an error.  Don't create the context.
             raise ValueError(f"@bg: failed to start '{display}'")
 
-        if name in existing:
-            target = existing[name]
-            target.process_slot = slot
-        else:
-            target = self.context_manager.new(name)
-            target.process_slot = slot
+        target = existing[name] if name in existing else self.context_manager.new(name)
         # ``@bg`` returns immediately, so the enclosing line's own timing says
-        # nothing about the body; the slot's exit callback is what reports it.
-        self._backgrounded = True
-        self._notify_when_backgrounded(slot)
+        # nothing about the body; the slot's exit handler is what reports it.
+        self._park(slot, target)
         return name
 
     def _make_background_slot(self, pipeline: Pipeline, display: str):
@@ -2647,7 +2628,8 @@ class Shell:
             ext = self._pipeline_external_argv(pipeline)
             if ext is not None:
                 argv, env_prefix = ext
-                slot = ProcessSlot()
+                slot = ProcessSlot(on_exit=self._slot_finished)
+                slot.parked = True   # before start: a body may end at once
                 try:
                     slot.start(argv=argv, env=self._merged_env(env_prefix), cwd=os.getcwd())
                 except FileNotFoundError:
@@ -2661,11 +2643,13 @@ class Shell:
             py = self._pipeline_python_command(pipeline)
             if py is not None:
                 cmd, args = py
-                slot = PythonCommandSlot(cmd, args)
+                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished)
+                slot.parked = True
                 slot.start()
                 return slot
 
-        slot = PipelineSlot(pipeline, display)
+        slot = PipelineSlot(pipeline, display, on_exit=self._slot_finished)
+        slot.parked = True
         slot.start()
         return slot
 
@@ -3157,16 +3141,14 @@ class Shell:
                 # backgrounded Python command does not keep the temporary env,
                 # matching the in-process-model caveats in doc/limitations.md.
                 ctx = self.context_manager.current()
-                slot = PythonCommandSlot(cmd, args)
+                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished)
                 with self._temp_environ(env_prefix):
                     slot.start()
                     result = self._enter_python_forwarding_mode(slot)
                 if result == "switched":
                     slot.deactivate()
                     if ctx is not None:
-                        ctx.process_slot = slot
-                        self._backgrounded = True
-                        self._notify_when_backgrounded(slot)
+                        self._park(slot, ctx)
                     self._handle_switch()
                     return 0
                 if result == "interrupted":
@@ -3216,7 +3198,7 @@ class Shell:
 
         ctx = self.context_manager.current()
 
-        slot = ProcessSlot()
+        slot = ProcessSlot(on_exit=self._slot_finished)
         try:
             slot.start(
                 argv=[command_name] + args,
@@ -3234,11 +3216,7 @@ class Shell:
         slot.replay_buffer()  # flush any output that arrived before activate()
         result = self._enter_forwarding_mode(slot)
         if result == "switched":
-            if ctx is None:
-                ctx = self.context_manager.current()
-            ctx.process_slot = slot
-            self._backgrounded = True
-            self._notify_when_backgrounded(slot)
+            self._park(slot, ctx or self.context_manager.current())
             slot.deactivate()
             self._handle_switch()
             return 0
@@ -3706,10 +3684,9 @@ class Shell:
                             print(f"{slot.argv[0]}: interrupted")
                             continue
                         else:
+                            # Its exit handler already notified; an error
+                            # was reported on the slot's own stderr.
                             ctx.process_slot = None
-                            self._notify_resumed_done(slot)
-                            # An error was already reported on the slot's
-                            # own stderr, which the user just watched.
                             continue
                     else:
                         # Resume a PTY subprocess.
@@ -3722,7 +3699,6 @@ class Shell:
                         else:
                             exit_code = slot.exit_code
                             ctx.process_slot = None
-                            self._notify_resumed_done(slot)
                             if exit_code and exit_code != 0:
                                 print(f"\n[Process exited with code {exit_code}]")
                             continue

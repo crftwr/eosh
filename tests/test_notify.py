@@ -318,49 +318,37 @@ class TestVars:
 # ---------------------------------------------------------------------------
 
 class _FakeSlot(ExitCallbackMixin):
-    def __init__(self, argv: list[str] | None = None, exit_code: int = 0):
-        self._init_exit_callback()
+    def __init__(self, argv: list[str] | None = None, exit_code: int = 0, on_exit=None):
+        self._init_exit_callback(on_exit)
         self.argv = argv or ["sleep", "60"]
         self.exit_code = exit_code
 
 
 class TestExitCallbackMixin:
-    def test_callback_fires_when_work_ends(self):
-        slot = _FakeSlot()
-        fired: list[int] = []
-        slot.arm_exit_callback(lambda: fired.append(1))
+    def test_the_handler_given_at_construction_fires_with_the_slot(self):
+        fired: list = []
+        slot = _FakeSlot(on_exit=fired.append)
         slot._fire_on_exit()
-        assert fired == [1]
-
-    def test_arming_after_the_end_still_fires(self):
-        """The shell arms a slot only once it knows it went to the background —
-        by which time the work may already be over."""
-        slot = _FakeSlot()
-        slot._fire_on_exit()  # ended with nothing armed
-        fired: list[int] = []
-        slot.arm_exit_callback(lambda: fired.append(1))
-        assert fired == [1]
+        assert fired == [slot]
 
     def test_fires_at_most_once(self):
-        slot = _FakeSlot()
-        fired: list[int] = []
-        slot.arm_exit_callback(lambda: fired.append(1))
+        fired: list = []
+        slot = _FakeSlot(on_exit=fired.append)
         slot._fire_on_exit()
         slot._fire_on_exit()
-        slot.arm_exit_callback(lambda: fired.append(2))
-        assert fired == [1]
+        assert fired == [slot]
 
-    def test_no_callback_is_not_an_error(self):
+    def test_no_handler_is_not_an_error(self):
         _FakeSlot()._fire_on_exit()
 
-    def test_a_raising_callback_is_swallowed(self):
-        slot = _FakeSlot()
-
-        def boom():
+    def test_a_raising_handler_is_swallowed(self):
+        def boom(slot):
             raise RuntimeError("notification backend exploded")
 
-        slot.arm_exit_callback(boom)
-        slot._fire_on_exit()  # must not raise into the slot's teardown
+        _FakeSlot(on_exit=boom)._fire_on_exit()  # must not raise into teardown
+
+    def test_a_slot_starts_unparked(self):
+        assert _FakeSlot().parked is False
 
     def test_elapsed_is_zero_before_start(self):
         assert _FakeSlot().elapsed() == 0.0
@@ -428,73 +416,52 @@ class TestShellHooks:
 
 
 class TestSlotDoneNotification:
+    """``Shell._slot_finished`` — the exit handler every slot is built with."""
+
     @pytest.fixture
     def shell(self):
         from eosh.shell import Shell
         notify.set_threshold(0)
         return Shell()
 
-    def _park(self, shell, name, slot):
+    def _parked(self, shell, name, argv=None, exit_code=0):
+        slot = _FakeSlot(argv, exit_code=exit_code, on_exit=shell._slot_finished)
+        slot.mark_started()
         ctx = shell.context_manager.contexts.get(name) or shell.context_manager.create(name)
-        ctx.process_slot = slot
-        return ctx
+        shell._park(slot, ctx)
+        return slot
 
-    def test_notifies_when_the_owner_is_not_current(self, shell, posted):
-        slot = _FakeSlot(["sleep", "600"])
-        slot.mark_started()
-        self._park(shell, "bg-test", slot)
-        shell._notify_slot_done(slot)
-        _wait_for(posted)
-        assert posted[0][1] == "[bg-test] sleep 600"
+    def test_parking_marks_the_slot_and_the_line(self, shell):
+        slot = self._parked(shell, "bg-test")
+        assert slot.parked is True
+        assert shell._backgrounded is True
+        assert shell.context_manager.contexts["bg-test"].process_slot is slot
 
-    def test_silent_when_the_user_is_watching_it_finish(self, shell, posted):
-        slot = _FakeSlot()
-        slot.mark_started()
-        self._park(shell, "watched", slot)
-        shell.context_manager.switch("watched")
-        shell._notify_slot_done(slot)
-        _wait_for(posted, timeout=0.2)
-        assert posted == []
-
-    def test_silent_for_a_slot_no_context_owns(self, shell, posted):
-        """A foreground slot is never parked on a context; ``_execute`` timed it."""
-        slot = _FakeSlot()
-        slot.mark_started()
-        shell._notify_slot_done(slot)
-        _wait_for(posted, timeout=0.2)
-        assert posted == []
-
-    def test_failure_exit_code_is_reported(self, shell, posted):
-        slot = _FakeSlot(["make"], exit_code=1)
-        slot.mark_started()
-        self._park(shell, "bg-test", slot)
-        shell._notify_slot_done(slot)
-        _wait_for(posted)
-        assert posted[0][0].startswith("✗ Eolith Shell — exit 1")
-
-    def test_arming_wires_the_slots_own_exit(self, shell, posted):
-        slot = _FakeSlot(["sleep", "600"])
-        slot.mark_started()
-        self._park(shell, "bg-test", slot)
-        shell._notify_when_backgrounded(slot)
-        _wait_for(posted, timeout=0.2)
-        assert posted == []          # still running
+    def test_a_slot_ending_out_of_sight_carries_its_context(self, shell, posted):
+        slot = self._parked(shell, "bg-test", ["sleep", "600"])
         slot._fire_on_exit()
         _wait_for(posted)
         assert posted[0][1] == "[bg-test] sleep 600"
 
-    def test_a_slot_that_ended_before_arming_still_reports(self, shell, posted):
-        slot = _FakeSlot(["sleep", "600"])
-        slot.mark_started()
-        self._park(shell, "bg-test", slot)
-        slot._fire_on_exit()                    # finished during the switch
-        shell._notify_when_backgrounded(slot)
-        _wait_for(posted)
-        assert posted[0][1] == "[bg-test] sleep 600"
-
-    def test_resumed_slot_reports_without_a_context_prefix(self, shell, posted):
-        slot = _FakeSlot(["make"])
-        slot.mark_started()
-        shell._notify_resumed_done(slot)
+    def test_a_slot_ending_in_the_current_context_has_no_prefix(self, shell, posted):
+        """Resumed and watched to the end: still reported (the line that
+        started it returned long ago), just without the context name."""
+        slot = self._parked(shell, "watched", ["make"])
+        shell.context_manager.switch("watched")
+        slot._fire_on_exit()
         _wait_for(posted)
         assert posted[0][1] == "make"
+
+    def test_a_slot_that_was_never_parked_stays_quiet(self, shell, posted):
+        """It ran in the foreground, and ``_execute`` timed the whole line."""
+        slot = _FakeSlot(on_exit=shell._slot_finished)
+        slot.mark_started()
+        slot._fire_on_exit()
+        _wait_for(posted, timeout=0.2)
+        assert posted == []
+
+    def test_failure_exit_code_is_reported(self, shell, posted):
+        slot = self._parked(shell, "bg-test", ["make"], exit_code=1)
+        slot._fire_on_exit()
+        _wait_for(posted)
+        assert posted[0][0].startswith("✗ Eolith Shell — exit 1")

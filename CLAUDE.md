@@ -694,21 +694,20 @@ the terminal.
    included) and reports it with the last stage's exit code — unless
    `self._backgrounded` was set, which `Ctrl+]` and `@bg` do because they
    return long before the work finishes.
-2. `Shell._notify_slot_done`, armed on the slot via
-   `_notify_when_backgrounded`, reports a backgrounded slot only when the
-   context that owns it (looked up at exit time) is **not** the current one —
-   the one case where the user is provably looking elsewhere. The message
-   carries the context name: `[bg-1] make -j8`. A resumed slot that finishes
-   on screen goes through `_notify_resumed_done` without the prefix.
+2. `Shell._slot_finished` — the exit handler every slot is **constructed
+   with** — reports a slot that was parked on a context (`Shell._park`, the
+   one place Ctrl+] and `@bg` hand a slot over; it sets `slot.parked` and
+   `self._backgrounded`). The message carries the owning context's name
+   (looked up at exit time) when that context isn't the current one:
+   `[bg-1] make -j8`. A slot that was never parked ran in the foreground
+   and stays quiet — `_execute` timed it.
 
 `ExitCallbackMixin` (in `process.py`) is the slot-side hook: `mark_started()`
-/ `elapsed()` for the duration and a one-shot `arm_exit_callback()`. Because
-the shell can only arm a slot *after* deciding it went to the background, by
-which time the work may be over, `_fire_on_exit()` records end-of-work even
-with nothing armed and arming later fires immediately — exactly one path
-delivers. It's a mixin rather than a base class because `PipelineSlot`
-deliberately bypasses its parent's `__init__`; every slot type calls
-`_init_exit_callback()` from its own constructor.
+/ `elapsed()` for the duration, the `parked` flag, and `on_exit` — passed to
+the constructor and called once at the end of the work. Wired before anything
+runs, it can't race the slot's own end. It's a mixin rather than a base class
+because `PipelineSlot` deliberately bypasses its parent's `__init__`; every
+slot type calls `_init_exit_callback(on_exit)` from its own constructor.
 
 `SKIP_COMMANDS` suppresses commands whose long runtime says nothing about work
 finishing (editors, pagers, `top`, `ssh`, `tmux`, interactive sub-shells,
@@ -1200,4 +1199,4 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 11. **TTL cache + command-boundary invalidation for completer fetches** — TAB completion runs the completer on every keystroke while the picker is open (see `lineedit.py::refresh_fn`). Completers that hit AWS APIs (e.g. `aws_completer`, `_HyperpodNodeIdCompleter`) would otherwise issue the same boto3 call four or five times for a single typed token. `completion_cache.py` provides `get_or_fetch(key, fn, ttl=60)` with a process-global store. Keys are tuples that include the active `(AWS_PROFILE, AWS_REGION)` via `aws_env_key()` so the cache doesn't bleed across profiles. `Shell._execute()` calls `completion_cache.invalidate_all()` after each pipeline finishes, so a freshly-mutated resource (e.g. after `awsut sagemaker hyperpod scale`) is re-fetched on the next TAB — TTL handles the within-session repeats, the invalidation hook handles correctness across commands.
 
-12. **Notify from the place that knows the work ended, and only from one of them** — the shell has three ways a command can finish (a foreground line, a slot exiting in a context nobody is looking at, a backgrounded slot resumed and watched to completion), and a naive "notify on completion" hook either misses cases or double-reports them. The rule is that `Shell._execute` owns *foreground* timing and steps aside via `self._backgrounded` the moment a line hands its work to a slot, and the slot-side `ExitCallbackMixin` owns everything after that, deciding at exit time whether a context that isn't current owns it. Backends stay dependency-free (native helper per platform, terminal bell as the floor), fire on a daemon thread so the prompt never waits on a subprocess spawn, and swallow every error — a missed notification is a nuisance, a shell that dies delivering one is a bug. See [doc/notifications.md](doc/notifications.md).
+12. **Notify from the place that knows the work ended, and only from one of them** — the shell has three ways a command can finish (a foreground line, a slot exiting in a context nobody is looking at, a backgrounded slot resumed and watched to completion), and a naive "notify on completion" hook either misses cases or double-reports them. The rule is that `Shell._execute` owns *foreground* timing and steps aside via `self._backgrounded` the moment a line parks its work on a context (`_park`), and the slot's exit handler — wired at construction — owns everything after that, reporting a slot only if it was parked. Backends stay dependency-free (native helper per platform, terminal bell as the floor), fire on a daemon thread so the prompt never waits on a subprocess spawn, and swallow every error — a missed notification is a nuisance, a shell that dies delivering one is a bug. See [doc/notifications.md](doc/notifications.md).

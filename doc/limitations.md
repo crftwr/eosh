@@ -184,11 +184,9 @@ built-in chain can't be.
 
 ## A backgrounded command that finishes while you are watching it is reported anyway
 
-`Shell._notify_slot_done` stays silent when the slot's owning context *is*
-the current one, on the grounds that a popup for something on screen is
-noise. But the resume paths in `run()` call `_notify_resumed_done`
-unconditionally for a slot that has already exited, so this sequence still
-produces a notification:
+`Shell._slot_finished` reports every slot that was parked on a context,
+dropping only the `[context]` prefix when that context is the current one —
+so this sequence still produces a notification:
 
 1. `make -j8`, `Ctrl+]` to background it,
 2. work in another context for two minutes,
