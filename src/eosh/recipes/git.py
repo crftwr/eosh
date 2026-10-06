@@ -12,7 +12,7 @@ def _run_git(args: list[str], timeout: float = 2.0) -> list[str]:
     try:
         result = subprocess.run(
             ["git"] + args,
-            capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
         )
         return [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
     except (OSError, subprocess.TimeoutExpired):

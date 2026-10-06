@@ -475,10 +475,10 @@ enable("git", "make", "ssh", "kill", "ls", "grep", "find", "du", "df", "tail", "
 
 Each recipe registers flag completion (via `OptionsCompleter`) and positional completions (subcommands, files, branches, etc.) for the named command.
 
-Two protocol fallbacks activate automatically — no recipe needed:
+Two protocols cover whole families of tools without a per-tool recipe:
 
-- **Cobra-based tools** (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …) — `CobraCompleter` drives their `__complete` subcommand, including live resource enumeration (running containers, k8s resources, GitHub issues, …). See [doc/cobra-fallback.md](doc/cobra-fallback.md).
-- **argcomplete-based Python CLIs** (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, …) — `ArgcompleteCompleter` detects the `# PYTHON_ARGCOMPLETE_OK` marker and drives the argcomplete protocol. See [doc/argcomplete-fallback.md](doc/argcomplete-fallback.md).
+- **Cobra-based tools** (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …) — `CobraCompleter` drives their `__complete` subcommand, including live resource enumeration (running containers, k8s resources, GitHub issues, …). Opt-in by name: `enable("cobra")` covers the well-known tools, and `enable_cobra("mytool")` adds your own. See [doc/cobra.md](doc/cobra.md).
+- **argcomplete-based Python CLIs** (automatic) (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, …) — `ArgcompleteCompleter` detects the `# PYTHON_ARGCOMPLETE_OK` marker and drives the argcomplete protocol. See [doc/argcomplete-fallback.md](doc/argcomplete-fallback.md).
 
 #### User-Defined Recipes
 

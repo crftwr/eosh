@@ -13,7 +13,7 @@ Implemented. See [src/eosh/completion.py](../src/eosh/completion.py) (`Argcomple
 
 `ArgcompleteCompleter` drives the protocol directly so eosh can complete these tools without any per-command recipe and without depending on the bash-completion package.
 
-Combined with [cobra-fallback.md](cobra-fallback.md) (Go CLIs) and [`recipes/aws.py`](../src/eosh/recipes/aws.py) (AWS CLI v2's `aws_completer`), three protocol fallbacks cover the vast majority of modern CLI tools out of the box.
+Combined with [cobra.md](cobra.md) (Go CLIs, opt-in by name) and [`recipes/aws.py`](../src/eosh/recipes/aws.py) (AWS CLI v2's `aws_completer`), three protocol fallbacks cover the vast majority of modern CLI tools out of the box.
 
 ## Goals
 
@@ -105,15 +105,16 @@ The fd-8 plumbing has a subtle constraint: `pass_fds` only works for fds that ar
 
 ```
 1. Recipe / @registry.command completer for this position?  → use it
+   (cobra tools are recipes too — their delegate is CobraCompleter)
 2. None-key OptionsCompleter and prefix starts with "-"?     → use it
-3. CobraCompleter (cobra-marked command on PATH)?            → try it
-4. ArgcompleteCompleter (argcomplete-marked Python script)?  → try it
+3. No completer registered at this slot, and the command is
+   an argcomplete-marked Python script?                      → try it
    - non-empty result            → use it
    - empty result or unavailable → fall through
-5. FileCompleter fallback                                    → use it
+4. FileCompleter fallback (no completer registered)          → use it
 ```
 
-Cobra runs before argcomplete because its probe is cheaper (single `__complete --help` subprocess) and the two protocols don't overlap on a single tool.
+A registered completer that returns `[]` ends the chain. It meant "nothing here", not "ask someone else".
 
 ## API
 
@@ -138,7 +139,7 @@ disable_argcomplete_fallback()
 |--------|------------|
 | Latency (probe) | First TAB on a command runs a small subprocess (the probe), typically 30–80 ms. Cached per command for the rest of the session. |
 | Latency (invoke) | One subprocess per TAB; argcomplete-instrumented Python tools usually return in 50–300 ms. Capped by `timeout` (default 2.0 s). |
-| Caching | Per-command for detection; per-line for results. Same-line repeated TABs reuse cached candidates. |
+| Caching | Detection is cached per command for the session. Results go through `completion_cache`, keyed on cwd and line, and are cleared after every command. |
 | Correctness | argcomplete parses `COMP_LINE`/`COMP_POINT` itself — quoting/escaping match user expectation. |
 | UX gap vs. recipes | Plain string candidates (no description, no multi-select, no arg-hint prompt). Recipes remain the path for richer UX. |
 | Failure modes | Tool missing, isn't argcomplete-aware, errors, or times out → empty result, fall through to `FileCompleter`. Never crashes the prompt. Never invokes a non-argcomplete tool blindly. |
@@ -150,6 +151,6 @@ Naively running `<command>` with `_ARGCOMPLETE=1` would be unsafe. Tools that do
 
 ## Future work
 
-- **Description support.** argcomplete v2+ optionally returns `name<tab>description` pairs via `_ARGCOMPLETE_DFS`. Plumbing those through to `Completion(description=...)` would match the cobra fallback's UX.
+- **Description support.** argcomplete v2+ optionally returns `name<tab>description` pairs via `_ARGCOMPLETE_DFS`. Plumbing those through to `Completion(description=...)` would match the cobra completer's UX.
 - **Honor `_ARGCOMPLETE_SUPPRESS_SPACE` results.** Currently we always insert a trailing space; some completions (file paths with `/`) want to suppress it.
 - **Concurrent probe.** First TAB on a command blocks on the probe subprocess. Could fire it eagerly the first time the user types a known-PATH command.

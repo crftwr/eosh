@@ -30,7 +30,7 @@
 │  ├── Command name completion                       │
 │  ├── Argument completion (per-command completers)  │
 │  ├── Options completion (flags, multi-select TUI)  │
-│  ├── CobraCompleter / ArgcompleteCompleter         │
+│  ├── CobraCompleter (opt-in) / Argcomplete fallback│
 │  └── Filesystem completion (fallback)              │
 ├─────────────────────────────────────────────────────┤
 │  TUI Widgets (tui.py)                               │
@@ -114,9 +114,9 @@ Defines the `Completer` protocol, `CompletionContext`, and built-in completers.
 - `Completer` ABC with `complete()` and optional `should_activate()` guard
 - Built-in completers: `FileCompleter`, `DirCompleter`, `CommandNameCompleter`, `ChoiceCompleter`, `CallbackCompleter`, `OptionsCompleter`, `ConditionalCompleter`
 - `OptionsCompleter` supports multi-select flag TUI, flag arg-hints, value completers, and flag deduplication
-- **Protocol fallbacks** auto-activate after registered/recipe completers fail, before file completion:
-  - `CobraCompleter` drives `<cmd> __complete <words>` for cobra-based CLIs (docker, kubectl, helm, gh, argocd, …) — see `doc/cobra-fallback.md`
-  - `ArgcompleteCompleter` drives the argcomplete protocol (env vars + fd 8) for Python CLIs (pipx, conda, pre-commit, tox, pdm, httpie, …) — see `doc/argcomplete-fallback.md`
+- **Protocol completers**:
+  - `CobraCompleter` drives `<cmd> __complete <words>` for cobra-based CLIs (docker, kubectl, helm, gh, argocd, …). It is opt-in per command, installed as a `delegate` by the `cobra` recipe or `enable_cobra(...)`. See `doc/cobra.md`.
+  - `ArgcompleteCompleter` (automatic, where no completer is registered) drives the argcomplete protocol (env vars + fd 8) for Python CLIs (pipx, conda, pre-commit, tox, pdm, httpie, …) — see `doc/argcomplete-fallback.md`
 
 ### context.py — Context Manager
 
@@ -181,7 +181,7 @@ enable("*")                                     # all built-in + user recipes
 enable("git", "make", "ssh", "kill", "aws")     # or pick specific ones
 ```
 
-Cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …) and argcomplete-based Python CLIs (`pipx`, `conda`, …) don't need a recipe — `CobraCompleter` and `ArgcompleteCompleter` detect them automatically.
+Cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …) need no hand-written recipe. `enable("cobra")` or `enable_cobra("mytool")` hands them to `CobraCompleter`. Argcomplete-based Python CLIs (`pipx`, `conda`, …) are detected automatically by `ArgcompleteCompleter`.
 
 ### decorators/ — Pipeline Decorators
 
@@ -264,7 +264,7 @@ eosh/
 │   ├── decorators.md
 │   ├── recipes.md
 │   ├── subcommands.md
-│   ├── cobra-fallback.md
+│   ├── cobra.md
 │   ├── argcomplete-fallback.md
 │   ├── terminal-resize.md
 │   ├── enhancements.md

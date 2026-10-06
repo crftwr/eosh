@@ -168,6 +168,7 @@ class AwsCompleter(Completer):
             proc = subprocess.run(
                 [self._binary],
                 env=env,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,

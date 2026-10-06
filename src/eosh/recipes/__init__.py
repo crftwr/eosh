@@ -19,6 +19,9 @@ Available recipes:
               sessions, events and extracted records they hold
     chmod     mode operands (common octal + symbolic) and file completion
     chown     USER / USER:GROUP completion (system users + groups), files
+    cobra     cobra-based CLIs (kubectl, helm, gh, docker, argocd, …) answered
+              by their own ``__complete`` subcommand; add more with
+              ``enable_cobra("mytool")``
     cp        copy flags (BSD/macOS vs GNU/Linux), file completion
     curl      flag dictionary and HTTP-method choices for -X / --request
     df        disk-free filesystem usage
@@ -48,9 +51,14 @@ Recipes for external commands silently skip registration when the
 underlying command is not available on ``PATH`` — ``enable("tar")`` on a
 host without ``tar`` is a no-op rather than a hard failure.
 
-Tools built on cobra (docker, kubectl, helm, gh, …) are handled
-automatically by the cobra-protocol fallback — no recipe needed.  See
-``CobraCompleter`` in ``eosh.completion``.
+Tools built on cobra are opted in by name, never detected — detecting one
+would mean running an arbitrary command with ``__complete`` as its argument.
+``enable("cobra")`` covers the well-known ones; name your own with
+``enable_cobra``, from ``config.py`` or a user recipe's ``register()``::
+
+    from eosh.recipes import enable, enable_cobra
+    enable("cobra")
+    enable_cobra("mytool")
 """
 
 from __future__ import annotations
@@ -61,6 +69,7 @@ from importlib import import_module
 from pathlib import Path
 
 from ..paths import config_dir
+from .cobra import enable_cobra  # noqa: F401  (public API)
 
 # Directories searched in order when a recipe is not found in the built-in
 # package.  The default entry covers the conventional user recipe location;

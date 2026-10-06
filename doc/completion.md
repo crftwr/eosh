@@ -345,13 +345,12 @@ _get_base_completions(line_before_cursor)
           → options_completer.complete(ctx) if should_activate()
       → No options matches yet, completers[arg_index] present?
           → positional_completer.complete(ctx) if should_activate()
-      → Still no matches?
-          → Try CobraCompleter (if command speaks the cobra __complete protocol)
+      → No completer registered at this slot?
           → Try ArgcompleteCompleter (if command is an argcomplete-marked Python script)
       → Still no matches and no completer registered? → FileCompleter fallback
 ```
 
-**Protocol fallbacks** layer onto the dispatch chain after registered completers fail. They use the same `Completer` interface and a per-command probe-cache so a single TAB on a known-cobra/known-argcomplete tool stays fast. See [cobra-fallback.md](cobra-fallback.md) and [argcomplete-fallback.md](argcomplete-fallback.md) for protocol details.
+**The argcomplete fallback** runs only where no completer is registered. A registered completer that returned `[]` meant "nothing here". It finds argcomplete tools by reading the script, never by running it, and caches that per command. **Cobra tools are not a fallback.** Running an unknown command with `__complete` to find out would execute it, so they are opted in by name and get a `CobraCompleter` as their `delegate`, like any other recipe. See [cobra.md](cobra.md) and [argcomplete-fallback.md](argcomplete-fallback.md).
 
 Once completions are returned to the line editor:
 

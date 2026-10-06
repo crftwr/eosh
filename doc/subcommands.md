@@ -301,8 +301,9 @@ and flag.)
 Other recipes (`ls`, `du`, `tail`, `kill`, `find`, `grep`, `make`, `ssh`,
 `df`, …) are flat and stay on the simple form: a single
 `registry.command(name, params=[...])` call with no handler attached.
-Cobra-based tools like `docker`, `kubectl`, and `helm` don't need
-recipes at all — `CobraCompleter` handles them automatically.
+Cobra-based tools like `docker`, `kubectl`, and `helm` don't need a
+hand-written recipe. `enable_cobra("name")` (or the `cobra` recipe) hands
+every slot to `CobraCompleter`.
 
 ## What Is Out of Scope
 

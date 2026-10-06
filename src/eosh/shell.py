@@ -40,7 +40,6 @@ from .completion import (
     Completion,
     HistoryCompleter,
     get_argcomplete_fallback,
-    get_cobra_fallback,
 )
 from .variables import registry as var_registry, VarCompleter
 from .context import ContextManager, ContextState
@@ -1875,19 +1874,14 @@ class Shell:
                     completions = positional_completer.complete(ctx)
                     label = _positional_label(cmd, pos_idx, command_name, args)
 
-        # Cobra-protocol fallback: many modern Go CLIs (kubectl, helm, gh,
-        # argocd, …) expose a hidden ``__complete`` subcommand.  Try it when
-        # no registered completer produced candidates, before file fallback.
-        if not completions:
-            cobra = get_cobra_fallback()
-            if cobra is not None and cobra.should_activate(ctx):
-                completions = cobra.complete(ctx)
-
         # argcomplete fallback: the de-facto Python CLI completion library
         # (pipx, conda, pre-commit, tox, pdm, httpie, …).  Detection is done
         # by inspecting the script for the ``PYTHON_ARGCOMPLETE_OK`` marker,
-        # so it never invokes side-effecting tools blindly.
-        if not completions:
+        # so it never invokes side-effecting tools blindly.  Only where no
+        # completer is registered: one that returned ``[]`` meant "nothing".
+        # (Cobra tools have no fallback — they are opted in per command as a
+        # ``delegate``; see ``eosh.recipes.enable_cobra``.)
+        if not has_completer:
             argc = get_argcomplete_fallback()
             if argc is not None and argc.should_activate(ctx):
                 completions = argc.complete(ctx)

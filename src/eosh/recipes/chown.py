@@ -39,7 +39,7 @@ class OwnerCompleter(Completer):
     def _run(cmd: list[str]) -> list[str]:
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=2,
+                cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2,
             )
         except (OSError, subprocess.TimeoutExpired):
             return []
@@ -70,7 +70,7 @@ class OwnerCompleter(Completer):
     def _run_pairs(cmd: list[str]) -> list[str]:
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=2,
+                cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2,
             )
         except (OSError, subprocess.TimeoutExpired):
             return []
