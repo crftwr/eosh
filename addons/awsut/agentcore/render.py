@@ -9,9 +9,9 @@ same service.
 The output contract — table shape, header line, note policy, ``error:`` lines —
 and the service-agnostic instruments (pagination, the YAML-ish JSON renderer,
 the watch heartbeat, model introspection, the completion-context flag readers)
-are two levels up in :mod:`eosh.recipes._awsut_common`, and re-exported here
+are two levels up in :mod:`eosh_addons.awsut.common`, and re-exported here
 so a module in this package reads every instrument off ``render``.  That is the
-same arrangement ``_awsut_sagemaker.render`` uses.
+same arrangement ``sagemaker.render`` uses.
 
 Two things are worth knowing before adding a group here:
 
@@ -48,10 +48,10 @@ import boto3
 import botocore
 import botocore.session
 
-from ...completion_cache import aws_env_key
-from ...variables import Var
-from .. import awsut
-from .._awsut_common import (  # noqa: F401  (re-exported for this package)
+from eosh.completion_cache import aws_env_key
+from eosh.variables import Var
+from .. import cli as awsut
+from ..common import (  # noqa: F401  (re-exported for this package)
     DOT_INTERVAL,
     NOT_FOUND_CODES,
     Heartbeat,
@@ -208,7 +208,7 @@ def statuses(operation: str, list_key: str,
     """A resource's status enum, read out of the loaded model. Offline.
 
     Read from the *output* shape of a list operation, which is where these
-    services declare it — ``_awsut_common.model_enum`` reads input members and
+    services declare it — ``common.model_enum`` reads input members and
     so cannot reach it.  A refreshed botocore contributes new status words
     without a code change here, and a model too old to have the operation at all
     falls back to :data:`STATUS_FALLBACK` rather than offering nothing.

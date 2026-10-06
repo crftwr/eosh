@@ -7,7 +7,7 @@ import textwrap
 
 import pytest
 
-from eosh.recipes.awsut import (
+from eosh_addons.awsut.cli import (
     parse_credential_exports,
     write_credentials_profile,
 )

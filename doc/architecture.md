@@ -263,6 +263,7 @@ eosh/
 │   ├── context.md
 │   ├── decorators.md
 │   ├── recipes.md
+│   ├── addons.md
 │   ├── subcommands.md
 │   ├── cobra.md
 │   ├── argcomplete-fallback.md

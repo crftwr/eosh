@@ -82,11 +82,11 @@ from datetime import datetime
 
 import botocore.exceptions
 
-from ...commands import arg
-from ...completion import ChoiceCompleter, Completer, Completion, CompletionContext
-from ...completion_cache import aws_env_key, get_or_fetch
-from ...shell import passthrough_input
-from .. import awsut
+from eosh.commands import arg
+from eosh.completion import ChoiceCompleter, Completer, Completion, CompletionContext
+from eosh.completion_cache import aws_env_key, get_or_fetch
+from eosh import passthrough_input
+from .. import cli as awsut
 from .render import (
     DOT_INTERVAL,
     Heartbeat,

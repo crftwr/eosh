@@ -47,11 +47,11 @@ from datetime import datetime, timezone
 
 import botocore.exceptions
 
-from ...commands import arg
-from ...completion import ChoiceCompleter, Completer, Completion, CompletionContext
-from ...completion_cache import get_or_fetch
-from ...shell import passthrough_input
-from .. import awsut
+from eosh.commands import arg
+from eosh.completion import ChoiceCompleter, Completer, Completion, CompletionContext
+from eosh.completion_cache import get_or_fetch
+from eosh import passthrough_input
+from .. import cli as awsut
 from .render import (
     DOT_INTERVAL,
     NOT_FOUND_CODES,

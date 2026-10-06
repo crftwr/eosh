@@ -157,14 +157,22 @@ class TestAddRecipePath:
         assert _result_module.results == []
 
 
+def _without_boto3(monkeypatch) -> None:
+    """Make the awsut add-on import as if boto3 were not installed."""
+    import sys
+    monkeypatch.setitem(sys.modules, "boto3", None)
+    for mod in [m for m in sys.modules if m.startswith("eosh_addons.awsut")]:
+        monkeypatch.delitem(sys.modules, mod)
+
+
 class TestEnableAll:
     """``enable("*")`` — discovery must only ever offer real recipes.
 
     ``enable()`` calls ``register()`` on whatever discovery returns, so a
     module without one turns a user's ``enable("*")`` into an
-    ``AttributeError`` at config-load time.  That is not hypothetical: adding
-    the support module ``_awsut_common.py`` next to the recipes broke exactly
-    this, because the glob excluded only ``__init__``.
+    ``AttributeError`` at config-load time.  That is not hypothetical: a
+    support module placed next to the recipes once broke exactly this,
+    because the glob excluded only ``__init__``.
     """
 
     def test_every_discovered_builtin_has_a_register(self, monkeypatch):
@@ -174,6 +182,7 @@ class TestEnableAll:
         names = recipes_pkg._discover_all_recipes()
 
         assert "ls" in names           # discovery still finds actual recipes
+        assert "awsut" in names        # ... and the bundled add-ons
         for name in names:
             module = recipes_pkg._load_recipe(name)
             assert callable(getattr(module, "register", None)), (
@@ -249,11 +258,9 @@ class TestEnableAll:
         assert "recipe 'aaa_broken' failed to load" in err
         assert "ValueError: boom in register" in err
 
-    def test_builtin_missing_dependency_stays_quiet(self, monkeypatch, capsys):
-        """``awsut`` without the [aws] extra is a choice, not an error."""
-        import sys
-        monkeypatch.setitem(sys.modules, "boto3", None)
-        monkeypatch.delitem(sys.modules, "eosh.recipes.awsut", raising=False)
+    def test_addon_missing_dependency_stays_quiet(self, monkeypatch, capsys):
+        """``awsut`` without the eosh[awsut] extra is a choice, not an error."""
+        _without_boto3(monkeypatch)
         _reset_search_path(monkeypatch, [])
         monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["awsut"])
         monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
@@ -276,13 +283,11 @@ class TestEnableAll:
             recipes_pkg.enable("needs_dep")
 
     def test_awsut_without_boto3_names_the_extra(self, monkeypatch):
-        """The real recipe: the error says how to fix it, and keeps ``e.name``."""
-        import sys
-        monkeypatch.setitem(sys.modules, "boto3", None)
-        monkeypatch.delitem(sys.modules, "eosh.recipes.awsut", raising=False)
+        """Named explicitly, the error says how to fix it, and keeps ``e.name``."""
+        _without_boto3(monkeypatch)
 
-        with pytest.raises(ModuleNotFoundError, match=r"\[aws\]") as excinfo:
-            recipes_pkg._load_recipe("awsut")
+        with pytest.raises(ModuleNotFoundError, match=r"eosh\[awsut\]") as excinfo:
+            recipes_pkg.enable("awsut")
         assert excinfo.value.name == "boto3"
 
     def test_support_modules_are_not_discovered(self, monkeypatch):
@@ -291,7 +296,6 @@ class TestEnableAll:
 
         names = recipes_pkg._discover_all_recipes()
 
-        assert "_awsut_common" not in names
         assert [n for n in names if n.startswith("_")] == []
 
     def test_user_helper_beside_a_user_recipe_is_skipped(

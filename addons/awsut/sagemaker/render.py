@@ -6,7 +6,7 @@ drift in how they render the same data — several of these APIs hand back opaqu
 JSON documents, and all of them are read by following ARNs out of them.
 
 The output contract itself — table shape, header line, note policy, ``error:``
-lines — is one level up, in :mod:`eosh.recipes._awsut_common`, because the
+lines — is one level up, in :mod:`eosh_addons.awsut.common`, because the
 rest of ``awsut`` (``ec2``, ``logs``, ``cloudformation``, and the
 ``bedrock-agentcore`` group) prints to the same contract.  So are the
 instruments that are about AWS shapes rather than about SageMaker: model
@@ -40,8 +40,8 @@ import time
 
 import botocore.exceptions
 
-from .. import awsut
-from .._awsut_common import (  # noqa: F401  (re-exported for this package)
+from .. import cli as awsut
+from ..common import (  # noqa: F401  (re-exported for this package)
     DOT_INTERVAL,
     NOT_FOUND_CODES,
     RED,

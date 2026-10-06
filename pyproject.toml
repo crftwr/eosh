@@ -35,15 +35,24 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-# The `awsut` recipe. Without it, `enable("*")` skips awsut (recorded in
-# eosh.recipes.skipped_recipes) and loads every other recipe.
+# One extra per add-on under addons/, named after it — the shell's "not
+# installed" hint derives `eosh[<name>]` from the add-on's name alone.
+# Without it, `enable("*")` skips the add-on (recorded in
+# eosh.recipes.skipped_recipes) and loads everything else.
 #   boto3   — every awsut API call
 #   pexpect — `awsut sagemaker hyperpod` SSM sessions
-aws = ["boto3", "pexpect"]
-dev = ["pytest>=8", "eosh[aws]"]
+awsut = ["boto3", "pexpect"]
+dev = ["pytest>=8", "eosh[awsut]"]
 
 [project.scripts]
 eosh = "eosh.__main__:main"
+
+# Bundled add-ons (addons/<name>/ → eosh_addons.<name>).  This is how
+# `enable("<name>")` and `enable("*")` find them, in a wheel and in an
+# editable install alike.  tests/addons/test_boundary.py checks every
+# directory under addons/ has an entry here.
+[project.entry-points."eosh.addons"]
+awsut = "eosh_addons.awsut"
 
 [project.urls]
 Homepage = "https://github.com/crftwr/eosh"
@@ -59,9 +68,8 @@ version = { attr = "eosh.__version__" }
 # keeps an empty description from ever reaching an upload.
 readme = { file = ["README.pypi.md"], content-type = "text/markdown" }
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["eosh*"]
+# Packages are listed by setup.py: addons/ maps onto the eosh_addons
+# namespace, which [tool.setuptools.packages.find] cannot express.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
