@@ -231,7 +231,7 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 
 | Decorator | Description |
 |-----------|-------------|
-| `@watch [-n SEC] [--no-clear]` | Repeatedly run a pipeline until interrupted |
+| `@watch [-n SEC] [--no-clear]` | Re-run a pipeline on a timer, showing its latest output (`q` quits) |
 | `@time` | Print elapsed wall/user/sys time after the pipeline finishes |
 | `@retry [-n N] [--delay SEC]` | Re-run the pipeline on non-zero exit, up to `N` attempts |
 | `@quiet [--stderr]` | Discard stdout (and stderr with `--stderr`); still propagates the exit code |

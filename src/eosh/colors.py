@@ -20,10 +20,10 @@ class ColorScheme:
     picker_row_fg: tuple[int, int, int] = (220, 220, 220)
     picker_sel_bg: tuple[int, int, int] = (0, 95, 135)
     picker_sel_fg: tuple[int, int, int] = (255, 255, 255)
-    # Scroll bar — shared by picker and @watch's body scroll
+    # Scroll bar — the picker's
     scroll_thumb: tuple[int, int, int] = (128, 128, 128)
     scroll_track: tuple[int, int, int] = (48, 48, 48)
-    # Status bars — picker bottom hint bar + @watch header/footer
+    # Status bar — the picker's bottom hint bar
     statusbar_bg: tuple[int, int, int] = (30, 30, 30)
     statusbar_fg: tuple[int, int, int] = (200, 200, 200)
 

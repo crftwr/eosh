@@ -120,7 +120,7 @@ def set_raw(fd: int) -> None:
 
     Both input and output are raw: bare ``\\n`` does NOT get a CR appended.
     Renderers that paint at exact cursor positions (the line editor, TUI
-    pickers, the watch decorator's alt screen) want this — they emit
+    pickers) want this — they emit
     explicit ``\\r\\n`` and rely on the kernel staying out of the way.
     """
     if IS_WINDOWS:

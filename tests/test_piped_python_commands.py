@@ -327,3 +327,20 @@ def test_assignment_with_redirect_still_assigns(shell, tmp_path, monkeypatch):
     monkeypatch.delenv("_T_REDIR_VAR", raising=False)
     shell._execute(f"_T_REDIR_VAR=set > {tmp_path / 'x'}")
     assert os.environ.get("_T_REDIR_VAR") == "set"
+
+
+def test_an_interrupted_stage_does_not_fall_back_to_the_terminal(shell):
+    """Ctrl+C closes a stage's pipe ends; a decorator body re-run after
+    that (``@watch {…} | cat``) must fail, not write to the real terminal."""
+    from eosh.shell import _dup_threadlocal_override_fd
+
+    r, w = os.pipe()
+    os.close(r)
+    out = os.fdopen(w, "w")
+    out.close()
+    sys.stdout.set_override(out)
+    try:
+        with pytest.raises(BrokenPipeError):
+            _dup_threadlocal_override_fd(sys.stdout)
+    finally:
+        sys.stdout.clear_override()

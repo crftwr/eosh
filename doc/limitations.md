@@ -58,6 +58,17 @@ those helpers can't do their job. They raise `RuntimeError` if called
 from inside a pipeline thread. Use plain `subprocess.run` (with the
 `stdout=sys.stdout` workaround above) for non-interactive children.
 
+## `@watch` shows one screenful, and `q` waits for the current run
+
+`@watch` was cut to watch(1)'s core in discussion #39: output longer than
+the screen is cut off (no scrolling — pipe the body through `head` /
+`tail`), and `q` is only read between runs. Ctrl+C works at any time — it
+reaches the running body, and a run that ends with status 130 (or a
+signal) stops the loop — with one gap: a Ctrl+C that lands in the last
+moment of a lone external body (`@watch --no-clear date`) goes to that
+command's PTY as it exits and is lost, so the loop goes on until the next
+press.
+
 ## `awsut sagemaker jobs` — a category the loaded model doesn't declare costs a round-trip
 
 `JobCategory` is required by ListJobs and DescribeJob, so a job cannot be

@@ -362,10 +362,16 @@ def _dup_threadlocal_override_fd(stream) -> int | None:
 
     Returns ``None`` when no override is set.  Quietly returns ``None``
     if the override has no fileno — the caller has nothing to wire.
+    Raises ``BrokenPipeError`` when the override is closed: the stage was
+    interrupted (``_PyStageHandle.interrupt``), and returning ``None``
+    would hand the body the real terminal — ``@watch {…} | cat`` kept
+    printing there after Ctrl+C.
     """
     override = getattr(getattr(stream, "_local", None), "override", None)
     if override is None:
         return None
+    if getattr(override, "closed", False):
+        raise BrokenPipeError("the pipeline stage was interrupted")
     try:
         fd = override.fileno()
     except (AttributeError, OSError, ValueError):
