@@ -259,8 +259,8 @@ def test_redirect_does_not_swap_global_stdout(shell):
     """The redirect is bound on the command's own thread only.
 
     Before, ``pycmd > file`` assigned the process-global ``sys.stdout``, so
-    any other thread printing meanwhile (a backgrounded command, a
-    ``@bg`` body) wrote into the redirect target.
+    any other thread printing meanwhile (a backgrounded command) wrote into
+    the redirect target.
     """
     import threading
 

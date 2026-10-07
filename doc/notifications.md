@@ -19,8 +19,8 @@ Everything lives in [`src/eosh/notify.py`](../src/eosh/notify.py);
 the shell contributes only the two hook sites described below and the
 one-shot exit callback in [`process.py`](../src/eosh/process.py).
 
-**Status:** shipped. Foreground lines, `Ctrl+]`-backgrounded processes and
-`@bg` bodies all report; macOS / Linux / Windows backends with a terminal-bell
+**Status:** shipped. Foreground lines and `Ctrl+]`-backgrounded processes
+both report; macOS / Linux / Windows backends with a terminal-bell
 fallback; two shell variables for runtime control.
 
 ## Zero dependencies
@@ -87,10 +87,10 @@ finally:
         notify.command_done(line, time.monotonic() - started, last_exit)
 ```
 
-The `_backgrounded` flag is the interesting part. `Ctrl+]` and `@bg` both
-make `_execute` return long before the work finishes, so the line's own
-duration says nothing about it. Both hand the slot over through one helper,
-`_park`, which sets the flag along with `slot.parked`.
+The `_backgrounded` flag is the interesting part. `Ctrl+]` makes `_execute`
+return long before the work finishes, so the line's own duration says
+nothing about it. The slot is handed over through one helper, `_park`, which
+sets the flag along with `slot.parked`.
 
 **2. A parked slot, via its exit handler.** Every slot is constructed with
 `on_exit=Shell._slot_finished`, called once when its work ends (on the slot's
@@ -120,16 +120,13 @@ so `ExitCallbackMixin` needed a pending-exit record, a lock and a
 fired-once flag to make exactly one of two paths deliver, plus a separate
 `_notify_resumed_done` path in `run()`. Passing the handler to the
 constructor, before anything runs, removes the race: the decision moves to
-exit time, where `parked` already says everything. `@bg` slots are marked
-parked before they start, so a body that ends at once is still a parked one.
+exit time, where `parked` already says everything.
 
-It is a mixin rather than a base class because `PipelineSlot` deliberately
-bypasses its parent's `__init__` and hand-mirrors attributes; every slot
-type calls `_init_exit_callback(on_exit)` from its own constructor. The
-three call sites for `_fire_on_exit()` are `ProcessSlot._reader_loop`'s
-`finally` (after the PTY is closed and the child reaped), and
-`PythonCommandSlot._run` / `PipelineSlot._run` right after
-`self._finished.set()`.
+It is a mixin because `ProcessSlot` and `PythonCommandSlot` share nothing
+else; each calls `_init_exit_callback(on_exit)` from its own constructor.
+The two call sites for `_fire_on_exit()` are `ProcessSlot._reader_loop`'s
+`finally` (after the PTY is closed and the child reaped) and
+`PythonCommandSlot._run` right after `self._finished.set()`.
 
 ## The skip list
 

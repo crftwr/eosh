@@ -1,7 +1,7 @@
 """One way to run a Python handler and read its exit status (discussion #38).
 
 ``run_handler`` is what every execution path — foreground slot, pipeline
-stage, ``@bg`` body, main-thread run — goes through, so these pin the
+stage, decorator, main-thread run — goes through, so these pin the
 contract once.
 """
 

@@ -11,12 +11,11 @@ unambiguous and the construct doesn't collide with POSIX command names.
 @watch -n 1 {df -h | grep abc}
 @time make build
 @retry -n 3 flaky-test
-@bg --as build {make release}
 @quiet --stderr {noisy-cmd | filter}
 ```
 
 **Status:** the feature is shipped. Parser, executor, registry, and
-five built-in decorators (`@watch`, `@time`, `@retry`, `@quiet`, `@bg`)
+four built-in decorators (`@watch`, `@time`, `@retry`, `@quiet`)
 are in place; `@deco {body} | next` composition runs the body's stdout
 through the outer pipeline. Open follow-ups (decorator stacking,
 outer sequencing, more built-ins) live in
@@ -37,7 +36,7 @@ follow-up items."
 - `Pipeline.run()` indirection so decorator bodies can re-enter
   execution (`pipeline.py::set_pipeline_executor`).
 - Dispatch in `Shell._execute_decorator_stage`.
-- Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, `@bg`
+- Built-ins: `@watch`, `@time`, `@retry`, `@quiet`
   (`eosh/decorators/*.py`).
 - `@<TAB>` completion: decorator-name list, decorator-flag picker, and
   body-command delegation through the existing recipe / argcomplete /
@@ -462,10 +461,9 @@ verbatim to decorator bodies, because they *are* Python commands:
   no I/O won't unwind on `KeyboardInterrupt` until it next blocks.
 - **`passthrough_run` / `passthrough_input` are off-limits** when the
   decorator is in a pipeline — its stdio is wired to pipe fds, not
-  the terminal. They raise `RuntimeError`. This affects `@bg` and
-  `@as`, which want to launch interactive subprocesses; they need to
-  refuse or fall back to non-interactive execution when invoked from
-  a piped context.
+  the terminal. They raise `RuntimeError`. A decorator that wants to
+  launch an interactive subprocess has to refuse, or fall back to
+  non-interactive execution, when invoked from a piped context.
 - **Stateful effects mutate the parent.** `@as NAME {...}` switching
   contexts persists, even if invoked inside a pipeline. Same as the
   built-in `cd | tee log` quirk; treat as the cost of in-process.
@@ -528,26 +526,13 @@ Shipped:
 | `@time` | print wall/user/sys time after the pipeline finishes |
 | `@retry [-n N] [--delay SEC]` | re-run on non-zero exit, up to N times |
 | `@quiet [--stderr]` | discard stdout (and optionally stderr) |
-| `@bg [--as NAME \| -n NAME]` | run pipeline in a background context slot (replaces `&`); auto-named if `--as` / `-n` omitted |
 
-`@bg` ties into eosh's existing context-multiplexing primitives —
-a decorator becomes the natural surface for "run this pipeline in a
-different process slot."  The named and anonymous cases are the same
-decorator: omit `--as` for a fresh auto-named slot (`bg-1`, `bg-2`,
-…), pass `--as build` to target/create a context by name.  A
-positional NAME can't be used because the decorator parser stops at
-the first non-flag token and treats it as the start of the body (see
-[Args syntax](#resolved-ux-questions)), so the name flows through
-`--as` / `-n`.
-
-`@bg` is implemented on top of a new `PipelineSlot` (subclass of
-`PythonCommandSlot`) so a backgrounded pipeline behaves like any
-other slot: `Ctrl+]` switches in to watch live output, `context kill`
-sends `KeyboardInterrupt` to the worker, and `context list` shows
-the slot's pipeline text as the "command line."  `@bg` cannot be a
-stage of an outer pipeline (`@bg {body} | next`) because it returns
-immediately and the next stage would have nothing to read; that
-case raises a clear error.
+There is no `@bg`. It existed — running its body in a new background
+context — but for a single command `Ctrl+]` already does that, and the rest
+(a whole pipeline) needed a slot type of its own, `PipelineSlot`, plus a
+late-bound runner hook and dispatch rules copied from `_execute_stage`.
+Discussion #39 removed it: run the pipeline and press `Ctrl+]`, which
+backgrounds the whole thing.
 
 `@quiet` is implemented by appending `> /dev/null` (and `2>&1` with
 `--stderr`) to the body's last stage via the same `Redirect` AST the
@@ -666,8 +651,7 @@ follow-up items."
   Allowing it means letting the outer-sequence parser treat the
   decorator-stage as one statement; the parser already isolates the
   decorator scope so the additional change is small.
-- **More built-ins** — `@time`, `@retry`, `@quiet`, and `@bg` are
-  shipped.  Future candidates: `@confirm` (prompt before running)
+- **More built-ins** — `@time`, `@retry` and `@quiet` are shipped.  Future candidates: `@confirm` (prompt before running)
   and `@nice -n N` (process-priority wrapper).
 - **Slot-aware `@watch`** — route long-running decorator bodies
   through `PythonCommandSlot` so `Ctrl+]` backgrounding works the

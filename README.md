@@ -19,7 +19,7 @@
 - **Context switching** — named environments with variables and working directories, switched by name or live with `Ctrl+]`
 - **PTY process multiplexing** — run processes in contexts and switch between them without killing them
 - **Pipelines and redirections** — `|`, `>`, `>>`, `<`, `2>`, `2>&1`, `;`, `&&`, `||`, globs (`*`, `?`, `**`), and `\`-line-continuation
-- **Pipeline decorators** — wrap any pipeline with `@watch`, `@time`, `@retry`, `@quiet`, or `@bg`; authoring your own is a few lines of Python
+- **Pipeline decorators** — wrap any pipeline with `@watch`, `@time`, `@retry` or `@quiet`; authoring your own is a few lines of Python
 - **Custom commands** — define Python functions as shell commands with full completion support
 - **Python-backed variables** — `var aws_region=us-east-1` can drive multiple `os.environ` keys via a `Var` subclass; `$NAME` expansion is symmetric
 - **Completion recipes** — opt-in TAB completion for `git`, `make`, `ssh`, `aws`, and more
@@ -223,7 +223,6 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 @time {make && ./run-tests}
 @retry -n 5 --delay 2 curl https://flaky.example.com/
 @quiet pytest -q
-@bg {tail -f /var/log/system.log}      # run in a fresh background context
 ```
 
 **Scope rule.** If the wrapped pipeline contains `|`, `;`, `&&`, `||`, or a redirect, it must be enclosed in `{...}`. Single-command bodies don't need braces. This makes the decorator's scope visible at a glance and side-steps the `watch -n 5 ls | grep abc` ambiguity that POSIX `watch` is famous for.
@@ -236,7 +235,6 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 | `@time` | Print elapsed wall/user/sys time after the pipeline finishes |
 | `@retry [-n N] [--delay SEC]` | Re-run the pipeline on non-zero exit, up to `N` attempts |
 | `@quiet [--stderr]` | Discard stdout (and stderr with `--stderr`); still propagates the exit code |
-| `@bg [name]` | Run the pipeline in a fresh background context (resumable via `Ctrl+]`) |
 
 See the [Custom Decorators](#custom-decorators) section below for authoring your own.
 
@@ -378,7 +376,7 @@ When a command runs for at least 10 seconds, eosh posts an OS notification as it
 ✓ eosh — 1h 05m          [bg-1] terraform apply
 ```
 
-Commands running in a context you backgrounded with `Ctrl+]` (or with `@bg`) notify too, tagged with the context name. Interactive programs — editors, pagers, `top`, `ssh`, `tmux`, sub-shells — are skipped, since sitting in them for an hour isn't work finishing.
+Commands running in a context you backgrounded with `Ctrl+]` notify too, tagged with the context name. Interactive programs — editors, pagers, `top`, `ssh`, `tmux`, sub-shells — are skipped, since sitting in them for an hour isn't work finishing.
 
 Backends are whatever the platform already ships: `osascript` on macOS, `notify-send` on Linux, a PowerShell toast on Windows, and the terminal bell as a fallback. Nothing to install.
 

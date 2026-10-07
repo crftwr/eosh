@@ -26,38 +26,12 @@ Built-in decorators are siblings of this module (e.g.
 
 from __future__ import annotations
 
-from typing import Callable
-
-from ..pipeline import Pipeline
-
-
-# Late-bound hook so ``@bg`` can ask the running Shell to spawn a background
-# slot.  Wired from ``Shell.__init__`` to keep the decorator package free of
-# any Shell import (decorators are loaded *during* Shell construction).  The
-# callable's contract: ``run_in_background(pipeline, name=None) -> str`` —
-# returns the resolved context name on success, raises ValueError on
-# collision/invalid input.
-_background_runner: Callable[..., str] | None = None
-
-
-def set_background_runner(fn: Callable[..., str] | None) -> None:
-    global _background_runner
-    _background_runner = fn
-
-
-def run_in_background(pipeline: Pipeline, *, name: str | None = None) -> str:
-    if _background_runner is None:
-        raise RuntimeError(
-            "@bg requires a running Shell; no background runner is registered"
-        )
-    return _background_runner(pipeline, name=name)
-
 
 def register_builtins() -> None:
     """Register the built-in decorators (``@watch``, ``@time``, ``@retry``,
-    ``@quiet``, ``@bg``).  Called once while the shell registers its own
-    built-ins, so ``mark_builtins`` keeps them across ``reload``."""
-    from . import bg, quiet, retry, time, watch
+    ``@quiet``).  Called once while the shell registers its own built-ins,
+    so ``mark_builtins`` keeps them across ``reload``."""
+    from . import quiet, retry, time, watch
 
-    for module in (watch, time, retry, quiet, bg):
+    for module in (watch, time, retry, quiet):
         module.register()
