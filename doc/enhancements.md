@@ -22,8 +22,8 @@ here in enhancements.md until each item lands.
   Allowing it means letting the outer-sequence parser treat the
   decorator-stage as one statement; the parser already isolates the
   decorator scope so the additional change is small.
-- **More built-ins** — `@time`, `@retry`, `@quiet`, and `@bg` are
-  shipped (alongside `@watch`).  Future candidates: `@confirm`
+- **More built-ins** — `@time`, `@retry` and `@quiet` are shipped
+  (alongside `@watch`; `@bg` was removed in #39 — `Ctrl+]` covers it).  Future candidates: `@confirm`
   (prompt before running) and `@nice -n N` (process-priority wrapper).
 - **Slot-aware `@watch`** — route long-running decorator bodies
   through `PythonCommandSlot` so `Ctrl+]` backgrounding works the
@@ -113,7 +113,7 @@ having:
 
 ## Architectural follow-ups
 
-The features have shipped (Python pipelines, decorators, `@bg`,
+The features have shipped (Python pipelines, decorators,
 passthrough subprocesses, sub-command tree, cross-platform terminal),
 but the layering hasn't fully caught up to them.  None of the items
 below is breaking anything; each improves cohesion, makes the slot
@@ -125,7 +125,7 @@ of [architecture.md](architecture.md).
 
 - **Extract `slots.py` (or `slots/` package).** Move
   `_StdoutProxy`, `_NullBuffer`, `_PyStageHandle`,
-  `PythonCommandSlot`, `PipelineSlot`, the three `_ThreadLocal*`
+  `PythonCommandSlot`, the three `_ThreadLocal*`
   stdio routers, `_dup_threadlocal_override_fd`, the
   `_current_slot` / `_in_pipeline` thread-locals, and the
   `passthrough_run` / `passthrough_input` /
@@ -134,7 +134,7 @@ of [architecture.md](architecture.md).
   natural top-level exports of the slot module rather than
   reaching into module-private thread-locals from `shell.py`.
   *Risk:* moderate — the slot needs a callback into the shell to
-  re-execute a pipeline (for `@bg` / `Pipeline.run` re-entry); a
+  re-execute a pipeline (for `Pipeline.run` re-entry); a
   small `slots.set_pipeline_runner(callable)` hook (or
   `ExecutionEnvironment` — see below) handles that cleanly.
 
@@ -143,8 +143,8 @@ of [architecture.md](architecture.md).
   `_execute_stage`, `_start_python_stage_thread`,
   `_start_decorator_stage_thread`, `_execute_decorator_stage`,
   `_run_python_command_sync`, `_execute_external*`,
-  `_tokenize_stage`, `_expand_alias`, `_pipeline_python_command`,
-  `_pipeline_external_argv`, plus the redirect-resolution code.
+  `_tokenize_stage`, `_expand_alias`, plus the redirect-resolution
+  code.
   This is also the module that should *own* the `Pipeline.run`
   executor — `Pipeline.run` becomes `executor.run(pipeline)`
   injected via constructor. Big payoff: the redirect path becomes
@@ -153,17 +153,15 @@ of [architecture.md](architecture.md).
   (`ShellEnvironment`) carrying the registries and the context
   manager.
 
-- **Replace the four module-global setters with one
+- **Replace the module-global setters with one
   `ExecutionEnvironment` interface.** Today `Shell.__init__`
-  calls four parallel registration hooks:
-  `pipeline.set_pipeline_executor`,
-  `decorators.set_background_runner`,
-  `pipeline.set_decorator_value_flag_lookup`, plus the implicit
+  calls parallel registration hooks:
+  `pipeline.set_pipeline_executor`, plus the implicit
   `_current_slot` / `_in_pipeline` thread-locals consumed by the
   free `passthrough_*` functions. Replace with a small Protocol
   carrying `run_pipeline(pipeline)`,
-  `run_in_background(pipeline, name)`, `current_slot()`,
-  `in_pipeline()`, `decorator_value_flag(name, flag)`. Carry it
+  `current_slot()`,
+  `in_pipeline()`. Carry it
   via `contextvars` so two `Shell` instances can coexist.
   *Risk:* low–moderate — the wiring exists; this is renaming and
   consolidation.
@@ -194,13 +192,6 @@ of [architecture.md](architecture.md).
   underscore) for both completion-stage isolation and decorator-
   prefix remainder validation. Drop the underscore or move to
   `parsing.py`. *Risk:* trivial (rename).
-
-- **Make `PipelineSlot.__init__` call `super().__init__`
-  cleanly.** Today it bypasses the parent's init and re-creates
-  attributes by hand, which is brittle when
-  `PythonCommandSlot.__init__` changes. Introduce an
-  `_init_common()` on the base, or a small `WorkUnit` strategy so
-  the subclass only specifies what it runs.
 
 - **Move `lineedit.History` into its own `history.py`.** The
   class owns the on-disk `~/.eosh/history` file and the

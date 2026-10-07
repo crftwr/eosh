@@ -65,8 +65,8 @@ context new prod
 
 Creates a context named `prod` and switches to it. It inherits the current
 context's variables and its Up/Down history, and starts in the current
-directory (`ContextManager.new`). `Ctrl+N` in the picker and `@bg` create
-contexts the same way.
+directory (`ContextManager.new`). `Ctrl+N` in the picker creates contexts the
+same way.
 
 > **Note:** set the new context's own variables with `var` afterwards:
 > ```

@@ -56,13 +56,13 @@ class ExitCallbackMixin:
     construction, before anything runs, it can't race the slot's own end.
 
     :attr:`parked` is what the handler decides on: the shell sets it when it
-    hands the slot to a context to keep running in the background (Ctrl+],
-    ``@bg``).  A slot that never was ran in the foreground, and the line's own
-    timing already covered it.
+    hands the slot to a context to keep running in the background (Ctrl+]).
+    A slot that never was ran in the foreground, and the line's own timing
+    already covered it.
 
-    Mixin rather than base class because ``PipelineSlot`` deliberately
-    bypasses its parent's ``__init__``; every slot calls
-    :meth:`_init_exit_callback` from its own constructor instead.
+    A mixin: ``ProcessSlot`` (here) and ``PythonCommandSlot`` (``shell.py``)
+    share nothing else; each calls :meth:`_init_exit_callback` from its own
+    constructor.
     """
 
     def _init_exit_callback(self, on_exit: "Callable[[object], None] | None" = None) -> None:

@@ -65,7 +65,7 @@
 ├─────────────────────────────────────────────────────┤
 │  Decorators (decorators/)                           │
 │  ├── @name [flags] body — wrap pipeline at runtime │
-│  └── Built-ins: @watch, @time, @retry, @quiet, @bg │
+│  └── Built-ins: @watch, @time, @retry, @quiet      │
 ├─────────────────────────────────────────────────────┤
 │  User Config (~/.eosh/config.py)                   │
 │  ├── Custom command definitions                    │
@@ -182,7 +182,7 @@ Cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …) need no hand-written 
 
 ### decorators/ — Pipeline Decorators
 
-A decorator is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how it runs. A decorator is a command named `@name` in the command registry: authors register a function with `@registry.command("@name", params=[...])` that receives a parsed `Pipeline` AST and the parsed flag namespace. Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, `@bg`, registered by `eosh.decorators.register_builtins()`. Pipelines that contain `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. See [decorators.md](decorators.md).
+A decorator is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how it runs. A decorator is a command named `@name` in the command registry: authors register a function with `@registry.command("@name", params=[...])` that receives a parsed `Pipeline` AST and the parsed flag namespace. Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, registered by `eosh.decorators.register_builtins()`. Pipelines that contain `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. See [decorators.md](decorators.md).
 
 ### parsing.py — Line Tokenization
 
@@ -289,12 +289,11 @@ eosh/
 │       │   ├── __init__.py     # enable(*names): built-in recipes + add-ons
 │       │   └── <name>.py       # see Available recipes block in __init__.py
 │       └── decorators/
-│           ├── __init__.py     # register_builtins(), the @bg runner hook
+│           ├── __init__.py     # register_builtins()
 │           ├── watch.py        # @watch built-in
 │           ├── time.py         # @time built-in
 │           ├── retry.py        # @retry built-in
 │           ├── quiet.py        # @quiet built-in
-│           └── bg.py           # @bg built-in
 └── tests/
     ├── test_alias_expansion.py
     ├── test_argcomplete_fallback.py
@@ -333,13 +332,12 @@ eosh/
 
 ## Known structural smells
 
-These are not bugs and they are not blocking work. They are the architectural rough edges that have accumulated as features (Python pipelines, decorators, `@bg`, passthrough subprocesses) layered on top of the original PTY-multiplexing core. Each is described in more detail in [enhancements.md](enhancements.md) under "Architectural follow-ups."
+These are not bugs and they are not blocking work. They are the architectural rough edges that have accumulated as features (Python pipelines, decorators, passthrough subprocesses) layered on top of the original PTY-multiplexing core. Each is described in more detail in [enhancements.md](enhancements.md) under "Architectural follow-ups."
 
-- **`shell.py` is ~3300 lines** and hosts at least four concerns that are conceptually separate: thread-local stdio routing + `_StdoutProxy` + `PythonCommandSlot` + `PipelineSlot` (peer to `process.py`); the per-stage pipeline executor (`_execute_pipeline`, `_execute_stage`, redirect plumbing); the two raw-mode forwarding loops; and the actual REPL + built-ins + completion glue. Everything else in the package is right-sized.
-- **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor`, `decorators.set_background_runner`, `pipeline._decorator_value_flag_lookup`, and the `_current_slot` / `_in_pipeline` thread-locals consumed by free `passthrough_*` functions are five independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
+- **`shell.py` is ~3300 lines** and hosts at least four concerns that are conceptually separate: thread-local stdio routing + `_StdoutProxy` + `PythonCommandSlot` (peer to `process.py`); the per-stage pipeline executor (`_execute_pipeline`, `_execute_stage`, redirect plumbing); the two raw-mode forwarding loops; and the actual REPL + built-ins + completion glue. Everything else in the package is right-sized.
+- **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_current_slot` / `_in_pipeline` thread-locals consumed by free `passthrough_*` functions are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
 - **`shell.py` imports private names from `pipeline.py`** — `_split_on_operators` is used both for completion-stage isolation and for decorator-prefix remainder validation. It is part of `pipeline.py`'s effective public surface; the leading underscore is a leftover.
 - **Two near-identical raw-mode forwarding loops** (`_enter_forwarding_mode` for PTY-backed `ProcessSlot`, `_enter_python_forwarding_mode` for `PythonCommandSlot`) duplicate ~80% of their logic — termios snapshot/restore, SIGWINCH/SIGINT install, `\x1d` interception, byte forwarding. Any fix has to be applied twice today.
 - **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.
-- **`PipelineSlot` reaches into `PythonCommandSlot` privates** (`_keybuf`, `_pty_lock`, `_proxy`, ...) by mirroring `__init__` rather than calling `super().__init__()`. The base class is not subclass-friendly — the inheritance is more "happens to share fields" than "is-a."
 
 The shape of the relief is sketched in `enhancements.md`: extract `slots.py` (Python-command slot family + thread-local routers + passthrough helpers), extract `dispatch.py` (the pipeline executor), unify the two forwarding loops behind a small slot interface, and replace the global setters with a single `ExecutionEnvironment` interface that `Shell` constructs and passes down. None of this is a one-shot refactor — it is a sequence of medium-risk moves, each independently valuable.

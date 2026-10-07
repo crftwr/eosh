@@ -304,7 +304,7 @@ def run_handler(
     announce_interrupt: bool = False,
     interrupted: Callable[[], bool] | None = None,
 ) -> int:
-    """Call *fn* — a Python command, a decorator, a ``@bg`` body — and turn
+    """Call *fn* — a Python command or a decorator — and turn
     how it ended into an exit status.  The one place that decides this; every
     execution path (foreground slot, pipeline stage, background slot, the
     main-thread path) goes through here.
@@ -845,9 +845,8 @@ class PythonCommandSlot(ExitCallbackMixin):
         # Snapshot whether the proxy was active (i.e. the user was watching
         # this slot in the foreground) before deactivating it for the
         # subprocess.  The PTY reader thread mirrors this state — if the
-        # subprocess starts while the slot is backgrounded (e.g. a Python
-        # ``@bg`` body that calls ``passthrough_run``), the reader buffers
-        # to ``_pty_buffer`` instead of writing to the real terminal.
+        # subprocess starts while the slot is backgrounded, the reader
+        # buffers to ``_pty_buffer`` instead of writing to the real terminal.
         proxy_was_active = bool(self._proxy and self._proxy._active)
         # Pause the buffering stdout proxy: while the subprocess runs, its
         # output is written to the slot's PTY master and copied to stdout
@@ -1174,210 +1173,6 @@ def _drop_history_duplicates(
     return [h for h in history if not duplicate(h.value)]
 
 
-class PipelineSlot(PythonCommandSlot):
-    """Background slot whose work unit is a parsed pipeline, not a single Python command.
-
-    Subclasses :class:`PythonCommandSlot` so the run-loop's resume path
-    (``isinstance(slot, PythonCommandSlot)``) treats it the same as a
-    Python-command slot — proxy-buffered output, no PTY, ``Ctrl+]`` switching.
-
-    Body output capture works at the kernel fd level via an OS pipe, not the
-    Python ``sys.stdout`` abstraction.  The slot thread sets
-    ``_in_pipeline.flag = True`` so :meth:`Shell._run_pipeline_from_decorator`
-    takes the ``_in_outer_pipe=True`` branch, which forces single-stage
-    external commands onto the ``subprocess.Popen`` path with stdout/stdin
-    bound to our pipe and ``/dev/null`` respectively.  Without that, a body
-    like ``df`` would allocate a real PTY-backed :class:`ProcessSlot` whose
-    reader writes straight to fd 1 (the real terminal), bypassing all of
-    ``@bg``'s capture and racing the main thread for stdin.
-    """
-
-    def __init__(self, pipeline: "Pipeline", display_text: str, on_exit=None) -> None:
-        # Bypass PythonCommandSlot.__init__ — it expects a Command, which we
-        # don't have.  We mirror its attribute set ourselves.  ``argv`` is what
-        # the context list / picker shows as the "command line" for the slot.
-        self._init_exit_callback(on_exit)
-        self._cmd = None  # never used; kept so ``_pty_lock``/etc. branches are safe
-        self._raw_args: list[str] = []
-        self.argv: list[str] = [display_text]
-        self._pipeline = pipeline
-        self._thread: threading.Thread | None = None
-        # Unused: PipelineSlot captures output via an OS pipe (see below) so
-        # external subprocess fd-1 writes are caught.  The base-class
-        # methods that touch _proxy (activate/deactivate/replay_buffer)
-        # are overridden here.
-        self._proxy: _StdoutProxy | None = None
-        self._finished = threading.Event()
-        self.buffer = _NullBuffer()
-        self.exit_code: int | None = None
-        # Inherited PTY-passthrough state (passthrough_run() is unreachable
-        # from a piped @bg body, but the base class's resize/write_stdin
-        # still inspect these).
-        self._pty_master_fd: int = -1
-        self._pty_subproc: subprocess.Popen | None = None
-        self._pty_reader: threading.Thread | None = None
-        self._pty_buffer = OutputBuffer()
-        self._pty_last_byte: bytes = b"\n"
-        self._pty_active = False
-        self._pty_lock = threading.Lock()
-        self._reading_input = False
-        self._keybuf: bytearray = bytearray()
-        self._keybuf_lock = threading.Lock()
-        self._keybuf_event = threading.Event()
-        # Body output capture: an OS pipe so external subprocess output goes
-        # to a fd we own rather than the real terminal.  The reader thread
-        # buffers bytes while the slot is inactive and streams them live to
-        # stdout once the user switches in.  No \n→\r\n conversion: the
-        # forwarding loop keeps the kernel's ONLCR on.
-        self._out_lock = threading.Lock()
-        self._out_buffer = OutputBuffer()
-        self._out_active = False
-        self._out_read_fd: int = -1
-        self._out_write_fd: int = -1
-        self._out_reader_thread: threading.Thread | None = None
-        # Stdin sink so external commands in the body don't block on the
-        # real terminal (which the main thread is reading in cooked mode).
-        self._in_devnull_fd: int = -1
-
-    def start(self) -> None:
-        self.mark_started()
-        self._out_read_fd, self._out_write_fd = os.pipe()
-        self._in_devnull_fd = os.open(os.devnull, os.O_RDONLY)
-        self._out_reader_thread = threading.Thread(
-            target=self._out_reader_loop,
-            name=f"bg-reader-{self.argv[0][:24]}",
-            daemon=True,
-        )
-        self._out_reader_thread.start()
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"bg-{self.argv[0][:32]}",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def _out_reader_loop(self) -> None:
-        try:
-            while True:
-                try:
-                    data = os.read(self._out_read_fd, 4096)
-                except OSError:
-                    break
-                if not data:
-                    break
-                with self._out_lock:
-                    if self._out_active:
-                        try:
-                            sys.stdout.buffer.write(data)
-                            sys.stdout.buffer.flush()
-                        except OSError:
-                            pass
-                    else:
-                        self._out_buffer.append(data)
-        finally:
-            try:
-                os.close(self._out_read_fd)
-            except OSError:
-                pass
-            self._out_read_fd = -1
-
-    def _run(self) -> None:
-        # Force the worker into the outer-pipe execution path so single-stage
-        # external bodies use subprocess.Popen with our pipe fd rather than
-        # _execute_external's PTY-backed ProcessSlot.
-        _in_pipeline.flag = True
-        out_obj = os.fdopen(self._out_write_fd, "wb", buffering=0, closefd=False)
-        out_wrapper = io.TextIOWrapper(
-            out_obj, encoding="utf-8", errors="replace", write_through=True
-        )
-        in_obj = os.fdopen(self._in_devnull_fd, "rb", buffering=0, closefd=False)
-        in_wrapper = io.TextIOWrapper(in_obj, encoding="utf-8", errors="replace")
-        if hasattr(sys.stdout, "set_override"):
-            sys.stdout.set_override(out_wrapper)
-        if hasattr(sys.stderr, "set_override"):
-            sys.stderr.set_override(out_wrapper)
-        if hasattr(sys.stdin, "set_override"):
-            sys.stdin.set_override(in_wrapper)
-        _current_slot.slot = self
-        try:
-            self.exit_code = run_handler(self._pipeline.run, self.argv[0])
-        finally:
-            _current_slot.slot = None
-            if hasattr(sys.stdout, "clear_override"):
-                sys.stdout.clear_override()
-            if hasattr(sys.stderr, "clear_override"):
-                sys.stderr.clear_override()
-            if hasattr(sys.stdin, "clear_override"):
-                sys.stdin.clear_override()
-            _in_pipeline.flag = False
-            try:
-                out_wrapper.close()
-            except Exception:
-                pass
-            try:
-                in_wrapper.close()
-            except Exception:
-                pass
-            # Close our pipe write end so the reader thread sees EOF and
-            # drains.  closefd=False on the wrappers keeps us in charge of
-            # the underlying fd lifetimes.
-            if self._out_write_fd >= 0:
-                try:
-                    os.close(self._out_write_fd)
-                except OSError:
-                    pass
-                self._out_write_fd = -1
-            if self._in_devnull_fd >= 0:
-                try:
-                    os.close(self._in_devnull_fd)
-                except OSError:
-                    pass
-                self._in_devnull_fd = -1
-            if self._out_reader_thread is not None:
-                self._out_reader_thread.join(timeout=1.0)
-            if self.exit_code is None:
-                self.exit_code = 130
-            self._finished.set()
-            self._fire_on_exit()
-
-    def activate(self) -> None:
-        with self._out_lock:
-            chunks = self._out_buffer.drain()
-            self._out_active = True
-        for chunk in chunks:
-            try:
-                sys.stdout.buffer.write(chunk)
-            except OSError:
-                pass
-        try:
-            sys.stdout.buffer.flush()
-        except OSError:
-            pass
-
-    def deactivate(self) -> None:
-        with self._out_lock:
-            self._out_active = False
-
-    def replay_buffer(self) -> None:
-        # Used by run() once the slot has exited and the terminal is back in
-        # cooked mode.
-        chunks = self._out_buffer.drain()
-        for chunk in chunks:
-            try:
-                sys.stdout.buffer.write(chunk)
-            except OSError:
-                pass
-        try:
-            sys.stdout.buffer.flush()
-        except OSError:
-            pass
-
-    def tail_lines(self, n: int) -> list[str]:
-        """Return up to *n* most recent buffered output lines for preview."""
-        from .process import _tail_lines_from_bytes
-        return _tail_lines_from_bytes(self._out_buffer.peek(), n)
-
-
 # ── source-bash: run a bash script, then import its environment ────────────
 #
 # The whole point of `source-bash` is the *import*: a child bash exits and
@@ -1493,9 +1288,6 @@ class Shell:
 
         # Wire Pipeline.run() so decorator bodies can re-enter execution.
         set_pipeline_executor(self._run_pipeline_from_decorator)
-        # Wire @bg so it can ask the running shell for a new background slot.
-        from .decorators import set_background_runner
-        set_background_runner(self._run_in_background)
 
     def _current_context_history(self) -> list[str]:
         """Return the current context's per-session Up/Down history list.
@@ -2473,8 +2265,7 @@ class Shell:
     # --- long-command notifications ------------------------------------------
 
     def _park(self, slot, ctx) -> None:
-        """Hand *slot* to *ctx* to keep running in the background (Ctrl+],
-        ``@bg``).  From here on the slot's exit handler reports it, so the
+        """Hand *slot* to *ctx* to keep running in the background (Ctrl+]).  From here on the slot's exit handler reports it, so the
         line that started it doesn't (see :meth:`_execute`)."""
         ctx.process_slot = slot
         slot.parked = True
@@ -2551,164 +2342,6 @@ class Shell:
             )
         in_outer_pipe = getattr(_in_pipeline, "flag", False)
         return self._execute_pipeline(pipeline, _in_outer_pipe=in_outer_pipe)
-
-    def _run_in_background(self, pipeline: Pipeline, *, name: str | None = None) -> str:
-        """Spawn *pipeline* in a new background context; return the context name.
-
-        Used by the ``@bg`` decorator via the ``set_background_runner`` hook.
-        Refuses outer-pipeline composition: ``@bg`` returns immediately, so a
-        downstream ``| next`` stage would have nothing to read.
-        """
-        if getattr(_in_pipeline, "flag", False):
-            raise ValueError(
-                "@bg cannot be used as a stage of an outer pipeline "
-                "(the decorator returns immediately, so downstream stages would block)"
-            )
-        existing = self.context_manager.contexts
-        if name is None:
-            i = 1
-            while f"bg-{i}" in existing:
-                i += 1
-            name = f"bg-{i}"
-        else:
-            ctx = existing.get(name)
-            if ctx is not None and ctx.process_slot and ctx.process_slot.is_alive():
-                raise ValueError(
-                    f"context '{name}' already has a running process; "
-                    f"choose a different name or kill the existing one first"
-                )
-
-        display = " | ".join(s.text for s in pipeline.stages) or f"@bg {name}"
-        slot = self._make_background_slot(pipeline, display)
-        if slot is None:
-            # Failed to start an external ProcessSlot (FileNotFoundError etc.);
-            # the helper already printed an error.  Don't create the context.
-            raise ValueError(f"@bg: failed to start '{display}'")
-
-        target = existing[name] if name in existing else self.context_manager.new(name)
-        # ``@bg`` returns immediately, so the enclosing line's own timing says
-        # nothing about the body; the slot's exit handler is what reports it.
-        self._park(slot, target)
-        return name
-
-    def _make_background_slot(self, pipeline: Pipeline, display: str):
-        """Return a started slot for *pipeline*, or ``None`` on startup error.
-
-        Three-way dispatch matches the foreground execution path for the
-        same body shape, so resume after ``Ctrl+]`` works the same as if
-        the user had backgrounded a foreground job:
-
-        * **Single-stage external** (``@bg vi``) → :class:`ProcessSlot`
-          (real PTY).  Interactive TUIs work; alt-screen restore works.
-        * **Single-stage Python command** (``@bg hp ssm xyz``) →
-          :class:`PythonCommandSlot`.  ``_in_pipeline.flag`` stays ``False``
-          so :func:`passthrough_run` can allocate its own PTY for the
-          subprocess just like in the foreground path.
-        * **Anything else** — multi-stage pipelines, decorator-bodied
-          stages, redirected bodies → :class:`PipelineSlot` (OS pipe +
-          ``subprocess.Popen``).
-
-        On Windows ``ProcessSlot`` and ``PythonCommandSlot``'s passthrough
-        machinery are unavailable, so everything goes through
-        ``PipelineSlot`` as before.
-        """
-        if not IS_WINDOWS:
-            ext = self._pipeline_external_argv(pipeline)
-            if ext is not None:
-                argv, env_prefix = ext
-                slot = ProcessSlot(on_exit=self._slot_finished)
-                slot.parked = True   # before start: a body may end at once
-                try:
-                    slot.start(argv=argv, env=self._merged_env(env_prefix), cwd=os.getcwd())
-                except FileNotFoundError:
-                    print(f"eosh: command not found: {argv[0]}")
-                    return None
-                except OSError as e:
-                    print(f"eosh: {e}")
-                    return None
-                return slot
-
-            py = self._pipeline_python_command(pipeline)
-            if py is not None:
-                cmd, args = py
-                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished)
-                slot.parked = True
-                slot.start()
-                return slot
-
-        slot = PipelineSlot(pipeline, display, on_exit=self._slot_finished)
-        slot.parked = True
-        slot.start()
-        return slot
-
-    def _pipeline_python_command(self, pipeline: Pipeline):
-        """Return ``(cmd, args)`` if *pipeline* is a single-stage Python command.
-
-        Same gating as :meth:`_pipeline_external_argv` but inverted on the
-        registry check: returns the registered :class:`Command` (with its
-        Python handler) rather than raw argv.  A per-command env prefix is not
-        threaded here — a backgrounded Python command runs in a long-lived
-        slot thread, so a temporary ``os.environ`` mutation can't be scoped to
-        it; ``@bg FOO=bar pycmd`` therefore falls through to ``PipelineSlot``.
-        """
-        if type(pipeline).run is not Pipeline.run:
-            return None
-        if len(pipeline.stages) != 1:
-            return None
-        stage = pipeline.stages[0]
-        if stage.decorator is not None:
-            return None
-        if stage.redirects:
-            return None
-        tokens = self._tokenize_stage(stage)
-        if not tokens:
-            return None
-        if all(self._ASSIGNMENT_RE.match(t) for t in tokens):
-            return None
-        env_prefix, tokens = self._split_env_prefix(tokens)
-        if env_prefix:
-            # Refused for a Python command — let PipelineSlot's stage path
-            # report it.
-            return None
-        cmd = self.registry.get(tokens[0])
-        if cmd is None or not cmd.has_any_handler():
-            return None
-        return cmd, tokens[1:]
-
-    def _pipeline_external_argv(self, pipeline: Pipeline):
-        """Return ``(argv, env_prefix)`` if *pipeline* is a single-stage external command.
-
-        Returns ``None`` for any pipeline that needs the PipelineSlot path:
-        multi-stage, decorator-bodied, redirected, pure-assignment, empty,
-        or whose first token resolves to a registered Python handler.
-        Subclasses that override ``Pipeline.run`` (e.g. test helpers) also
-        take the PipelineSlot path so the override actually runs.
-
-        A leading ``FOO=bar`` env prefix is split off and returned separately
-        so the caller can bake it into the ProcessSlot's environment.
-        """
-        if type(pipeline).run is not Pipeline.run:
-            return None
-        if len(pipeline.stages) != 1:
-            return None
-        stage = pipeline.stages[0]
-        if stage.decorator is not None:
-            return None
-        if stage.redirects:
-            return None
-        tokens = self._tokenize_stage(stage)
-        if not tokens:
-            return None
-        if all(self._ASSIGNMENT_RE.match(t) for t in tokens):
-            return None
-        env_prefix, tokens = self._split_env_prefix(tokens)
-        cmd = self.registry.get(tokens[0])
-        # Recipes are registered as commands but have no Python handler —
-        # they fall through to the system-command path, which is exactly
-        # what we want a ProcessSlot for.
-        if cmd is not None and cmd.has_any_handler():
-            return None
-        return tokens, env_prefix
 
     def _execute_pipeline(
         self,

@@ -27,7 +27,7 @@ exactly one of them, and only if it ran at least :func:`get_threshold`
 seconds:
 
 1. A foreground command line that ran to completion.
-2. A slot that was parked on a context (``Ctrl+]`` or ``@bg``), when it
+2. A slot that was parked on a context with ``Ctrl+]``, when it
    ends.  The message carries the context's name when that context isn't
    the current one — the user was looking elsewhere.
 

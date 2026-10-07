@@ -386,7 +386,7 @@ class TestShellHooks:
         assert posted[0][0].startswith("✗ Eolith Shell — exit 2")
 
     def test_a_backgrounded_line_stays_quiet(self, shell, monkeypatch, posted):
-        """Ctrl+] / @bg return early, so the line's own duration is meaningless —
+        """Ctrl+] returns early, so the line's own duration is meaningless —
         the slot's exit callback is what reports it."""
         def _background(pipeline, **kw):
             shell._backgrounded = True
