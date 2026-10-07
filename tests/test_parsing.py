@@ -91,23 +91,7 @@ def temp_var():
 
 
 def test_expand_vars_var_registry_takes_precedence(temp_var):
-    class MultiKeyVar(Var):
-        @property
-        def name(self):
-            return "aws_region"
-
-        @property
-        def env_keys(self):
-            return ["AWS_REGION", "AWS_DEFAULT_REGION"]
-
-        def get(self):
-            return os.environ.get("AWS_REGION")
-
-        def set(self, value):
-            os.environ["AWS_REGION"] = value
-            os.environ["AWS_DEFAULT_REGION"] = value
-
-    temp_var(MultiKeyVar())
+    temp_var(EnvVar("aws_region", keys=["AWS_REGION", "AWS_DEFAULT_REGION"]))
     os.environ["AWS_REGION"] = "us-west-2"
     os.environ["AWS_DEFAULT_REGION"] = "us-west-2"
     try:

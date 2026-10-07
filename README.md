@@ -275,37 +275,25 @@ def connect(account, region, instance_id):
 
 ### Python-Backed Variables
 
-A `Var` subclass mirrors the `CommandRegistry` pattern: subclass `Var`, register an instance with `var_registry`, and the built-in `var` command (and bare `NAME=VALUE` assignment) dispatches through your class. `$NAME` / `${NAME}` expansion uses the same lookup, so a Python-backed variable is read- and write-symmetric with `os.environ`.
+Register a variable with `var_registry`, and the built-in `var` command, bare `NAME=VALUE` assignment and `$NAME` / `${NAME}` expansion all go through it — a Python-backed variable is read- and write-symmetric with `os.environ`. An `EnvVar` names one or more environment keys (the shell writes all of them, per context); a `Setting` subclass holds a process-global value with no environment behind it.
 
 ```python
 # ~/.eosh/config.py
-import os
-from eosh import Var, EnvVar, var_registry
+from eosh import EnvVar, var_registry
 from eosh.completion import ChoiceCompleter, CallbackCompleter
 
-class AwsRegionVar(Var):
-    name = "aws_region"
-    description = "AWS region — sets AWS_REGION + AWS_DEFAULT_REGION"
-
-    def get(self):
-        return os.environ.get("AWS_REGION")
-
-    def set(self, value):
-        os.environ["AWS_REGION"] = value
-        os.environ["AWS_DEFAULT_REGION"] = value
-
-    @property
-    def value_completer(self):
-        return ChoiceCompleter(["us-east-1", "us-west-2", "eu-west-1"])
-
-var_registry.register(AwsRegionVar())
-var_registry.register(
-    EnvVar("aws_profile", "AWS_PROFILE",
-           completer=CallbackCompleter(lambda: ["default", "prod", "staging"]))
-)
+var_registry.register(EnvVar(
+    "aws_region", keys=["AWS_REGION", "AWS_DEFAULT_REGION"],
+    completer=ChoiceCompleter(["us-east-1", "us-west-2", "eu-west-1"]),
+    description="AWS region — sets AWS_REGION + AWS_DEFAULT_REGION",
+))
+var_registry.register(EnvVar(
+    "aws_profile", keys="AWS_PROFILE",
+    completer=CallbackCompleter(lambda: ["default", "prod", "staging"]),
+))
 ```
 
-Use `EnvVar(name, env_var, completer=...)` for a single-key passthrough; subclass `Var` directly when one logical name needs to drive multiple `os.environ` keys (or any other side effect). With the variables above:
+With the variables above:
 
 ```
 eosh> var aws_region=us-west-2

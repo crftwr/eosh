@@ -35,10 +35,10 @@ from pathlib import Path
 from ..commands import registry as command_registry
 from ..completion import Completer, Completion, CompletionContext
 from ..completion_cache import aws_env_key, get_or_fetch
-from ..variables import EnvVar, Var, registry as var_registry
+from ..variables import EnvVar, registry as var_registry
 
 
-# ─── AWS regions (used by AwsRegionVar's value completer) ───────────────────
+# ─── AWS regions (the aws_region value completer) ───────────────────
 
 AWS_REGIONS: list[tuple[str, str]] = [
     ("af-south-1",      "Africa (Cape Town)"),
@@ -191,37 +191,6 @@ class AwsCompleter(Completer):
 
 # ─── Variables ───────────────────────────────────────────────────────────────
 
-class _AwsRegionVar(Var):
-    """Sets AWS_REGION and AWS_DEFAULT_REGION together from one logical name."""
-
-    @property
-    def name(self) -> str:
-        return "aws_region"
-
-    @property
-    def description(self) -> str:
-        return "AWS region — sets AWS_REGION + AWS_DEFAULT_REGION"
-
-    @property
-    def env_keys(self) -> list[str]:
-        return ["AWS_REGION", "AWS_DEFAULT_REGION"]
-
-    def get(self) -> str | None:
-        return os.environ.get("AWS_REGION")
-
-    def set(self, value: str) -> None:
-        os.environ["AWS_REGION"] = value
-        os.environ["AWS_DEFAULT_REGION"] = value
-
-    def unset(self) -> None:
-        os.environ.pop("AWS_REGION", None)
-        os.environ.pop("AWS_DEFAULT_REGION", None)
-
-    @property
-    def value_completer(self) -> Completer:
-        return AwsRegionCompleter()
-
-
 # ─── Recipe entry point ──────────────────────────────────────────────────────
 
 def register() -> None:
@@ -231,10 +200,13 @@ def register() -> None:
         delegate=AwsCompleter(),
     )
 
-    var_registry.register(_AwsRegionVar())
     var_registry.register(EnvVar(
-        name="aws_profile",
-        env_var="AWS_PROFILE",
+        "aws_region", keys=["AWS_REGION", "AWS_DEFAULT_REGION"],
+        completer=AwsRegionCompleter(),
+        description="AWS region — sets AWS_REGION + AWS_DEFAULT_REGION",
+    ))
+    var_registry.register(EnvVar(
+        "aws_profile", keys="AWS_PROFILE",
         completer=AwsProfileCompleter(),
         description="AWS named profile",
     ))

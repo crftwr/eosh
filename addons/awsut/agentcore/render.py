@@ -49,7 +49,7 @@ import botocore
 import botocore.session
 
 from eosh.completion_cache import aws_env_key
-from eosh.variables import Var
+from eosh.variables import Setting
 from .. import cli as awsut
 from ..common import (  # noqa: F401  (re-exported for this package)
     DOT_INTERVAL,
@@ -92,7 +92,7 @@ data_endpoint: str = ""
 # ─── AWS plumbing ───────────────────────────────────────────────────────────
 
 def control_client(region_name: str | None = None):
-    """The AgentCore control-plane client, honouring the endpoint Var."""
+    """The AgentCore control-plane client, honouring the endpoint setting."""
     if region_name is None:
         region_name = awsut._get_region()
     return boto3.Session().client(
@@ -103,7 +103,7 @@ def control_client(region_name: str | None = None):
 
 
 def data_client(region_name: str | None = None):
-    """The AgentCore data-plane client, honouring the endpoint Var.
+    """The AgentCore data-plane client, honouring the endpoint setting.
 
     A separate service from :func:`control_client`, not a separate endpoint of
     one: the two have different operation sets, so a leaf that lists a memory
@@ -303,9 +303,9 @@ def print_reasons(rows, name_of) -> None:
             print(row[REASON])
 
 
-# ─── module-level Python-backed Vars ────────────────────────────────────────
+# ─── module-level settings (`var NAME=…`) ───────────────────────────────────
 
-class ControlEndpointVar(Var):
+class ControlEndpointVar(Setting):
     name = "agentcore_control_endpoint"
     description = (f"{CONTROL_SERVICE} endpoint URL (blank = AWS default)")
 
@@ -321,7 +321,7 @@ class ControlEndpointVar(Var):
         control_endpoint = ""
 
 
-class DataEndpointVar(Var):
+class DataEndpointVar(Setting):
     name = "agentcore_data_endpoint"
     description = (f"{DATA_SERVICE} endpoint URL (blank = AWS default)")
 

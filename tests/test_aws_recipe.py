@@ -15,7 +15,6 @@ from eosh.recipes.aws import (
     AwsProfileCompleter,
     AwsRegionCompleter,
     AWS_REGIONS,
-    _AwsRegionVar,
 )
 from eosh.variables import registry as var_registry
 
@@ -166,11 +165,12 @@ def test_register_installs_delegate_completer(_clean_aws_registration):
 
 
 def test_register_preserves_aws_region_var(_clean_aws_registration):
+    from eosh.variables import EnvVar
     aws_recipe.register()
     region = var_registry.get("aws_region")
-    assert region is not None
-    assert isinstance(region, _AwsRegionVar)
-    assert region.env_keys == ["AWS_REGION", "AWS_DEFAULT_REGION"]
+    assert isinstance(region, EnvVar)
+    assert region.keys == ("AWS_REGION", "AWS_DEFAULT_REGION")
+    assert isinstance(region.value_completer, AwsRegionCompleter)
 
 
 def test_register_preserves_aws_profile_var(_clean_aws_registration):
@@ -182,27 +182,23 @@ def test_register_preserves_aws_profile_var(_clean_aws_registration):
 
 
 # ---------------------------------------------------------------------------
-# AwsRegionVar — set/unset/value_completer
+# aws_region — the shell writes both keys; value completion
 # ---------------------------------------------------------------------------
 
-def test_aws_region_var_sets_both_env_keys(monkeypatch):
+def test_aws_region_assignment_sets_and_unsets_both_keys(_clean_aws_registration, monkeypatch):
+    """The shell writes every key of the EnvVar, through the context manager."""
+    import os
+    from eosh.shell import Shell
+
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
-    v = _AwsRegionVar()
-    v.set("us-east-1")
-    import os
-    assert os.environ["AWS_REGION"] == "us-east-1"
-    assert os.environ["AWS_DEFAULT_REGION"] == "us-east-1"
-
-
-def test_aws_region_var_unset_clears_both(monkeypatch):
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    v = _AwsRegionVar()
-    v.unset()
-    import os
-    assert "AWS_REGION" not in os.environ
-    assert "AWS_DEFAULT_REGION" not in os.environ
+    aws_recipe.register()
+    sh = Shell()
+    sh._set_variable("aws_region", "us-east-1")
+    assert os.environ["AWS_REGION"] == os.environ["AWS_DEFAULT_REGION"] == "us-east-1"
+    assert sh.context_manager.current().variables["AWS_DEFAULT_REGION"] == "us-east-1"
+    sh._unset_variable("aws_region")
+    assert "AWS_REGION" not in os.environ and "AWS_DEFAULT_REGION" not in os.environ
 
 
 def test_aws_region_completer_returns_descriptions():

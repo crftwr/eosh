@@ -34,9 +34,9 @@ from a shell that printed colon-separated one-liners; they render through those
 helpers now, so ``awsut ec2 list`` and ``awsut sagemaker studio apps`` line up
 column for column.
 
-Profile and region switching live in the ``aws`` recipe as ``Var`` entries
+Profile and region switching live in the ``aws`` recipe as ``EnvVar`` objects
 (``var aws_profile=...``, ``var aws_region=...``).  The SageMaker endpoint
-and SageMaker service name are also exposed as ``Var`` entries — set them
+and SageMaker service name are ``Setting`` objects — set them
 at the prompt with ``var sagemaker_endpoint=...`` /
 ``var sagemaker_service_name=...`` (or ``var sagemaker_endpoint=`` to
 unset), as are the AgentCore endpoints — one per plane, since a memory is
@@ -73,7 +73,7 @@ from eosh.commands import registry as command_registry, arg
 from eosh.completion import Completer, Completion, CompletionContext, FileCompleter
 from eosh.completion_cache import aws_env_key, get_or_fetch
 from eosh import passthrough_input_block
-from eosh.variables import Var, registry as var_registry
+from eosh.variables import Setting, registry as var_registry
 from .common import (
     RED,
     RESET,
@@ -885,9 +885,9 @@ class _CfStackNameCompleter(Completer):
                 for s in stacks if s["StackName"].startswith(ctx.prefix)]
 
 
-# ─── module-level Python-backed Vars ────────────────────────────────────────
+# ─── module-level settings (`var NAME=…`) ───────────────────────────────────
 
-class _SagemakerEndpointVar(Var):
+class _SagemakerEndpointVar(Setting):
     name = "sagemaker_endpoint"
     description = "SageMaker endpoint URL (blank = AWS default)"
 
@@ -903,7 +903,7 @@ class _SagemakerEndpointVar(Var):
         sagemaker_endpoint = ""
 
 
-class _SagemakerServiceNameVar(Var):
+class _SagemakerServiceNameVar(Setting):
     name = "sagemaker_service_name"
     description = "boto3 service name for SageMaker client (default: sagemaker)"
 

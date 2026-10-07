@@ -46,7 +46,7 @@ from .completion import (
     HistoryCompleter,
     get_argcomplete_fallback,
 )
-from .variables import registry as var_registry, VarCompleter
+from .variables import EnvVar, Setting, registry as var_registry, VarCompleter
 from .context import ContextManager, ContextState
 from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor
 from .parsing import expand_vars, split_for_completion, tokenize
@@ -2330,35 +2330,34 @@ class Shell:
               file=sys.stderr)
         return 2
 
-    def _unset_variable(self, key: str) -> None:
-        """Remove a variable via var_registry, or fall back to plain os.environ / context removal."""
-        py_var = var_registry.get(key)
-        if py_var is not None:
-            py_var.unset()
-            for env_key in py_var.env_keys:
-                self.context_manager.unset_variable(env_key)
-        else:
-            self.context_manager.unset_variable(key)
+    def _env_keys_for(self, key: str) -> tuple[str, ...] | None:
+        """The ``os.environ`` keys an assignment to *key* writes — an
+        :class:`EnvVar`'s keys, *key* itself for a plain name — or ``None``
+        for a :class:`Setting`, which writes no environment at all."""
+        var = var_registry.get(key)
+        if isinstance(var, Setting):
+            return None
+        return var.keys if isinstance(var, EnvVar) else (key,)
 
     def _set_variable(self, key: str, value: str) -> None:
-        """Dispatch a KEY=VALUE assignment through var_registry, or fall back to plain os.environ.
+        """``KEY=VALUE`` — every environment write goes through the context
+        manager (so it is saved and restored per context); a Setting sets
+        itself."""
+        keys = self._env_keys_for(key)
+        if keys is None:
+            var_registry.get(key).set(value)
+            return
+        for env_key in keys:
+            self.context_manager.set_variable(env_key, value)
 
-        When a registered Var handles the key its env_keys are registered with
-        the context manager first (so original values are captured as the
-        save/restore backup), then Var.set() is called to apply the change.
-        """
-        py_var = var_registry.get(key)
-        if py_var is not None:
-            for env_key in py_var.env_keys:
-                self.context_manager.set_variable(env_key, os.environ.get(env_key, value))
-            py_var.set(value)
-            # Sync context's stored value to what set() actually wrote.
-            ctx = self.context_manager.current()
-            if ctx is not None:
-                for env_key in py_var.env_keys:
-                    ctx.variables[env_key] = os.environ.get(env_key, value)
-        else:
-            self.context_manager.set_variable(key, value)
+    def _unset_variable(self, key: str) -> None:
+        """``KEY=`` — the mirror of :meth:`_set_variable`."""
+        keys = self._env_keys_for(key)
+        if keys is None:
+            var_registry.get(key).unset()
+            return
+        for env_key in keys:
+            self.context_manager.unset_variable(env_key)
 
     def _run_bash_script(self, body: str) -> tuple[int, str | None, dict[str, str]]:
         """Run *body* in a child bash and read back its final cwd + environment.

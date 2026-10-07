@@ -185,11 +185,11 @@ command_registry.alias("la", "ls -la")
 
 # ── Python-backed variables ───────────────────────────────────────────────────
 #
-# Register Vars to give `var NAME=VALUE` custom set logic and TAB completion
-# for the value side.  Two flavours:
-#
-#   * EnvVar         — 1-to-1 passthrough to a single os.environ key.
-#   * Var subclass   — full control: write multiple env keys, validate, etc.
+# Register variables to give `var NAME=VALUE` a logical name, a description
+# and TAB completion for the value side.  An EnvVar names one or more
+# os.environ keys; the shell writes them all, and saves/restores them per
+# context like any variable set with `var`.  (For a process-global value with
+# no env key, subclass eosh.variables.Setting instead.)
 #
 # At the prompt:
 #
@@ -197,45 +197,20 @@ command_registry.alias("la", "ls -la")
 #     eosh> var editor=vim
 #     eosh> var http_proxy=http://...  → sets HTTP_PROXY *and* HTTPS_PROXY
 
-import os
-from eosh.variables import registry as var_registry, EnvVar, Var
+from eosh.variables import registry as var_registry, EnvVar
 
-# Simple case: one logical name → one env var, with completion.
+# One logical name → one env var, with completion.
 var_registry.register(EnvVar(
-    name="editor",
-    env_var="EDITOR",
+    "editor", keys="EDITOR",
     completer=ChoiceCompleter(["vim", "emacs", "nano", "code"]),
     description="Default text editor",
 ))
 
-
-# Custom case: one logical name → two env keys.  Subclass Var when EnvVar
-# isn't enough — e.g. when set() needs to write multiple env keys, validate
-# the input, or trigger a side effect.
-class _HttpProxyVar(Var):
-    """Sets HTTP_PROXY and HTTPS_PROXY together from one logical name."""
-
-    @property
-    def name(self) -> str:
-        return "http_proxy"
-
-    @property
-    def description(self) -> str:
-        return "HTTP/HTTPS proxy — sets HTTP_PROXY + HTTPS_PROXY"
-
-    @property
-    def env_keys(self) -> list[str]:
-        # Listed env keys are saved/restored on context switch.
-        return ["HTTP_PROXY", "HTTPS_PROXY"]
-
-    def get(self) -> str | None:
-        return os.environ.get("HTTP_PROXY")
-
-    def set(self, value: str) -> None:
-        os.environ["HTTP_PROXY"] = value
-        os.environ["HTTPS_PROXY"] = value
-
-var_registry.register(_HttpProxyVar())
+# One logical name → two env keys.
+var_registry.register(EnvVar(
+    "http_proxy", keys=["HTTP_PROXY", "HTTPS_PROXY"],
+    description="HTTP/HTTPS proxy — sets HTTP_PROXY + HTTPS_PROXY",
+))
 
 
 # ── Desktop notifications for long-running commands ───────────────────────────
@@ -250,7 +225,7 @@ var_registry.register(_HttpProxyVar())
 #     eosh> var notify=off              → disable for this session
 #     eosh> var notify_threshold=30     → only notify for commands ≥ 30s
 #
-# Both variables are process-global: unlike EnvVars above, they are not
+# Both are Settings — process-global: unlike the EnvVars above, they are not
 # saved/restored on context switch.
 
 from eosh import notify
@@ -281,6 +256,7 @@ notify.SKIP_COMMANDS.update({"psql", "mysql", "sqlite3", "ipython"})
 
 # ── Customize the prompt ──────────────────────────────────────────────────────
 
+import os
 from datetime import datetime
 from eosh import set_prompt
 

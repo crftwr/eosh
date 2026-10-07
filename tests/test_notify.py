@@ -303,10 +303,11 @@ class TestVars:
         var.unset()
         assert notify.get_threshold() == notify.DEFAULT_THRESHOLD
 
-    def test_neither_var_touches_the_environment(self):
-        # No env_keys → process-global, not saved/restored on context switch.
-        assert self._var("notify").env_keys == []
-        assert self._var("notify_threshold").env_keys == []
+    def test_both_are_settings_not_environment(self):
+        # Process-global, not saved/restored on context switch.
+        from eosh.variables import Setting
+        assert isinstance(self._var("notify"), Setting)
+        assert isinstance(self._var("notify_threshold"), Setting)
 
     def test_values_are_completable(self):
         assert self._var("notify").value_completer is not None
