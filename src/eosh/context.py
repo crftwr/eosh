@@ -38,6 +38,9 @@ class Context:
     cwd: str = field(default_factory=os.getcwd)
     process_slot: Any = field(default=None, repr=False)  # ProcessSlot | PythonCommandSlot
     history: list[str] = field(default_factory=list, repr=False)
+    # PyVar values (name → get() result, None = unset), saved when leaving
+    # the context and restored when coming back — like cwd.
+    py_values: dict[str, str | None] = field(default_factory=dict, repr=False)
 
     @property
     def state(self) -> ContextState:
@@ -78,11 +81,13 @@ class ContextManager:
         """Create *name* inheriting the current context's variables and Up/Down
         history (it starts in the current cwd), without switching to it."""
         parent = self.current()
-        return self.create(
+        ctx = self.create(
             name,
             variables=dict(parent.variables) if parent else {},
             history=list(parent.history) if parent else [],
         )
+        ctx.py_values = _snapshot_py_vars()
+        return ctx
 
     def _activate(self, name: str) -> None:
         self.current_name = name
@@ -162,10 +167,12 @@ class ContextManager:
         ctx = self.contexts.get(self.current_name)
         if ctx:
             ctx.cwd = os.getcwd()
+            ctx.py_values = _snapshot_py_vars()
 
     def _restore(self, ctx: Context) -> None:
         os.chdir(ctx.cwd)
         self._apply_env(ctx)
+        _restore_py_vars(ctx.py_values)
 
     def _apply_env(self, ctx: Context) -> None:
         self._env_backup = {}
@@ -180,3 +187,37 @@ class ContextManager:
             else:
                 os.environ[key] = original
         self._env_backup = {}
+
+
+# ── PyVar values: per-context, kept on the Python side ──────────────────────
+#
+# Looked up in the variable registry at switch time (imported lazily —
+# variables imports completion, which imports this module).
+
+
+def _py_vars():
+    from .variables import PyVar, registry
+    return [v for v in registry.all() if isinstance(v, PyVar)]
+
+
+def _snapshot_py_vars() -> dict[str, str | None]:
+    return {v.name: v.get() for v in _py_vars()}
+
+
+def _restore_py_vars(values: dict[str, str | None]) -> None:
+    """Put each PyVar back to *values*.  One the context never saw (it was
+    registered later) keeps its current value.  A failing setter is
+    reported, not allowed to break the switch."""
+    import sys
+
+    for v in _py_vars():
+        if v.name not in values:
+            continue
+        try:
+            value = values[v.name]
+            if value is None:
+                v.unset()
+            else:
+                v.set(value)
+        except Exception as e:
+            print(f"eosh: {v.name}: could not restore ({e})", file=sys.stderr)

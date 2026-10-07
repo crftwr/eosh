@@ -167,6 +167,8 @@ def hello(name):
 Methods:
 - `command(name, *, help=None, params=None, delegate=None) -> Command` — register a root. Two forms, both returning the `Command`. Use a **plain call** for a group or an external recipe (`git = registry.command("git", ...)`), and a **decorator** to attach a handler (`@registry.command("hello", ...)` or `name="hello"`). A name is always required. `params=[arg(...)]` declares positionals and flags. argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`, `node.takes_value(flag)`); there is no pre-built completer dict. `delegate=Completer` is a `Command` attribute that answers every completion slot, for a tool with its own completion protocol (`aws_completer`, cobra). It can't be combined with `params`.
 - `node.command(name, ...)` — the same two forms one level down (see [doc/subcommands.md](doc/subcommands.md)). A node's flags are **its own** and are never inherited from ancestors; a flag shared by several commands is one `arg(...)` listed on each. A node never has both a handler and children: either order raises `ValueError`. A flat command is a root with no children, so completion, the status bar and dispatch all follow the same per-node rules, through `shell._resolve_slot`.
+- `sync=True` (on `registry.command`) runs the command on the main thread instead of a backgroundable `PythonCommandSlot` — for commands that finish at once or change shell state; every built-in sets it.
+- **A handler's return value is its exit status** — an `int` is the status, anything else (usually `None`) is 0, so `my_cmd && next` sees a failure the handler reports. A `SystemExit` is only a status too (it never ends the shell; `exit` sets `Shell._exit_requested` instead), `KeyboardInterrupt` is 130, an exception is 1 with the traceback on stderr, and an argparse usage error is 2. Every execution path — foreground slot, pipeline stage, `@bg` body, main-thread run — goes through one function, `shell.run_handler`.
 - `mark_builtins()` — snapshot current commands as builtins (not removed on `reload`)
 - `clear_user_commands()` — remove non-builtin commands and aliases
 
@@ -177,48 +179,38 @@ Dispatch order:
 
 ### variables.py — Variable Registry
 
-Python-backed shell variables that mirror the `CommandRegistry` pattern. Users subclass `Var` and register instances with `var_registry`; the built-in `var` command dispatches through the registry instead of writing directly to `os.environ`.
+Python-backed shell variables that mirror the `CommandRegistry` pattern: register one with `var_registry` and `var NAME=VALUE`, bare `NAME=VALUE` and `$NAME` all go through it. There are exactly three kinds — by where the value lives and whether it follows the context — and the registry refuses anything else (`TypeError`):
 
-#### `Var` ABC
-
-```python
-class Var(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Logical name as seen in the shell (e.g. 'aws_region')."""
-        ...
-
-    @abstractmethod
-    def get(self) -> str | None:
-        """Return current display value (shown by 'var' with no args)."""
-        ...
-
-    @abstractmethod
-    def set(self, value: str) -> None:
-        """Called when the user runs 'var aws_region=us-east-1'."""
-        ...
-
-    @property
-    def value_completer(self) -> Completer | None:
-        """Optional completer for the value side of KEY=VALUE."""
-        return None
-
-    @property
-    def description(self) -> str:
-        return ""
-```
-
-#### Built-in Convenience Subclass
+| Kind | Value lives in | Per context | Used by |
+|---|---|---|---|
+| `EnvVar` | `os.environ` (child processes see it) | yes | `aws_region`, `aws_profile` |
+| `PyVar` | Python (module state; children don't see it) | yes | awsut's endpoint URLs |
+| `GlobalVar` | Python | no — process-global | `notify`, `notify_threshold` |
 
 ```python
-class EnvVar(Var):
-    """1-to-1 passthrough to a single os.environ key, with an optional completer."""
-    def __init__(self, name: str, env_var: str | None = None,
+class Var(ABC):                      # what `var` lists, reads and completes
+    name: str                        # logical name ('aws_region')
+    def get(self) -> str | None: ...
+    value_completer: Completer | None = None
+    description: str = ""
+
+class EnvVar(Var):                   # declarative: a name over os.environ keys
+    def __init__(self, name: str, keys: str | Sequence[str] | None = None,
                  completer: Completer | None = None, description: str = ""): ...
+    keys: tuple[str, ...]            # defaults to (name,); get() reads keys[0]
+
+class PyVar(Var):                    # per-context value on the Python side
+    def set(self, value: str) -> None: ...   # abstract
+    def unset(self) -> None: ...             # default: set("")
+
+class GlobalVar(Var):                # process-global value on the Python side
+    def set(self, value: str) -> None: ...   # (same surface as PyVar)
+    def unset(self) -> None: ...
 ```
 
-When a variable needs to write multiple env keys (e.g. `AWS_REGION` + `AWS_DEFAULT_REGION`), subclass `Var` directly and implement `set()` and `env_keys` accordingly.
+- **`EnvVar` has no writer of its own.** The shell does every write: `Shell._set_variable` sets each of `keys` through `ContextManager.set_variable`, so they are saved and restored per context like any variable set with `var` — one logical name can drive several keys (`aws_region` → `AWS_REGION` + `AWS_DEFAULT_REGION`).
+- **`PyVar`** keeps its value on the Python side — out of `os.environ`, so child processes never see it — yet follows the context like an `EnvVar`: `ContextManager` saves `get()` into `Context.py_values` when a context is left and calls `set()` (or `unset()` for `None`) when it is entered again, the way it handles cwd; `context new` / Ctrl+N start from the current value. The shell's `var NAME=VALUE` just calls `set()`. awsut's endpoint URLs are PyVars, so a prod and a staging context can point at different endpoints.
+- **`GlobalVar`** has the same surface but ignores context switches — for things that belong to the person at the keyboard, not to the environment a context carries (`notify`, `notify_threshold`).
 
 #### Registry
 
@@ -228,97 +220,65 @@ The module-level singleton is named `registry` inside `variables.py` (mirroring 
 from eosh.variables import registry as var_registry
 # or, equivalently, `from eosh import var_registry`
 
-# Methods:
-var_registry.register(var: Var) -> None
+var_registry.register(var: EnvVar | PyVar | GlobalVar) -> None
 var_registry.get(name: str) -> Var | None
 var_registry.all() -> list[Var]
 ```
 
 #### `var` Command Dispatch
 
-When the user runs `var NAME=VALUE`, the `var` built-in checks `var_registry` first. If a `Var` is found for `NAME`, its `set()` method is called; otherwise the value is written directly to `os.environ` (legacy behaviour). Reading (`var NAME` with no `=`) calls `Var.get()`.
-
 ```
 var                          → list all env vars + registered Vars with their get() values
-var aws_region               → print current value via AwsRegionVar.get()
-var aws_region=us-east-1     → dispatch to AwsRegionVar.set("us-east-1")
-var AWS_SESSION_TOKEN=abc    → plain os.environ set (no Var registered — fallback)
+var aws_region               → print current value via get()
+var aws_region=us-east-1     → EnvVar: the shell sets AWS_REGION and AWS_DEFAULT_REGION
+var notify=off               → GlobalVar: notify's set("off")
+var AWS_SESSION_TOKEN=abc    → no Var registered: that one key, through the context manager
 ```
 
 **`$NAME` / `${NAME}` expansion is symmetric with assignment.** `parsing.expand_vars` checks `var_registry` first, then `os.environ`, so a Python-backed variable can be read on the command line just like an env var:
 
 ```
 var aws_region=us-west-2
-aws ec2 describe-instances --region $aws_region   → expands via AwsRegionVar.get()
-echo $AWS_REGION                                   → also us-west-2 (set() wrote both keys)
+aws ec2 describe-instances --region $aws_region   → expands via get()
+echo $AWS_REGION                                   → also us-west-2 (both keys were written)
 ```
 
-The same precedence applies to bare `NAME=VALUE` assignment (e.g. `aws_region=ap-south-1`). Net effect: Python-backed vars and OS env vars are interchangeable on both the read and write sides of the shell surface.
+The same precedence applies to bare `NAME=VALUE` assignment (e.g. `aws_region=ap-south-1`).
 
 #### `VarCompleter` — `=`-Aware Completion for `var`
 
 Registered as the positional completer on the `var` command. It splits the current token at `=` to handle both phases:
 
-- Typing `var aws_<TAB>` → list registered `Var` names (with `=` appended)
-- Typing `var aws_region=<TAB>` → delegate to `AwsRegionVar.value_completer`
+- Typing `var aws_<TAB>` → list registered names (with `=` appended)
+- Typing `var aws_region=<TAB>` → delegate to the variable's `value_completer`
 - Typing `var aws_region=us-<TAB>` → narrow the value list by prefix
 
 The split is local to `VarCompleter`; the global tokenizer is not changed.
 
-#### Example: Custom `Var` Subclass
-
-```python
-class AwsRegionVar(Var):
-    name = "aws_region"
-    description = "AWS region — sets AWS_REGION + AWS_DEFAULT_REGION"
-
-    def get(self) -> str | None:
-        return os.environ.get("AWS_REGION")
-
-    def set(self, value: str) -> None:
-        os.environ["AWS_REGION"] = value
-        os.environ["AWS_DEFAULT_REGION"] = value
-
-    @property
-    def value_completer(self) -> Completer:
-        return ChoiceCompleter(["us-east-1", "us-west-2", "eu-west-1", "ap-northeast-1"])
-
-var_registry.register(AwsRegionVar())
-```
-
-#### Registering Vars from `~/.eosh/config.py`
-
-`Var` subclasses are plain Python — register them directly from the user
-config (or any module the config imports). `EnvVar(name, env_var,
-completer=...)` is the convenience subclass for a single-key passthrough;
-when a logical name needs to drive multiple `os.environ` keys, subclass
-`Var` directly:
+#### Registering variables from `~/.eosh/config.py`
 
 ```python
 # ~/.eosh/config.py
+from eosh import EnvVar, GlobalVar, var_registry
 from eosh.completion import CallbackCompleter, ChoiceCompleter
-from eosh import Var, EnvVar, var_registry
 
-class AwsRegionVar(Var):
-    name = "aws_region"
-    description = "AWS region — sets AWS_REGION + AWS_DEFAULT_REGION"
+var_registry.register(EnvVar(
+    "aws_region", keys=["AWS_REGION", "AWS_DEFAULT_REGION"],
+    completer=ChoiceCompleter(["us-east-1", "us-west-2", "eu-west-1"]),
+    description="AWS region — sets AWS_REGION + AWS_DEFAULT_REGION",
+))
+var_registry.register(EnvVar("aws_profile", keys="AWS_PROFILE",
+                             completer=CallbackCompleter(list_profiles)))
 
+class Verbosity(GlobalVar):          # a process-global knob, no env key
+    name = "verbosity"
+    level = "normal"
     def get(self):
-        return os.environ.get("AWS_REGION")
-
+        return self.level
     def set(self, value):
-        os.environ["AWS_REGION"] = value
-        os.environ["AWS_DEFAULT_REGION"] = value
+        self.level = value or "normal"
 
-    @property
-    def value_completer(self):
-        return ChoiceCompleter(["us-east-1", "us-west-2", "eu-west-1"])
-
-var_registry.register(AwsRegionVar())
-var_registry.register(
-    EnvVar("aws_profile", "AWS_PROFILE",
-           completer=CallbackCompleter(list_profiles))
-)
+var_registry.register(Verbosity())
 ```
 
 ### completion.py — Completion Engine
@@ -632,7 +592,7 @@ No alternate screen; all rendering anchored with DECSC/DECRC (`ESC 7` / `ESC 8`)
 
 ### Spawning interactive subprocesses from Python commands
 
-A Python `@registry.command` runs in a background thread inside a `PythonCommandSlot`. While it runs, the main thread holds stdin in raw mode and forwards bytes to the slot via `write_stdin`. If the command body calls `subprocess.run([...])` directly, the child inherits the real terminal stdin — and now the main thread *and* the subprocess are both calling `read()` on fd 0. Whoever wins each keystroke gets it; the other sees nothing. Symptoms: dropped keys, garbled input, Ctrl+] sometimes reaches the subprocess.
+A Python `@registry.command` runs in a background thread inside a `PythonCommandSlot` — unless it was registered with `sync=True`, which the built-ins (`cd`, `var`, `context`, `exit`, `source-bash`, `alias`, `help`, …) are: they finish at once or change the shell's own state, so they run on the main thread (no slot, no output proxy, not backgroundable with Ctrl+]), as every Python command does on Windows. While a slot runs, the main thread holds stdin in raw mode and forwards bytes to the slot via `write_stdin`. If the command body calls `subprocess.run([...])` directly, the child inherits the real terminal stdin — and now the main thread *and* the subprocess are both calling `read()` on fd 0. Whoever wins each keystroke gets it; the other sees nothing. Symptoms: dropped keys, garbled input, Ctrl+] sometimes reaches the subprocess.
 
 External commands typed at the prompt (e.g. plain `aws ssm start-session`) don't have this problem because they're routed through `ProcessSlot`, which gives them a dedicated PTY pair. The main thread is the *only* reader of real stdin; it copies bytes into the PTY master.
 
@@ -650,11 +610,9 @@ def my_ssm():
 
 Outside a Python command thread (e.g. inside a synchronous handler that doesn't run on a slot), `passthrough_run` falls through to plain `subprocess.run`.
 
-**Reading a line of input from the user.** `input()` from a Python command body has the same race as `subprocess.run` — the main thread is also reading stdin in raw mode, so most keystrokes are lost and Enter arrives as `\r` with no echo. Use `eosh.passthrough_input(prompt)` instead: the slot signals the main loop to restore cooked terminal mode and stop reading stdin for the duration of the call, then takes it back. Built-in commands like `exit`'s "Exit anyway? [y/N]" confirmation use this. Outside a Python command thread, `passthrough_input` falls through to plain `input()`.
+**Reading input from the user.** `input()` from a Python command body has the same race as `subprocess.run` — the main thread is also reading stdin in raw mode, so most keystrokes are lost and Enter arrives as `\r` with no echo. Use `eosh.passthrough_input(prompt)` for one line (the "Delete? [y/N]" answers, `exit`'s confirmation) and `eosh.passthrough_input_block(prompt)` for a pasted block — lines until a blank line or Ctrl+D, joined by `\n` (`awsut credentials set` takes `export AWS_ACCESS_KEY_ID=…` lines this way).
 
-**Reading a pasted block.** `eosh.passthrough_input_block(prompt)` reads lines until a blank line or Ctrl+D and returns them joined by `\n`. `awsut credentials set` uses it to take `export AWS_ACCESS_KEY_ID=…` lines pasted from a console.
-
-It does *not* go through cooked mode, and that is the whole point. Two things rule that out: looping over `passthrough_input` loses the tail of a paste (between calls the main loop takes stdin back into raw mode, so bytes still in the tty buffer are read as keystrokes), and the kernel's canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. So `_run_input_block` reads off the raw key stream the forwarding loop already feeds (`slot.poll_key`) and does the echo, CRLF folding, backspace, and blank-line detection itself. `passthrough_input` keeps the cooked-mode path: short answers never approach `MAX_CANON`, and the kernel's line editing is free there.
+Both read the **raw key stream**: on a slot, the keys the forwarding loop already feeds it (`slot.poll_key`); on the main thread (a `sync` command), the terminal itself in raw-input / cooked-output mode. `shell._read_typed` does the echo, Backspace / Ctrl+U / Ctrl+W editing, CRLF folding and blank-line detection for both. Ctrl+C raises `KeyboardInterrupt` in the command (the forwarding loop sees `slot._reading_input` and hands Ctrl+C to the reader instead of interrupting), and Ctrl+D on an empty line `EOFError`. Nothing goes through cooked mode, whose canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. A single-line read drops keys typed before the question was asked, so a stray `y` can't answer a delete prompt; a block keeps a paste that landed before its first poll. Without a terminal (and on Windows) both fall back to `input()`.
 
 **When you don't need it.** Three cases that look like subprocesses but don't race for stdin:
 
@@ -694,21 +652,20 @@ the terminal.
    included) and reports it with the last stage's exit code — unless
    `self._backgrounded` was set, which `Ctrl+]` and `@bg` do because they
    return long before the work finishes.
-2. `Shell._notify_slot_done`, armed on the slot via
-   `_notify_when_backgrounded`, reports a backgrounded slot only when the
-   context that owns it (looked up at exit time) is **not** the current one —
-   the one case where the user is provably looking elsewhere. The message
-   carries the context name: `[bg-1] make -j8`. A resumed slot that finishes
-   on screen goes through `_notify_resumed_done` without the prefix.
+2. `Shell._slot_finished` — the exit handler every slot is **constructed
+   with** — reports a slot that was parked on a context (`Shell._park`, the
+   one place Ctrl+] and `@bg` hand a slot over; it sets `slot.parked` and
+   `self._backgrounded`). The message carries the owning context's name
+   (looked up at exit time) when that context isn't the current one:
+   `[bg-1] make -j8`. A slot that was never parked ran in the foreground
+   and stays quiet — `_execute` timed it.
 
 `ExitCallbackMixin` (in `process.py`) is the slot-side hook: `mark_started()`
-/ `elapsed()` for the duration and a one-shot `arm_exit_callback()`. Because
-the shell can only arm a slot *after* deciding it went to the background, by
-which time the work may be over, `_fire_on_exit()` records end-of-work even
-with nothing armed and arming later fires immediately — exactly one path
-delivers. It's a mixin rather than a base class because `PipelineSlot`
-deliberately bypasses its parent's `__init__`; every slot type calls
-`_init_exit_callback()` from its own constructor.
+/ `elapsed()` for the duration, the `parked` flag, and `on_exit` — passed to
+the constructor and called once at the end of the work. Wired before anything
+runs, it can't race the slot's own end. It's a mixin rather than a base class
+because `PipelineSlot` deliberately bypasses its parent's `__init__`; every
+slot type calls `_init_exit_callback(on_exit)` from its own constructor.
 
 `SKIP_COMMANDS` suppresses commands whose long runtime says nothing about work
 finishing (editors, pagers, `top`, `ssh`, `tmux`, interactive sub-shells,
@@ -722,7 +679,7 @@ var notify=off                 # master switch (on/true/yes/1 | off/false/no/0)
 var notify_threshold=30        # seconds; unset restores DEFAULT_THRESHOLD
 ```
 
-Both declare no `env_keys`, so they are process-global rather than
+Both are `GlobalVar`s, so they are process-global rather than
 per-context — "tell me when things finish" belongs to the person at the
 keyboard, not to the AWS account they're pointing at.
 `notify.set_notifier(func)` replaces the backend entirely (Slack, `ntfy.sh`,
@@ -1112,7 +1069,7 @@ eosh/
 - Glob expansion `*` `?` `**` ✅ — `expand_globs` with `recursive=True` for `**`
 - Stderr redirect `2>` `2>>` `2>&1` ✅
 - Backslash line continuation `\` ✅ — handled in `shell.py` before execution; continuation lines collected with `"> "` prompt; full joined command stored as one history entry
-- Per-command env prefix `FOO=bar cmd args` ✅ — leading `KEY=VALUE` tokens apply only to that command's environment (`Shell._split_env_prefix`). External children get an explicit `env=`; Python `@registry.command`s get a temporary `os.environ` overlay via `Shell._temp_environ` (see the in-process caveat in that method's docstring). A line that is *only* assignments is still a permanent set; `make FOO=bar` keeps `FOO=bar` as an argument (scan stops at the command name).
+- Per-command env prefix `FOO=bar cmd args` ✅ — leading `KEY=VALUE` tokens apply only to that command's environment (`Shell._split_env_prefix`). External children get an explicit `env=`. A Python `@registry.command` **refuses** a prefix (status 2, `Shell._env_prefix_refused`): it runs in the shell's own process, whose only environment is the `os.environ` every thread shares, so a temporary change would leak into sibling pipeline stages and outlive a backgrounded run — set the variable with `var` instead. A line that is *only* assignments is still a permanent set; `make FOO=bar` keeps `FOO=bar` as an argument (scan stops at the command name).
 - Command substitution `$(…)` ❌ — not yet implemented at the eosh prompt;
   `source-bash` runs a body containing it in a real bash and imports the
   resulting variables, which covers the pasted-snippet case
@@ -1192,7 +1149,7 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 7. **System command fallback** — anything not registered as a Python command is passed to the system shell via PTY, so eosh is a drop-in replacement for daily use.
 
-8. **Python-backed variables mirror the command registry pattern** — `Var` subclasses handle `get`/`set` logic; a single logical name (e.g. `aws_region`) can drive multiple `os.environ` keys or arbitrary side effects. The `var` command and bare `NAME=VALUE` assignment dispatch through `VarRegistry` before falling back to plain env writes, and `$NAME` / `${NAME}` expansion does the same lookup in reverse — so registered Vars are read- and write-symmetric with `os.environ` and a Python-backed variable behaves transparently like an OS variable on the command line. `VarCompleter` handles `=`-split completion locally without touching the global tokenizer.
+8. **Python-backed variables mirror the command registry pattern, with one writer for the environment** — an `EnvVar` only *declares* which `os.environ` keys a logical name stands for (e.g. `aws_region` → `AWS_REGION` + `AWS_DEFAULT_REGION`); the shell writes them, always through the `ContextManager`, so per-context save/restore can never be bypassed. A value that must stay out of child processes is a `PyVar` (still per-context — the context manager saves and restores it like cwd) or, if it belongs to the whole shell, a `GlobalVar`. The `var` command and bare `NAME=VALUE` assignment dispatch through `VarRegistry` before falling back to plain env writes, and `$NAME` / `${NAME}` expansion does the same lookup in reverse — so registered Vars are read- and write-symmetric with `os.environ` and a Python-backed variable behaves transparently like an OS variable on the command line. `VarCompleter` handles `=`-split completion locally without touching the global tokenizer.
 
 9. **One reader for real stdin** — when a Python command spawns an interactive subprocess, the child must not inherit fd 0 directly. The main forwarding thread is already reading stdin in raw mode; a second reader (the subprocess) splits keystrokes unpredictably between them. `passthrough_run` enforces the rule by allocating a slot-owned PTY for the child, so the chain stays `stdin → main → master → subprocess`. This is the same architecture `ProcessSlot` uses for external commands; `passthrough_run` extends it to subprocesses launched from inside a `PythonCommandSlot`.
 
@@ -1200,4 +1157,4 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 11. **TTL cache + command-boundary invalidation for completer fetches** — TAB completion runs the completer on every keystroke while the picker is open (see `lineedit.py::refresh_fn`). Completers that hit AWS APIs (e.g. `aws_completer`, `_HyperpodNodeIdCompleter`) would otherwise issue the same boto3 call four or five times for a single typed token. `completion_cache.py` provides `get_or_fetch(key, fn, ttl=60)` with a process-global store. Keys are tuples that include the active `(AWS_PROFILE, AWS_REGION)` via `aws_env_key()` so the cache doesn't bleed across profiles. `Shell._execute()` calls `completion_cache.invalidate_all()` after each pipeline finishes, so a freshly-mutated resource (e.g. after `awsut sagemaker hyperpod scale`) is re-fetched on the next TAB — TTL handles the within-session repeats, the invalidation hook handles correctness across commands.
 
-12. **Notify from the place that knows the work ended, and only from one of them** — the shell has three ways a command can finish (a foreground line, a slot exiting in a context nobody is looking at, a backgrounded slot resumed and watched to completion), and a naive "notify on completion" hook either misses cases or double-reports them. The rule is that `Shell._execute` owns *foreground* timing and steps aside via `self._backgrounded` the moment a line hands its work to a slot, and the slot-side `ExitCallbackMixin` owns everything after that, deciding at exit time whether a context that isn't current owns it. Backends stay dependency-free (native helper per platform, terminal bell as the floor), fire on a daemon thread so the prompt never waits on a subprocess spawn, and swallow every error — a missed notification is a nuisance, a shell that dies delivering one is a bug. See [doc/notifications.md](doc/notifications.md).
+12. **Notify from the place that knows the work ended, and only from one of them** — the shell has three ways a command can finish (a foreground line, a slot exiting in a context nobody is looking at, a backgrounded slot resumed and watched to completion), and a naive "notify on completion" hook either misses cases or double-reports them. The rule is that `Shell._execute` owns *foreground* timing and steps aside via `self._backgrounded` the moment a line parks its work on a context (`_park`), and the slot's exit handler — wired at construction — owns everything after that, reporting a slot only if it was parked. Backends stay dependency-free (native helper per platform, terminal bell as the floor), fire on a daemon thread so the prompt never waits on a subprocess spawn, and swallow every error — a missed notification is a nuisance, a shell that dies delivering one is a bug. See [doc/notifications.md](doc/notifications.md).

@@ -21,6 +21,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 # PTY multiplexing and raw-mode forwarding are POSIX-only.  On Windows these
 # modules are absent and the code paths that use them are never reached (the
@@ -45,7 +46,7 @@ from .completion import (
     HistoryCompleter,
     get_argcomplete_fallback,
 )
-from .variables import registry as var_registry, VarCompleter
+from .variables import EnvVar, registry as var_registry, VarCompleter
 from .context import ContextManager, ContextState
 from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor
 from .parsing import expand_vars, split_for_completion, tokenize
@@ -69,13 +70,16 @@ from .prompt import get_prompt_func, set_prompt
 # Thread-local stdout routing + per-slot buffering proxy
 # ---------------------------------------------------------------------------
 
-class _ThreadLocalStdout(io.TextIOBase):
-    """A sys.stdout replacement that routes writes per thread.
+class _ThreadLocalStream(io.TextIOBase):
+    """A ``sys.stdin`` / ``sys.stdout`` / ``sys.stderr`` replacement that
+    routes I/O per thread.
 
-    The main thread (no override set) writes directly to *real*.
-    A Python-command thread sets an override via set_override() so its
-    print() calls go to a _StdoutProxy, keeping them separate from the
-    main thread's terminal output.
+    A thread with no override (the main thread) uses *real*.  A thread that
+    sets one — a Python command's slot thread (a :class:`_StdoutProxy`), a
+    pipeline stage (a TextIOWrapper around its pipe end or redirect file) —
+    reads and writes there instead, so concurrent commands never trample
+    each other or the terminal.  One class serves all three streams; each
+    wraps its own *real*.
     """
 
     def __init__(self, real: io.TextIOBase) -> None:
@@ -86,60 +90,25 @@ class _ThreadLocalStdout(io.TextIOBase):
     def _target(self) -> io.TextIOBase:
         return getattr(self._local, "override", None) or self._real
 
+    def set_override(self, stream) -> None:
+        self._local.override = stream
+
+    def clear_override(self) -> None:
+        self._local.override = None
+
+    def close(self) -> None:
+        # Never close (or flush on finalization) the stream we wrap: the
+        # router is replaced and collected while the real stream lives on.
+        pass
+
+    # writing
     def write(self, s: str) -> int:
         return self._target.write(s)
 
     def flush(self) -> None:
         self._target.flush()
 
-    def fileno(self) -> int:
-        return self._real.fileno()
-
-    @property
-    def buffer(self):
-        return self._real.buffer
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._real, "encoding", "utf-8")
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._real, "errors", "strict")
-
-    def isatty(self) -> bool:
-        # A pipe-end override is never a tty.  When no override is active
-        # (main thread) or the override forwards to the real stdout
-        # (_StdoutProxy in a PythonCommandSlot), defer to the real stream.
-        target = getattr(self._local, "override", None)
-        if target is not None:
-            return target.isatty()
-        return self._real.isatty()
-
-    def set_override(self, proxy) -> None:
-        self._local.override = proxy
-
-    def clear_override(self) -> None:
-        self._local.override = None
-
-
-class _ThreadLocalStdin(io.TextIOBase):
-    """A sys.stdin replacement that routes reads per thread.
-
-    The main thread (no override set) reads from *real*.  A pipeline
-    thread sets an override pointing at a TextIOWrapper around its pipe
-    fd so ``input()`` / ``sys.stdin.read()`` consume from the pipe
-    instead of the terminal.
-    """
-
-    def __init__(self, real: io.TextIOBase) -> None:
-        self._real = real
-        self._local = threading.local()
-
-    @property
-    def _target(self) -> io.TextIOBase:
-        return getattr(self._local, "override", None) or self._real
-
+    # reading
     def read(self, size: int = -1) -> str:
         return self._target.read(size)
 
@@ -155,13 +124,16 @@ class _ThreadLocalStdin(io.TextIOBase):
     def __next__(self):
         return next(self._target)
 
+    # file-like plumbing
     def fileno(self) -> int:
         return self._real.fileno()
 
     @property
     def buffer(self):
-        target = getattr(self._local, "override", None)
-        return getattr(target, "buffer", None) or self._real.buffer
+        # The override's own binary layer when it has one (a pipe end); a
+        # _StdoutProxy has none, so bytes from a slot thread reach the real
+        # terminal, as the PTY passthrough reader relies on.
+        return getattr(self._target, "buffer", None) or self._real.buffer
 
     @property
     def encoding(self) -> str:
@@ -172,60 +144,12 @@ class _ThreadLocalStdin(io.TextIOBase):
         return getattr(self._real, "errors", "strict")
 
     def isatty(self) -> bool:
-        target = getattr(self._local, "override", None)
-        if target is not None:
+        # An override answers for itself: a pipe end is never a tty, and a
+        # _StdoutProxy forwards to the real stream and says so.
+        try:
+            return self._target.isatty()
+        except (AttributeError, ValueError):
             return False
-        return self._real.isatty()
-
-    def set_override(self, stream) -> None:
-        self._local.override = stream
-
-    def clear_override(self) -> None:
-        self._local.override = None
-
-
-class _ThreadLocalStderr(io.TextIOBase):
-    """A sys.stderr replacement that routes writes per thread.
-
-    Mirrors :class:`_ThreadLocalStdout` for stderr so a pipeline thread
-    can redirect its diagnostic output independently of the main
-    thread.
-    """
-
-    def __init__(self, real: io.TextIOBase) -> None:
-        self._real = real
-        self._local = threading.local()
-
-    @property
-    def _target(self) -> io.TextIOBase:
-        return getattr(self._local, "override", None) or self._real
-
-    def write(self, s: str) -> int:
-        return self._target.write(s)
-
-    def flush(self) -> None:
-        self._target.flush()
-
-    def fileno(self) -> int:
-        return self._real.fileno()
-
-    @property
-    def buffer(self):
-        return self._real.buffer
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._real, "encoding", "utf-8")
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._real, "errors", "strict")
-
-    def set_override(self, stream) -> None:
-        self._local.override = stream
-
-    def clear_override(self) -> None:
-        self._local.override = None
 
 
 class _StdoutProxy(io.TextIOBase):
@@ -365,6 +289,58 @@ class _PyStageHandle:
                 pass
 
 
+def _exit_status(result) -> int:
+    """A handler's return value as an exit status: an ``int`` is the status
+    (a ``bool`` is not), anything else — usually ``None`` — is success."""
+    if isinstance(result, int) and not isinstance(result, bool):
+        return result
+    return 0
+
+
+def run_handler(
+    fn: Callable[[], object],
+    label: str,
+    *,
+    announce_interrupt: bool = False,
+    interrupted: Callable[[], bool] | None = None,
+) -> int:
+    """Call *fn* — a Python command, a decorator, a ``@bg`` body — and turn
+    how it ended into an exit status.  The one place that decides this; every
+    execution path (foreground slot, pipeline stage, background slot, the
+    main-thread path) goes through here.
+
+    * a return value → :func:`_exit_status` of it;
+    * ``SystemExit`` → its code (a string is printed, status 1) — it never
+      takes the shell down;
+    * ``KeyboardInterrupt`` → 130, saying ``<label>: interrupted`` when
+      *announce_interrupt* (the main-thread path, where nobody else does);
+    * ``BrokenPipeError`` → 0: the reader went away, as ``head`` makes it;
+    * anything else → 1, with the error and traceback on stderr — unless
+      *interrupted()* says the parent tore the stage down, in which case the
+      I/O error is expected and the status is 130.
+    """
+    try:
+        return _exit_status(fn())
+    except SystemExit as e:
+        code = e.code
+        if isinstance(code, str):
+            print(code, file=sys.stderr)
+            return 1
+        return code if isinstance(code, int) else (1 if code else 0)
+    except KeyboardInterrupt:
+        if announce_interrupt:
+            print(f"{label}: interrupted")
+        return 130
+    except BrokenPipeError:
+        return 0
+    except Exception as e:
+        if interrupted is not None and interrupted():
+            return 130
+        print(f"{label}: error: {e}", file=sys.stderr)
+        traceback.print_exc()
+        return 1
+
+
 _current_slot = threading.local()
 
 # Set on threads spawned by _execute_pipeline for Python-command stages.
@@ -433,26 +409,25 @@ def passthrough_run(argv: list[str], **popen_kwargs) -> int:
 
 
 def passthrough_input(prompt: str = "") -> str:
-    """Read a line from real stdin from inside a Python command thread.
+    """Read one line of user input from a Python command.
 
-    Built-in ``input()`` would race the main forwarding thread for stdin
-    bytes, and even when it won, raw mode would suppress echo and turn
-    Enter into ``\\r``.  ``passthrough_input`` coordinates with the main
-    forwarding loop: it asks the loop to surrender stdin and restore
-    cooked terminal mode, calls :func:`input` on the slot thread, then
-    hands control back.
+    Built-in ``input()`` would race the main forwarding loop for stdin (the
+    loop holds the terminal in raw mode and reads every key).  This reads
+    the line off that same key stream instead — see :func:`_read_typed` —
+    with echo and Backspace / Ctrl+U / Ctrl+W editing.  Ctrl+C raises
+    ``KeyboardInterrupt`` and Ctrl+D on an empty line ``EOFError``, as
+    ``input()`` would.
 
-    Outside a Python command thread, falls back to plain ``input(prompt)``.
+    On the main thread (a synchronous command) the terminal is read
+    directly, in the same raw mode.  With stdin not a terminal — or on
+    Windows — it is plain ``input(prompt)``.
     """
     if getattr(_in_pipeline, "flag", False):
         raise RuntimeError(
             "passthrough_input cannot be used inside a piped Python command "
             "(stdin/stdout are wired to pipes, not the terminal)"
         )
-    slot = getattr(_current_slot, "slot", None)
-    if slot is None:
-        return input(prompt)
-    return slot._run_input(prompt)
+    return _read_from_user(prompt, block=False)
 
 
 def _stdin_is_tty() -> bool:
@@ -464,31 +439,38 @@ def _stdin_is_tty() -> bool:
 
 
 def passthrough_input_block(prompt: str = "") -> str:
-    """Read a *block* of lines from real stdin, ending at a blank line or EOF.
+    """Read a *block* of lines from the user, ending at a blank line or EOF.
 
-    The multi-line sibling of :func:`passthrough_input`, for commands whose
-    input is pasted rather than typed (a set of ``export KEY=…`` lines, a
-    policy document, …).  Two things rule out looping over
-    ``passthrough_input``: between two calls the main forwarding loop takes
-    stdin back into raw mode, so the tail of a paste still in the tty buffer
-    is read as keystrokes instead of input — and the cooked mode each call
-    asks for caps a line at ``MAX_CANON``, which a pasted session token
-    exceeds.  This reads the block off the raw key stream instead; see
-    :meth:`PythonCommandSlot._run_input_block`.
+    The multi-line sibling of :func:`passthrough_input`, for input that is
+    pasted rather than typed (a set of ``export KEY=…`` lines, a policy
+    document, …).  It reads the same raw key stream, so there is no
+    ``MAX_CANON`` limit: cooked mode caps a line at 1024 bytes on macOS and
+    discards an over-long one whole, which a pasted session token exceeds.
 
     Returns the lines joined by ``\\n``, without the terminating blank line
-    (so an immediate blank line or Ctrl+D yields ``""``).  Outside a Python
-    command thread — or with stdin not a terminal — falls back to reading
-    :data:`sys.stdin` line by line.
+    (so an immediate blank line or Ctrl+D yields ``""``).  With stdin not a
+    terminal — or on Windows — falls back to reading :data:`sys.stdin` line
+    by line.
     """
     if getattr(_in_pipeline, "flag", False):
         raise RuntimeError(
             "passthrough_input_block cannot be used inside a piped Python command "
             "(stdin/stdout are wired to pipes, not the terminal)"
         )
-    slot = getattr(_current_slot, "slot", None)
-    if slot is not None and _stdin_is_tty():
-        return slot._run_input_block(prompt)
+    return _read_from_user(prompt, block=True)
+
+
+def _read_from_user(prompt: str, *, block: bool) -> str:
+    """Route a :func:`passthrough_input` / ``_block`` call to a key source."""
+    if _stdin_is_tty():
+        slot = getattr(_current_slot, "slot", None)
+        if slot is not None:
+            return slot._read_typed(prompt, block=block)
+        if not IS_WINDOWS:
+            with _terminal_keys() as next_bytes:
+                return _read_typed(next_bytes, prompt, block=block)
+    if not block:
+        return input(prompt)
     if prompt:
         sys.stdout.write(prompt)
         sys.stdout.flush()
@@ -504,6 +486,116 @@ def passthrough_input_block(prompt: str = "") -> str:
     return "\n".join(lines)
 
 
+@contextlib.contextmanager
+def _terminal_keys():
+    """The main thread's own key source: the terminal, in raw-input /
+    cooked-output mode for the duration (so a typed Ctrl+C arrives as a
+    key rather than a signal, and echoed newlines still get their CR)."""
+    fd = sys.stdin.fileno()
+    saved = terminal.get_mode(fd)
+    terminal.set_raw_input_cooked_output(fd)
+    try:
+        yield lambda: os.read(fd, 1024) if terminal.wait_readable(fd, 0.2) else b""
+    finally:
+        terminal.restore_mode(fd, saved)
+
+
+def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool) -> str:
+    """Assemble typed or pasted text off a raw key stream, echoing it.
+
+    *next_bytes* returns whatever keys have arrived (possibly ``b""`` after a
+    short wait — the bounded wait is what lets an injected
+    ``KeyboardInterrupt`` land between calls instead of blocking in C).
+
+    One line when not *block*: Enter ends it, Ctrl+D on an empty line raises
+    ``EOFError``.  Otherwise lines until a blank line or Ctrl+D.  Editing is
+    Backspace, Ctrl+U (the line) and Ctrl+W (a word).  Ctrl+C echoes ``^C``
+    and raises ``KeyboardInterrupt``.  Escape sequences — arrow keys, the
+    terminal's bracketed-paste markers — are dropped, and a CRLF in pasted
+    text is one line ending, not two.
+    """
+    from .lineedit import _wcswidth
+
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    lines: list[str] = []
+    current: list[str] = []
+    in_escape = False
+    after_cr = False
+
+    def echo(text: str) -> None:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def erase(chars: list[str]) -> None:
+        width = _wcswidth("".join(chars))
+        if width:
+            echo("\b" * width + " " * width + "\b" * width)
+
+    if prompt:
+        echo(prompt)
+
+    while True:
+        data = next_bytes()
+        if not data:
+            continue
+        for ch in decoder.decode(data):
+            if in_escape:
+                if ch.isalpha() or ch == "~":
+                    in_escape = False
+                continue
+            if ch == "\x1b":
+                in_escape = True
+                continue
+            if ch == "\x03":                         # Ctrl+C
+                echo("^C\n")
+                raise KeyboardInterrupt
+            if ch == "\x04":                         # Ctrl+D
+                if not block:
+                    if current:
+                        continue                     # like a tty: only ends an empty line
+                    echo("\n")
+                    raise EOFError
+                if current:
+                    lines.append("".join(current))
+                echo("\n")
+                return "\n".join(lines)
+            if ch in ("\r", "\n"):
+                if ch == "\n" and after_cr:
+                    continue
+                after_cr = ch == "\r"
+                echo("\n")
+                line = "".join(current)
+                current = []
+                if not block:
+                    return line
+                if not line.strip():
+                    return "\n".join(lines)
+                lines.append(line)
+                continue
+            after_cr = False
+            if ch in ("\x7f", "\x08"):              # Backspace
+                if current:
+                    erase([current.pop()])
+                continue
+            if ch == "\x15":                         # Ctrl+U — the whole line
+                erase(current)
+                current = []
+                continue
+            if ch == "\x17":                         # Ctrl+W — the word before the caret
+                cut = len(current)
+                while cut and current[cut - 1].isspace():
+                    cut -= 1
+                while cut and not current[cut - 1].isspace():
+                    cut -= 1
+                erase(current[cut:])
+                del current[cut:]
+                continue
+            if ch < " " and ch != "\t":
+                continue                             # other C0 controls
+            current.append(ch)
+            echo(ch)
+
+
 class PythonCommandSlot(ExitCallbackMixin):
     """Manages a Python @registry.command running in a background thread.
 
@@ -511,15 +603,14 @@ class PythonCommandSlot(ExitCallbackMixin):
     run() loop and context machinery can treat both uniformly.
     """
 
-    def __init__(self, cmd, raw_args: list[str]) -> None:
-        self._init_exit_callback()
+    def __init__(self, cmd, raw_args: list[str], on_exit=None) -> None:
+        self._init_exit_callback(on_exit)
         self._cmd = cmd
         self._raw_args = raw_args
         self.argv: list[str] = [cmd.name] + raw_args
         self._thread: threading.Thread | None = None
         self._proxy: _StdoutProxy | None = None
         self._err_proxy: _StdoutProxy | None = None
-        self._exit_exception: BaseException | None = None
         self._finished = threading.Event()
         # Stub attributes expected by the run() loop
         self.buffer = _NullBuffer()
@@ -534,21 +625,13 @@ class PythonCommandSlot(ExitCallbackMixin):
         self._pty_last_byte: bytes = b"\n"
         self._pty_active = False
         self._pty_lock = threading.Lock()
-        # passthrough_input() coordination — events are flipped by the
-        # slot thread; the main forwarding loop watches _input_request.
-        self._input_request = threading.Event()
-        self._input_released = threading.Event()
-        self._input_resume = threading.Event()
-        # Set by the main forwarding loop's SIGINT handler when Ctrl+C is
-        # pressed during a passthrough_input() prompt.  _run_input polls
-        # for it and raises KeyboardInterrupt on the slot thread instead
-        # of leaving the user with an unresponsive prompt.
-        self._input_interrupted = threading.Event()
+        # True while the command is reading a line or block from the user
+        # (passthrough_input / _block): the forwarding loop then hands
+        # Ctrl+C to the reader instead of interrupting the command.
+        self._reading_input = False
         # Raw stdin bytes the main forwarding loop received while no PTY
         # subprocess was active.  :meth:`poll_key` drains them — that is
-        # how ``passthrough_input_block`` reads a paste off the raw key
-        # stream.  Cleared each time the slot thread picks up a Python
-        # command.
+        # how ``passthrough_input`` / ``_block`` read the user's keys.
         self._keybuf: bytearray = bytearray()
         self._keybuf_lock = threading.Lock()
         self._keybuf_event = threading.Event()
@@ -576,43 +659,29 @@ class PythonCommandSlot(ExitCallbackMixin):
             sys.stderr.set_override(self._err_proxy)
         _current_slot.slot = self
         try:
-            self._cmd.invoke(self._raw_args)
-        except SystemExit as e:
-            self._exit_exception = e
-        except KeyboardInterrupt as e:
-            self._exit_exception = e
-        except Exception as e:
-            self._exit_exception = e
+            # Errors are reported here, on the slot's own stderr proxy, so
+            # they land with the command's output — live or replayed later.
+            self.exit_code = run_handler(
+                lambda: self._cmd.invoke(self._raw_args), self._cmd.name)
         finally:
             _current_slot.slot = None
             if hasattr(sys.stdout, "clear_override"):
                 sys.stdout.clear_override()
             if hasattr(sys.stderr, "clear_override"):
                 sys.stderr.clear_override()
-            self.exit_code = self._compute_exit_code()
+            if self.exit_code is None:
+                self.exit_code = 130   # interrupted before run_handler returned
             self._finished.set()
             self._fire_on_exit()
-
-    def _compute_exit_code(self) -> int:
-        exc = self._exit_exception
-        if exc is None:
-            return 0
-        if isinstance(exc, SystemExit):
-            code = exc.code
-            return code if isinstance(code, int) else (1 if code else 0)
-        if isinstance(exc, KeyboardInterrupt):
-            return 130
-        return 1
 
     # --- ProcessSlot-compatible interface ------------------------------------
 
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def activate(self, raw_mode: bool = False) -> None:  # noqa: ARG002
-        # ``raw_mode`` is part of the slot interface (``ProcessSlot`` and
-        # ``PipelineSlot`` use it); a Python command's output needs no
-        # translation — the kernel adds CRs (see ``_StdoutProxy``).
+    def activate(self) -> None:
+        # No newline translation: the forwarding loop keeps the kernel's
+        # ONLCR on (raw input, cooked output), which adds the CRs.
         if self._proxy:
             self._proxy.activate()
         if self._err_proxy:
@@ -891,150 +960,23 @@ class PythonCommandSlot(ExitCallbackMixin):
                 except OSError:
                     pass
 
-    # --- passthrough_input() implementation ---------------------------------
+    # --- passthrough_input() / _block() -------------------------------------
 
-    def _run_input(self, prompt: str) -> str:
-        """Read a line of input while the main loop yields stdin and cooked mode.
-
-        The naive ``input()`` call would leave Ctrl+C unresponsive: the main
-        forwarding loop has SIGINT ignored, and the slot thread's blocking
-        ``read()`` can't be interrupted from outside.  Instead we poll fd 0
-        through ``select`` so the slot can periodically check
-        ``_input_interrupted`` (set by the main loop's SIGINT handler) and
-        raise ``KeyboardInterrupt`` promptly.
-
-        Cooked terminal mode is still in effect, so the kernel handles line
-        editing (backspace, delete-word, etc.) and ``select`` reports the
-        fd readable only once the user hits Enter.  That gives us full line
-        editing without reimplementing it.
-
-        The kernel's line buffer is also the limit of this method: a line at
-        or above ``MAX_CANON`` (1024 bytes on macOS) is discarded by the line
-        discipline, not truncated.  Prompts answered by a word or two never
-        approach it; :meth:`_run_input_block`, which has to take a pasted
-        credential block, reads raw for exactly that reason.
-        """
-        import select as _select
-        # Drain pending output so the prompt isn't preceded by buffered text.
-        self._proxy.deactivate()
-        self._proxy.replay()
-        if self._err_proxy:
-            self._err_proxy.deactivate()
-            self._err_proxy.replay()
-        self._input_interrupted.clear()
-        self._input_resume.clear()
-        self._input_released.clear()
-        self._input_request.set()
-        # Wait for the main loop to release stdin and restore cooked mode.
-        self._input_released.wait()
+    def _read_typed(self, prompt: str, *, block: bool) -> str:
+        """Read a line (or a pasted block) off the keys the forwarding loop
+        feeds this slot — see :func:`_read_typed`."""
+        if not block:
+            # Keys typed while the command was busy were not meant as the
+            # answer to a question it hadn't asked yet ("y" to a delete
+            # prompt).  A paste, by contrast, may land before the first poll.
+            with self._keybuf_lock:
+                self._keybuf.clear()
+                self._keybuf_event.clear()
+        self._reading_input = True
         try:
-            # Print the prompt directly to the real terminal.
-            real = getattr(sys.stdout, "_real", sys.stdout)
-            real.write(prompt)
-            real.flush()
-            fd = sys.stdin.fileno()
-            buf = b""
-            while True:
-                if self._input_interrupted.is_set():
-                    raise KeyboardInterrupt
-                rlist, _, _ = _select.select([fd], [], [], 0.1)
-                if fd not in rlist:
-                    continue
-                try:
-                    chunk = os.read(fd, 4096)
-                except OSError:
-                    raise EOFError
-                if not chunk:
-                    if buf:
-                        return buf.decode("utf-8", errors="replace")
-                    raise EOFError
-                buf += chunk
-                # In cooked mode, select fires only on full lines (terminal
-                # delivers everything up to and including the newline).
-                if b"\n" in buf:
-                    line, _, _rest = buf.partition(b"\n")
-                    return line.decode("utf-8", errors="replace")
+            return _read_typed(lambda: self.poll_key(0.2), prompt, block=block)
         finally:
-            self._input_request.clear()
-            self._input_resume.set()
-            self._proxy.activate()
-            if self._err_proxy:
-                self._err_proxy.activate()
-
-    def _run_input_block(self, prompt: str = "") -> str:
-        """Read lines until a blank line or Ctrl+D, off the raw key stream.
-
-        Not a loop around :meth:`_run_input`, and not a cooked-mode read at
-        all, because the terminal's canonical line buffer is too small for
-        what this is for: at ``MAX_CANON`` (1024 bytes on macOS) the line
-        discipline throws the *whole* over-long line away rather than
-        truncating it, and one pasted ``export AWS_SESSION_TOKEN=…`` line
-        clears that on its own.  So the block is read in the raw mode the
-        forwarding loop already holds — no line discipline in the way — and
-        the echo and line assembly the kernel would have done happen here.
-
-        Bytes arrive through :meth:`poll_key`, which is fed by the main
-        loop's stdin reader, so a paste that lands before the first poll is
-        already buffered rather than lost.  Line editing is deliberately
-        minimal (backspace only): this reads pasted text, not typed text.
-        """
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        lines: list[str] = []
-        current: list[str] = []
-        in_escape = False
-        after_cr = False
-
-        def echo(text: str) -> None:
-            sys.stdout.write(text)
-            sys.stdout.flush()
-
-        if prompt:
-            echo(prompt)
-
-        while True:
-            # A bounded wait, so an injected KeyboardInterrupt (slot.kill()
-            # on Ctrl+C) lands between calls instead of blocking in C.
-            data = self.poll_key(0.2)
-            if not data:
-                continue
-            for ch in decoder.decode(data):
-                if in_escape:
-                    # Swallow the rest of an escape sequence — arrow keys and
-                    # the terminal's bracketed-paste markers alike.
-                    if ch.isalpha() or ch == "~":
-                        in_escape = False
-                    continue
-                if ch == "\x1b":
-                    in_escape = True
-                    continue
-                if ch == "\x03":
-                    raise KeyboardInterrupt
-                if ch == "\x04":                     # Ctrl+D — end the block
-                    if current:
-                        lines.append("".join(current))
-                    return "\n".join(lines)
-                if ch in ("\r", "\n"):
-                    # CRLF in pasted text is one line ending, not two.
-                    if ch == "\n" and after_cr:
-                        continue
-                    after_cr = ch == "\r"
-                    echo("\n")
-                    line = "".join(current)
-                    current = []
-                    if not line.strip():
-                        return "\n".join(lines)
-                    lines.append(line)
-                    continue
-                after_cr = False
-                if ch in ("\x7f", "\x08"):
-                    if current:
-                        current.pop()
-                        echo("\b \b")
-                    continue
-                if ch < " " and ch != "\t":
-                    continue                          # other C0 controls
-                current.append(ch)
-                echo(ch)
+            self._reading_input = False
 
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parent / "_config.py"
@@ -1250,11 +1192,11 @@ class PipelineSlot(PythonCommandSlot):
     ``@bg``'s capture and racing the main thread for stdin.
     """
 
-    def __init__(self, pipeline: "Pipeline", display_text: str) -> None:
+    def __init__(self, pipeline: "Pipeline", display_text: str, on_exit=None) -> None:
         # Bypass PythonCommandSlot.__init__ — it expects a Command, which we
         # don't have.  We mirror its attribute set ourselves.  ``argv`` is what
         # the context list / picker shows as the "command line" for the slot.
-        self._init_exit_callback()
+        self._init_exit_callback(on_exit)
         self._cmd = None  # never used; kept so ``_pty_lock``/etc. branches are safe
         self._raw_args: list[str] = []
         self.argv: list[str] = [display_text]
@@ -1265,7 +1207,6 @@ class PipelineSlot(PythonCommandSlot):
         # methods that touch _proxy (activate/deactivate/replay_buffer)
         # are overridden here.
         self._proxy: _StdoutProxy | None = None
-        self._exit_exception: BaseException | None = None
         self._finished = threading.Event()
         self.buffer = _NullBuffer()
         self.exit_code: int | None = None
@@ -1279,21 +1220,18 @@ class PipelineSlot(PythonCommandSlot):
         self._pty_last_byte: bytes = b"\n"
         self._pty_active = False
         self._pty_lock = threading.Lock()
-        self._input_request = threading.Event()
-        self._input_released = threading.Event()
-        self._input_resume = threading.Event()
-        self._input_interrupted = threading.Event()
+        self._reading_input = False
         self._keybuf: bytearray = bytearray()
         self._keybuf_lock = threading.Lock()
         self._keybuf_event = threading.Event()
         # Body output capture: an OS pipe so external subprocess output goes
         # to a fd we own rather than the real terminal.  The reader thread
         # buffers bytes while the slot is inactive and streams them live to
-        # stdout (with raw-mode \n→\r\n conversion) once the user switches in.
+        # stdout once the user switches in.  No \n→\r\n conversion: the
+        # forwarding loop keeps the kernel's ONLCR on.
         self._out_lock = threading.Lock()
         self._out_buffer = OutputBuffer()
         self._out_active = False
-        self._out_raw_mode = False
         self._out_read_fd: int = -1
         self._out_write_fd: int = -1
         self._out_reader_thread: threading.Thread | None = None
@@ -1329,9 +1267,8 @@ class PipelineSlot(PythonCommandSlot):
                     break
                 with self._out_lock:
                     if self._out_active:
-                        chunk = data.replace(b"\n", b"\r\n") if self._out_raw_mode else data
                         try:
-                            sys.stdout.buffer.write(chunk)
+                            sys.stdout.buffer.write(data)
                             sys.stdout.buffer.flush()
                         except OSError:
                             pass
@@ -1363,14 +1300,7 @@ class PipelineSlot(PythonCommandSlot):
             sys.stdin.set_override(in_wrapper)
         _current_slot.slot = self
         try:
-            code = self._pipeline.run()
-            self.exit_code = code if isinstance(code, int) else 0
-        except SystemExit as e:
-            self._exit_exception = e
-        except KeyboardInterrupt as e:
-            self._exit_exception = e
-        except Exception as e:
-            self._exit_exception = e
+            self.exit_code = run_handler(self._pipeline.run, self.argv[0])
         finally:
             _current_slot.slot = None
             if hasattr(sys.stdout, "clear_override"):
@@ -1406,18 +1336,15 @@ class PipelineSlot(PythonCommandSlot):
             if self._out_reader_thread is not None:
                 self._out_reader_thread.join(timeout=1.0)
             if self.exit_code is None:
-                self.exit_code = self._compute_exit_code()
+                self.exit_code = 130
             self._finished.set()
             self._fire_on_exit()
 
-    def activate(self, raw_mode: bool = False) -> None:
+    def activate(self) -> None:
         with self._out_lock:
             chunks = self._out_buffer.drain()
             self._out_active = True
-            self._out_raw_mode = raw_mode
         for chunk in chunks:
-            if raw_mode:
-                chunk = chunk.replace(b"\n", b"\r\n")
             try:
                 sys.stdout.buffer.write(chunk)
             except OSError:
@@ -1430,11 +1357,10 @@ class PipelineSlot(PythonCommandSlot):
     def deactivate(self) -> None:
         with self._out_lock:
             self._out_active = False
-            self._out_raw_mode = False
 
     def replay_buffer(self) -> None:
-        # Cooked-mode replay (no \n→\r\n conversion): used by run() once the
-        # slot has exited and the terminal is back in cooked mode.
+        # Used by run() once the slot has exited and the terminal is back in
+        # cooked mode.
         chunks = self._out_buffer.drain()
         for chunk in chunks:
             try:
@@ -1519,8 +1445,10 @@ class Shell:
         self.context_manager = ContextManager()
         self.context_manager.create("default")
         # True while the line currently being executed handed its work to a
-        # background context — see _execute / _notify_when_backgrounded.
+        # background context — see _execute / _park.
         self._backgrounded = False
+        # Set by the `exit` built-in; run() ends after the current line.
+        self._exit_requested = False
         self._register_builtins()
         self.registry.mark_builtins()
         var_registry.mark_builtins()
@@ -1530,12 +1458,9 @@ class Shell:
         # Install thread-local stdio routers so Python command threads can
         # rebind their own stdin/stdout/stderr (for buffering proxies or pipe
         # ends) without disturbing the main thread.
-        if not isinstance(sys.stdout, _ThreadLocalStdout):
-            sys.stdout = _ThreadLocalStdout(sys.stdout)
-        if not isinstance(sys.stdin, _ThreadLocalStdin):
-            sys.stdin = _ThreadLocalStdin(sys.stdin)
-        if not isinstance(sys.stderr, _ThreadLocalStderr):
-            sys.stderr = _ThreadLocalStderr(sys.stderr)
+        for stream in ("stdin", "stdout", "stderr"):
+            if not isinstance(getattr(sys, stream), _ThreadLocalStream):
+                setattr(sys, stream, _ThreadLocalStream(getattr(sys, stream)))
 
         history_path = config_dir() / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1969,6 +1894,7 @@ class Shell:
 
         @self.registry.command(
             name="cd",
+            sync=True,
             help="Change directory.",
             params=[arg("path", nargs="?", default="~", completer=DirCompleter())],
         )
@@ -1980,14 +1906,20 @@ class Shell:
             except OSError as e:
                 print(f"cd: {e}")
 
-        @self.registry.command(name="exit", help="Exit the shell.")
+        @self.registry.command(name="exit", help="Exit the shell.", sync=True)
         def exit_shell():
+            # A pipeline stage is a subshell in POSIX terms: `exit | cat`
+            # does not end the shell.
+            if getattr(_in_pipeline, "flag", False):
+                return
             running = self._running_contexts()
             if running and not self._confirm_exit(running):
-                return
-            raise SystemExit(0)
+                return 1
+            # A request, not a SystemExit: a handler's SystemExit is just an
+            # exit status (see run_handler).  run() ends after this line.
+            self._exit_requested = True
 
-        @self.registry.command(name="reload", help="Reload ~/.eosh/config.py.")
+        @self.registry.command(name="reload", help="Reload ~/.eosh/config.py.", sync=True)
         def reload_config():
             from . import recipes
             self.registry.clear_user_commands()
@@ -1999,6 +1931,7 @@ class Shell:
 
         @self.registry.command(
             name="var",
+            sync=True,
             help=(
                 "Set, unset, or list context variables.\n\n"
                 "  var              list all registered vars and env vars\n"
@@ -2047,6 +1980,7 @@ class Shell:
 
         @self.registry.command(
             name="source-bash",
+            sync=True,
             help=(
                 "Run a bash script and import its environment into this shell.\n\n"
                 "  source-bash                 paste lines, end with a blank line or Ctrl+D\n"
@@ -2072,14 +2006,14 @@ class Shell:
         def source_bash_cmd(script, command, no_cd, quiet):
             if command is not None and script:
                 print("source-bash: -c takes the whole script; don't pass a FILE too")
-                return
+                return 2
             if command is not None:
                 body = command
             elif script:
                 path = os.path.expanduser(script[0])
                 if not os.path.isfile(path):
                     print(f"source-bash: {script[0]}: no such file")
-                    return
+                    return 1
                 body = " ".join(shlex.quote(a) for a in ["source", path, *script[1:]])
             else:
                 body = passthrough_input_block(
@@ -2097,7 +2031,7 @@ class Shell:
                 print("source-bash: environment not imported (script did not exit normally)")
                 if code != 0:
                     print(f"source-bash: exit status {code}")
-                return
+                return code or 1
 
             changed, removed, new_cwd = self._apply_bash_env(
                 cwd, env, import_cwd=not no_cd
@@ -2105,7 +2039,7 @@ class Shell:
             if code != 0:
                 print(f"source-bash: exit status {code}")
             if quiet:
-                return
+                return code
             # Names only, never values — a sourced script is exactly where an
             # AWS_SESSION_TOKEN comes from, and this line lands in the scrollback.
             parts = []
@@ -2116,9 +2050,12 @@ class Shell:
             if new_cwd:
                 parts.append(f"cwd: {new_cwd}")
             print(f"source-bash: {'; '.join(parts)}" if parts else "source-bash: no changes")
+            # The script's own status is the command's — `source-bash x && …`.
+            return code
 
         @self.registry.command(
             name="alias",
+            sync=True,
             help=(
                 "Define or list command aliases.\n\n"
                 "  alias                  list all aliases\n"
@@ -2154,6 +2091,7 @@ class Shell:
 
         @self.registry.command(
             name="unalias",
+            sync=True,
             help="Remove one or more aliases.",
             params=[arg("names", nargs="+", metavar="NAME",
                         completer=CallbackCompleter(
@@ -2166,6 +2104,7 @@ class Shell:
 
         @self.registry.command(
             name="help",
+            sync=True,
             help="Show help for a command, or list all commands.",
             params=[arg("command_name", nargs="?", default="",
                         completer=CallbackCompleter(lambda: sorted(self.registry.list_commands())))],
@@ -2210,6 +2149,7 @@ class Shell:
 
         @self.registry.command(
             name="context",
+            sync=True,
             help="Manage shell contexts: new, close, switch, list, kill.",
             params=[
                 arg("subcommand", nargs="?", default="",
@@ -2378,66 +2318,47 @@ class Shell:
         env.update(env_prefix)
         return env
 
-    @contextlib.contextmanager
-    def _temp_environ(self, env_prefix: dict[str, str]):
-        """Apply *env_prefix* to ``os.environ`` for the duration of the block.
+    @staticmethod
+    def _env_prefix_refused(command_name: str, env_prefix: dict[str, str]) -> int:
+        """A Python command can't take ``FOO=bar cmd``: it runs in the shell's
+        own process, where the only environment is ``os.environ`` — shared by
+        every thread, so a temporary change would leak into the other stages
+        of a pipeline and outlive a backgrounded run.  Say so (status 2)."""
+        names = " ".join(f"{k}=…" for k in env_prefix)
+        print(f"eosh: {names} {command_name}: an environment prefix only applies to "
+              f"external commands; set it with `var` for a Python command",
+              file=sys.stderr)
+        return 2
 
-        Used to give a Python ``@registry.command`` the same per-command
-        environment an external child gets from ``FOO=bar cmd``.  Restores the
-        prior values (or deletes keys that weren't set before) on exit.
-
-        In-process caveat: a Python stage in a *multi-stage* pipeline runs in a
-        worker thread, so a temporary mutation of the process-wide
-        ``os.environ`` is visible to sibling stages for the overlap window.
-        This mirrors the existing "stateful built-ins mutate the parent in
-        pipelines" limitation and only bites the rare ``FOO=bar pycmd | …``
-        case; external children are unaffected (they get their own ``env=``).
-        """
-        if not env_prefix:
-            yield
-            return
-        saved: dict[str, str | None] = {}
-        for key, value in env_prefix.items():
-            saved[key] = os.environ.get(key)
-            os.environ[key] = value
-        try:
-            yield
-        finally:
-            for key, prev in saved.items():
-                if prev is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = prev
-
-    def _unset_variable(self, key: str) -> None:
-        """Remove a variable via var_registry, or fall back to plain os.environ / context removal."""
-        py_var = var_registry.get(key)
-        if py_var is not None:
-            py_var.unset()
-            for env_key in py_var.env_keys:
-                self.context_manager.unset_variable(env_key)
-        else:
-            self.context_manager.unset_variable(key)
+    def _env_keys_for(self, key: str) -> tuple[str, ...] | None:
+        """The ``os.environ`` keys an assignment to *key* writes — an
+        :class:`EnvVar`'s keys, *key* itself for a plain name — or ``None``
+        for a PyVar / GlobalVar, whose value lives on the Python side."""
+        var = var_registry.get(key)
+        if var is None:
+            return (key,)
+        return var.keys if isinstance(var, EnvVar) else None
 
     def _set_variable(self, key: str, value: str) -> None:
-        """Dispatch a KEY=VALUE assignment through var_registry, or fall back to plain os.environ.
+        """``KEY=VALUE`` — every environment write goes through the context
+        manager (so it is saved and restored per context); a PyVar or
+        GlobalVar sets itself (and the context manager saves a PyVar's value
+        when the context is left)."""
+        keys = self._env_keys_for(key)
+        if keys is None:
+            var_registry.get(key).set(value)
+            return
+        for env_key in keys:
+            self.context_manager.set_variable(env_key, value)
 
-        When a registered Var handles the key its env_keys are registered with
-        the context manager first (so original values are captured as the
-        save/restore backup), then Var.set() is called to apply the change.
-        """
-        py_var = var_registry.get(key)
-        if py_var is not None:
-            for env_key in py_var.env_keys:
-                self.context_manager.set_variable(env_key, os.environ.get(env_key, value))
-            py_var.set(value)
-            # Sync context's stored value to what set() actually wrote.
-            ctx = self.context_manager.current()
-            if ctx is not None:
-                for env_key in py_var.env_keys:
-                    ctx.variables[env_key] = os.environ.get(env_key, value)
-        else:
-            self.context_manager.set_variable(key, value)
+    def _unset_variable(self, key: str) -> None:
+        """``KEY=`` — the mirror of :meth:`_set_variable`."""
+        keys = self._env_keys_for(key)
+        if keys is None:
+            var_registry.get(key).unset()
+            return
+        for env_key in keys:
+            self.context_manager.unset_variable(env_key)
 
     def _run_bash_script(self, body: str) -> tuple[int, str | None, dict[str, str]]:
         """Run *body* in a child bash and read back its final cwd + environment.
@@ -2544,48 +2465,35 @@ class Shell:
 
     # --- long-command notifications ------------------------------------------
 
-    def _notify_when_backgrounded(self, slot) -> None:
-        """Arrange a desktop notification for *slot* finishing out of sight.
+    def _park(self, slot, ctx) -> None:
+        """Hand *slot* to *ctx* to keep running in the background (Ctrl+],
+        ``@bg``).  From here on the slot's exit handler reports it, so the
+        line that started it doesn't (see :meth:`_execute`)."""
+        ctx.process_slot = slot
+        slot.parked = True
+        self._backgrounded = True
 
-        Called right after the slot is parked on a context (``Ctrl+]`` or
-        ``@bg``).  The callback runs on the slot's own thread, so it must not
-        touch the terminal — :func:`notify.command_done` only spawns a
-        notification helper.
+    def _slot_finished(self, slot) -> None:
+        """Exit handler every slot is constructed with; runs on the slot's
+        own thread, so it must not touch the terminal —
+        :func:`notify.command_done` only spawns a notification helper.
+
+        A slot that was never parked ran in the foreground, and
+        :meth:`_execute` timed the whole line.  A parked one is reported
+        here, with its context's name when that context isn't the current
+        one — the user was looking elsewhere when it ended.  The owner is
+        looked up, not remembered: a slot can move between contexts.
         """
-        slot.arm_exit_callback(lambda: self._notify_slot_done(slot))
-
-    def _notify_slot_done(self, slot) -> None:
-        """Notify that a backgrounded *slot* finished, if the user isn't watching.
-
-        The owning context is looked up rather than remembered: a slot can be
-        moved between contexts, and "which context holds it *now*" is exactly
-        the question that decides whether the user saw it finish.  A slot with
-        no owner ran in the foreground (``_execute`` already timed it), and a
-        slot owned by the current context finished on screen — neither needs a
-        popup.
-        """
+        if not slot.parked:
+            return
         owner = next(
-            (
-                name
-                for name, ctx in self.context_manager.contexts.items()
-                if ctx.process_slot is slot
-            ),
+            (name for name, ctx in self.context_manager.contexts.items()
+             if ctx.process_slot is slot),
             None,
         )
-        if owner is None or owner == self.context_manager.current_name:
-            return
-        notify.command_done(
-            " ".join(slot.argv), slot.elapsed(), slot.exit_code or 0, context=owner
-        )
-
-    def _notify_resumed_done(self, slot) -> None:
-        """Notify for a slot that was resumed into the foreground and then ended.
-
-        Its exit callback stayed silent (the slot's context was current by
-        then), and ``_execute`` returned when the slot was backgrounded, so
-        this is the only path that can report the total runtime.
-        """
-        notify.command_done(" ".join(slot.argv), slot.elapsed(), slot.exit_code or 0)
+        out_of_sight = owner is not None and owner != self.context_manager.current_name
+        notify.command_done(" ".join(slot.argv), slot.elapsed(), slot.exit_code or 0,
+                            context=owner if out_of_sight else None)
 
     def _tokenize_stage(self, stage: Stage) -> list[str]:
         """Expand variables, tokenize, alias-expand, and glob-expand a stage's text."""
@@ -2670,16 +2578,10 @@ class Shell:
             # the helper already printed an error.  Don't create the context.
             raise ValueError(f"@bg: failed to start '{display}'")
 
-        if name in existing:
-            target = existing[name]
-            target.process_slot = slot
-        else:
-            target = self.context_manager.new(name)
-            target.process_slot = slot
+        target = existing[name] if name in existing else self.context_manager.new(name)
         # ``@bg`` returns immediately, so the enclosing line's own timing says
-        # nothing about the body; the slot's exit callback is what reports it.
-        self._backgrounded = True
-        self._notify_when_backgrounded(slot)
+        # nothing about the body; the slot's exit handler is what reports it.
+        self._park(slot, target)
         return name
 
     def _make_background_slot(self, pipeline: Pipeline, display: str):
@@ -2707,7 +2609,8 @@ class Shell:
             ext = self._pipeline_external_argv(pipeline)
             if ext is not None:
                 argv, env_prefix = ext
-                slot = ProcessSlot()
+                slot = ProcessSlot(on_exit=self._slot_finished)
+                slot.parked = True   # before start: a body may end at once
                 try:
                     slot.start(argv=argv, env=self._merged_env(env_prefix), cwd=os.getcwd())
                 except FileNotFoundError:
@@ -2721,11 +2624,13 @@ class Shell:
             py = self._pipeline_python_command(pipeline)
             if py is not None:
                 cmd, args = py
-                slot = PythonCommandSlot(cmd, args)
+                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished)
+                slot.parked = True
                 slot.start()
                 return slot
 
-        slot = PipelineSlot(pipeline, display)
+        slot = PipelineSlot(pipeline, display, on_exit=self._slot_finished)
+        slot.parked = True
         slot.start()
         return slot
 
@@ -2755,7 +2660,8 @@ class Shell:
             return None
         env_prefix, tokens = self._split_env_prefix(tokens)
         if env_prefix:
-            # Let PipelineSlot handle it — it applies the prefix per-stage.
+            # Refused for a Python command — let PipelineSlot's stage path
+            # report it.
             return None
         cmd = self.registry.get(tokens[0])
         if cmd is None or not cmd.has_any_handler():
@@ -2853,7 +2759,7 @@ class Shell:
         outer_out_fd = _dup_threadlocal_override_fd(sys.stdout) if _in_outer_pipe else None
 
         # Workers list contains either subprocess.Popen instances or
-        # _PyStageHandle objects (see _start_python_stage_thread).
+        # _PyStageHandle objects (see _start_stage_thread).
         workers: list = []
         for idx, stage in enumerate(stages):
             stdin_fd_pipe = pipe_fds[idx - 1][0] if idx > 0 else outer_in_fd
@@ -2868,8 +2774,10 @@ class Shell:
                 # on the stage itself — redirects belong inside the braced
                 # body where the user can scope them precisely.  An MVP-level
                 # warning would be noise; just ignore them silently.
-                worker = self._start_decorator_stage_thread(
-                    decorator_call=stage.decorator,
+                call = stage.decorator
+                worker = self._start_stage_thread(
+                    label=f"@{call.name}",
+                    fn=lambda call=call: self._invoke_decorator(call),
                     stdin_fd=stdin_fd_pipe,
                     stdout_fd=stdout_fd_pipe,
                 )
@@ -2935,15 +2843,20 @@ class Shell:
             if redirect_error:
                 pass  # leave worker=None; cleanup below closes any open files/pipes
             elif is_py_stage:
-                worker = self._start_python_stage_thread(
-                    cmd=cmd,
-                    args=tokens[1:],
+                if env_prefix:
+                    # Refused (see _env_prefix_refused) — as the stage's own
+                    # work, so its pipe ends close and its status is 2.
+                    fn = lambda name=cmd.name, env=env_prefix: self._env_prefix_refused(name, env)
+                else:
+                    fn = lambda cmd=cmd, args=tokens[1:]: cmd.invoke(args)
+                worker = self._start_stage_thread(
+                    label=cmd.name,
+                    fn=fn,
                     stdin_fd=stdin_fd_pipe if stdin_pipe_used else None,
                     stdout_fd=stdout_fd_pipe if stdout_pipe_used else None,
                     stdin_file=stdin_file,
                     stdout_file=stdout_file,
                     stderr_dst=stderr_dst,
-                    env_prefix=env_prefix,
                 )
             else:
                 stdin_arg = stdin_file if stdin_file else stdin_fd_pipe
@@ -3048,33 +2961,29 @@ class Shell:
             exit_code = 130
         return exit_code
 
-    def _start_python_stage_thread(
+    def _start_stage_thread(
         self,
         *,
-        cmd,
-        args: list[str],
+        label: str,
+        fn: Callable[[], object],
         stdin_fd: int | None,
         stdout_fd: int | None,
-        stdin_file,
-        stdout_file,
-        stderr_dst,
-        env_prefix: dict[str, str] | None = None,
+        stdin_file=None,
+        stdout_file=None,
+        stderr_dst=None,
     ) -> "_PyStageHandle":
-        """Run a registered Python command as one stage of a pipeline.
+        """Run *fn* — a Python command or a decorator — as one pipeline stage.
 
         The thread takes ownership of *stdin_fd* / *stdout_fd* (raw OS pipe
         ends) or, when an explicit redirect is in play, the corresponding
-        opened file object.  It binds them to thread-local
-        sys.stdin/sys.stdout/sys.stderr for the duration of cmd.invoke().
-
-        *env_prefix* (from a ``FOO=bar pycmd`` stage) is applied to the
-        process-wide ``os.environ`` around ``cmd.invoke()``.  See
-        :meth:`_temp_environ` for the sibling-visibility caveat this carries
-        in a multi-stage pipeline.
+        opened file object, and binds them to its thread-local
+        ``sys.stdin`` / ``sys.stdout`` / ``sys.stderr`` for the duration of
+        *fn*.  A decorator body that re-enters ``_execute_pipeline`` through
+        ``Pipeline.run()`` inherits that binding, so its output flows on to
+        the next stage.  The exit status comes from :func:`run_handler`.
         """
-        # Decide which underlying object the thread owns.  Exactly one of
-        # (stdin_fd, stdin_file) is set when this stage has any stdin source,
-        # and similarly for stdout.
+        # Exactly one of (stdin_fd, stdin_file) is set when this stage has
+        # any stdin source, and similarly for stdout.
         in_obj = None
         if stdin_file is not None:
             in_obj = stdin_file
@@ -3087,9 +2996,9 @@ class Shell:
         elif stdout_fd is not None:
             out_obj = os.fdopen(stdout_fd, "wb", buffering=0, closefd=True)
 
-        err_obj = stderr_dst  # may be a file, "stdout" sentinel (subprocess.STDOUT), or None
+        err_obj = stderr_dst  # a file, subprocess.STDOUT (2>&1), or None
 
-        handle = _PyStageHandle(cmd_name=cmd.name)
+        handle = _PyStageHandle(cmd_name=label)
         in_wrapper = io.TextIOWrapper(in_obj, encoding="utf-8", errors="replace") if in_obj is not None else None
         out_wrapper = io.TextIOWrapper(out_obj, encoding="utf-8", errors="replace", write_through=True) if out_obj is not None else None
         err_wrapper = None
@@ -3111,44 +3020,22 @@ class Shell:
                     sys.stderr.set_override(out_wrapper if out_wrapper is not None else sys.stdout)
                 elif err_wrapper is not None:
                     sys.stderr.set_override(err_wrapper)
-
-                try:
-                    with self._temp_environ(env_prefix or {}):
-                        cmd.invoke(args)
-                    handle.exit_code = 0
-                except SystemExit as e:
-                    # Don't propagate; an `exit | cat` should not kill the shell.
-                    code = e.code
-                    handle.exit_code = code if isinstance(code, int) else (1 if code else 0)
-                except BrokenPipeError:
-                    handle.exit_code = 0
-                except KeyboardInterrupt:
-                    handle.exit_code = 130
-                except Exception as e:
-                    if handle.interrupted:
-                        # The parent closed our wrappers as part of Ctrl+C
-                        # handling.  Any I/O the worker did afterward will
-                        # raise (ValueError: closed file, or OSError) — that's
-                        # expected, not an error to report.
-                        handle.exit_code = 130
-                    else:
-                        print(f"{cmd.name}: error: {e}", file=sys.stderr)
-                        traceback.print_exc()
-                        handle.exit_code = 1
+                # After interrupt() closed our wrappers, an I/O error is the
+                # expected way out, not one to report.
+                handle.exit_code = run_handler(
+                    fn, label, interrupted=lambda: handle.interrupted)
             finally:
                 sys.stdin.clear_override()
                 sys.stdout.clear_override()
                 sys.stderr.clear_override()
-                # Flush wrappers so downstream readers see all output before
-                # the pipe closes.
+                # Flush, then close (which closes the underlying fds/files) —
+                # output first, so a reader pipe sees all of it and then EOF.
                 for w in (out_wrapper, err_wrapper):
                     if w is not None:
                         try:
                             w.flush()
                         except Exception:
                             pass
-                # Close the wrappers (which closes the underlying fds/files).
-                # Order matters: close output first so a reader pipe sees EOF.
                 for w in (out_wrapper, err_wrapper, in_wrapper):
                     if w is not None:
                         try:
@@ -3158,133 +3045,35 @@ class Shell:
                 _in_pipeline.flag = False
                 handle.done.set()
 
-        t = threading.Thread(target=_target, name=f"pipe-{cmd.name}", daemon=True)
+        t = threading.Thread(target=_target, name=f"pipe-{label}", daemon=True)
         handle.thread = t
         t.start()
         return handle
 
-    def _start_decorator_stage_thread(
-        self,
-        *,
-        decorator_call,
-        stdin_fd: int | None,
-        stdout_fd: int | None,
-    ) -> "_PyStageHandle":
-        """Run a ``@name`` decorator as one stage of a multi-stage pipeline.
+    def _invoke_decorator(self, decorator_call):
+        """Run a ``@name`` decorator over its body; returns its result.
 
-        Mirrors :meth:`_start_python_stage_thread` but invokes the decorator
-        function directly rather than dispatching through the command
-        registry.  The decorator's body re-enters ``_execute_pipeline`` via
-        ``Pipeline.run()``; that nested execution inherits this thread's
-        rebound ``sys.stdout`` (the pipe's write end) through the
-        thread-local routers, so the body's output flows downstream
-        transparently.
+        127 for an unknown decorator and 2 for a flag error (already printed
+        by its parser), matching what a command line would report.
         """
-        from .decorators import registry as decorator_registry, parse_decorator_args
-
-        in_obj = os.fdopen(stdin_fd, "rb", buffering=0, closefd=True) if stdin_fd is not None else None
-        out_obj = os.fdopen(stdout_fd, "wb", buffering=0, closefd=True) if stdout_fd is not None else None
-
-        handle = _PyStageHandle(cmd_name=f"@{decorator_call.name}")
-        in_wrapper = io.TextIOWrapper(in_obj, encoding="utf-8", errors="replace") if in_obj is not None else None
-        out_wrapper = io.TextIOWrapper(out_obj, encoding="utf-8", errors="replace", write_through=True) if out_obj is not None else None
-        for w in (in_wrapper, out_wrapper):
-            if w is not None:
-                handle._io_objs.append(w)
-
-        deco = decorator_registry.get(decorator_call.name)
-
-        def _target():
-            _in_pipeline.flag = True
-            try:
-                if in_wrapper is not None:
-                    sys.stdin.set_override(in_wrapper)
-                if out_wrapper is not None:
-                    sys.stdout.set_override(out_wrapper)
-
-                if deco is None:
-                    print(
-                        f"eosh: unknown decorator: @{decorator_call.name}",
-                        file=sys.stderr,
-                    )
-                    handle.exit_code = 127
-                    return
-
-                kwargs = parse_decorator_args(deco, decorator_call.flag_tokens)
-                if kwargs is None:
-                    handle.exit_code = 2
-                    return
-
-                try:
-                    deco.func(decorator_call.body, **kwargs)
-                    handle.exit_code = 0
-                except SystemExit as e:
-                    code = e.code
-                    handle.exit_code = code if isinstance(code, int) else (1 if code else 0)
-                except BrokenPipeError:
-                    handle.exit_code = 0
-                except KeyboardInterrupt:
-                    handle.exit_code = 130
-                except Exception as e:
-                    if handle.interrupted:
-                        handle.exit_code = 130
-                    else:
-                        print(f"@{deco.name}: error: {e}", file=sys.stderr)
-                        traceback.print_exc()
-                        handle.exit_code = 1
-            finally:
-                sys.stdin.clear_override()
-                sys.stdout.clear_override()
-                sys.stderr.clear_override()
-                if out_wrapper is not None:
-                    try:
-                        out_wrapper.flush()
-                    except Exception:
-                        pass
-                for w in (out_wrapper, in_wrapper):
-                    if w is not None:
-                        try:
-                            w.close()
-                        except Exception:
-                            pass
-                _in_pipeline.flag = False
-                handle.done.set()
-
-        t = threading.Thread(
-            target=_target, name=f"pipe-@{decorator_call.name}", daemon=True
-        )
-        handle.thread = t
-        t.start()
-        return handle
-
-    def _execute_decorator_stage(self, stage: Stage) -> int:
-        """Invoke a ``@name`` decorator with its parsed body pipeline."""
         # Local import — keeps decorators-package init lazy and avoids any
         # circular-import surprises during module load.
         from .decorators import registry as decorator_registry, parse_decorator_args
 
-        deco_call = stage.decorator
-        deco = decorator_registry.get(deco_call.name)
+        deco = decorator_registry.get(decorator_call.name)
         if deco is None:
-            print(f"eosh: unknown decorator: @{deco_call.name}", file=sys.stderr)
+            print(f"eosh: unknown decorator: @{decorator_call.name}", file=sys.stderr)
             return 127
-
-        kwargs = parse_decorator_args(deco, deco_call.flag_tokens)
+        kwargs = parse_decorator_args(deco, decorator_call.flag_tokens)
         if kwargs is None:
-            return 2  # parse error already printed by CmdParser
+            return 2
+        return deco.func(decorator_call.body, **kwargs)
 
-        try:
-            deco.func(deco_call.body, **kwargs)
-        except SystemExit:
-            raise
-        except KeyboardInterrupt:
-            print(f"@{deco.name}: interrupted")
-            return 130
-        except Exception as e:
-            print(f"@{deco.name}: error: {e}", file=sys.stderr)
-            traceback.print_exc()
-            return 1
-        return 0
+    def _execute_decorator_stage(self, stage: Stage) -> int:
+        """Run a lone ``@name`` stage on the main thread."""
+        call = stage.decorator
+        return run_handler(lambda: self._invoke_decorator(call), f"@{call.name}",
+                           announce_interrupt=True)
 
     def _execute_stage(self, stage: Stage) -> int:
         """Execute a lone stage with no redirects on the terminal.
@@ -3321,64 +3110,37 @@ class Shell:
         # the system command path so the real binary runs.
         if cmd is not None and not cmd.has_any_handler():
             cmd = None
+        if cmd and env_prefix:
+            return self._env_prefix_refused(command_name, env_prefix)
         if cmd:
-            if IS_WINDOWS:
-                # Windows lacks the PTY-backed slot used for thread-based
-                # context switching, so run the Python command synchronously.
-                # passthrough_run/passthrough_input fall back to direct
-                # subprocess.run/input since no slot is registered.
-                with self._temp_environ(env_prefix):
-                    return self._run_python_command_sync(cmd, command_name, args)
+            if IS_WINDOWS or cmd.sync:
+                # On the main thread: a `sync` command (the built-ins — they
+                # finish at once or change the shell's own state), and every
+                # command on Windows, which lacks the PTY-backed slot used for
+                # thread-based context switching.  passthrough_run falls back
+                # to subprocess.run and passthrough_input reads the terminal
+                # directly, since no slot is registered.
+                return run_handler(lambda: cmd.invoke(args), command_name,
+                                   announce_interrupt=True)
             else:
                 # Interactive Python command — run in a thread so Ctrl+] works.
-                # The per-command env prefix is applied for the duration of the
-                # foreground run.  If the command is backgrounded via Ctrl+]
-                # (result == "switched") the prefix is restored here — a
-                # backgrounded Python command does not keep the temporary env,
-                # matching the in-process-model caveats in doc/limitations.md.
                 ctx = self.context_manager.current()
-                slot = PythonCommandSlot(cmd, args)
-                with self._temp_environ(env_prefix):
-                    slot.start()
-                    result = self._enter_python_forwarding_mode(slot)
+                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished)
+                slot.start()
+                result = self._enter_python_forwarding_mode(slot)
                 if result == "switched":
                     slot.deactivate()
                     if ctx is not None:
-                        ctx.process_slot = slot
-                        self._backgrounded = True
-                        self._notify_when_backgrounded(slot)
+                        self._park(slot, ctx)
                     self._handle_switch()
                     return 0
                 if result == "interrupted":
                     print(f"{command_name}: interrupted")
                     return 130
                 slot.deactivate()
-                exc = slot._exit_exception
-                if isinstance(exc, SystemExit):
-                    raise exc
-                if exc is not None and not isinstance(exc, KeyboardInterrupt):
-                    print(f"{command_name}: error: {exc}")
                 return slot.exit_code or 0
 
         return self._execute_external(command_name, args, env_prefix=env_prefix)
-
-    def _run_python_command_sync(self, cmd, command_name: str, args: list[str]) -> int:
-        """Invoke a Python command on the main thread (Windows path)."""
-        try:
-            cmd.invoke(args)
-        except SystemExit:
-            raise
-        except KeyboardInterrupt:
-            print(f"{command_name}: interrupted")
-            return 130
-        except TypeError as e:
-            print(f"{command_name}: {e}")
-            return 1
-        except Exception as e:
-            print(f"{command_name}: error: {e}")
-            traceback.print_exc()
-            return 1
-        return 0
 
     def _execute_external_windows(
         self, command_name: str, args: list[str], env_prefix: dict[str, str] | None = None
@@ -3415,7 +3177,7 @@ class Shell:
 
         ctx = self.context_manager.current()
 
-        slot = ProcessSlot()
+        slot = ProcessSlot(on_exit=self._slot_finished)
         try:
             slot.start(
                 argv=[command_name] + args,
@@ -3433,11 +3195,7 @@ class Shell:
         slot.replay_buffer()  # flush any output that arrived before activate()
         result = self._enter_forwarding_mode(slot)
         if result == "switched":
-            if ctx is None:
-                ctx = self.context_manager.current()
-            ctx.process_slot = slot
-            self._backgrounded = True
-            self._notify_when_backgrounded(slot)
+            self._park(slot, ctx or self.context_manager.current())
             slot.deactivate()
             self._handle_switch()
             return 0
@@ -3512,10 +3270,9 @@ class Shell:
           • other keys    — forwarded to slot.write_stdin, which writes to
             a passthrough_run() PTY master if active (no-op otherwise).
 
-        If the command thread enters passthrough_input(), the loop restores
-        cooked terminal mode and stops reading stdin until the input() call
-        returns.  That gives the slot thread direct, line-buffered access
-        to the terminal for the prompt.
+        A command reading input (passthrough_input / _block) gets the keys
+        through ``slot.write_stdin`` like everything else; the loop keeps
+        raw mode throughout.
 
         Returns 'exited' when the thread finishes, 'switched' on Ctrl+].
         """
@@ -3532,19 +3289,6 @@ class Shell:
             except OSError:
                 pass
 
-        # SIGINT handler used only while the slot is in passthrough_input().
-        # The main loop is waiting on _input_resume; the slot is polling fd 0.
-        # Setting _input_interrupted causes the slot's poll loop to raise
-        # KeyboardInterrupt and unwind.  Cooked mode's ECHOCTL already
-        # prints "^C" on the user's terminal — we just need to bump down a
-        # line so the next prompt doesn't overwrite the input line.
-        def on_sigint_during_input(signum, frame):
-            try:
-                os.write(fd, b"\r\n")
-            except OSError:
-                pass
-            slot._input_interrupted.set()
-
         try:
             # Raw INPUT (so the main loop sees Ctrl+] / Ctrl+C / etc one key
             # at a time) but COOKED OUTPUT (kernel ONLCR re-adds CRs to bare
@@ -3555,25 +3299,9 @@ class Shell:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGWINCH, on_resize)
             # Replay any output buffered before raw mode was set
-            slot.activate(raw_mode=True)
+            slot.activate()
 
             while slot.is_alive():
-                if slot._input_request.is_set():
-                    # Hand stdin and cooked mode over to the slot thread for
-                    # the duration of its input() call.  Replace SIGINT
-                    # handling for the input window: the slot thread polls
-                    # _input_interrupted and raises KeyboardInterrupt.
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
-                    signal.signal(signal.SIGINT, on_sigint_during_input)
-                    slot._input_released.set()
-                    while slot.is_alive() and not slot._input_resume.is_set():
-                        slot._input_resume.wait(timeout=0.1)
-                    signal.signal(signal.SIGINT, signal.SIG_IGN)
-                    if not slot.is_alive():
-                        break
-                    terminal.set_raw_input_cooked_output(fd)
-                    continue
-
                 rlist, _, _ = select.select([fd], [], [], 0.1)
                 if fd in rlist:
                     data = os.read(fd, 1024)
@@ -3582,9 +3310,12 @@ class Shell:
                     if b"\x1d" in data:
                         result = "switched"
                         break
-                    if b"\x03" in data and not slot._pty_active:
-                        # No passthrough subprocess is running — interrupt
-                        # the Python command itself.
+                    if (b"\x03" in data and not slot._pty_active
+                            and not slot._reading_input):
+                        # No passthrough subprocess is running and the
+                        # command isn't asking a question (whose reader
+                        # turns Ctrl+C into its own KeyboardInterrupt) —
+                        # interrupt the Python command itself.
                         slot.deactivate()
                         slot.kill()
                         result = "interrupted"
@@ -3875,7 +3606,7 @@ class Shell:
             # path do the right thing for the new context's slot.  Otherwise
             # re-activate PTY slots so their reader thread can stream output
             # again.  PythonCommandSlots stay deactivated: their buffered
-            # output will be replayed correctly (with raw_mode=True) the next
+            # output will be replayed correctly the next
             # time _enter_python_forwarding_mode is called from run().
             new_ctx = self.context_manager.current()
             if new_ctx is None or (new_ctx.name != original_name):
@@ -3932,15 +3663,9 @@ class Shell:
                             print(f"{slot.argv[0]}: interrupted")
                             continue
                         else:
-                            exc = slot._exit_exception
+                            # Its exit handler already notified; an error
+                            # was reported on the slot's own stderr.
                             ctx.process_slot = None
-                            self._notify_resumed_done(slot)
-                            if isinstance(exc, SystemExit):
-                                raise exc
-                            if exc is not None and not isinstance(exc, KeyboardInterrupt):
-                                print(f"\n[Python command error: {exc}]")
-                            elif slot.exit_code and slot.exit_code != 0:
-                                print(f"\n[Process exited with code {slot.exit_code}]")
                             continue
                     else:
                         # Resume a PTY subprocess.
@@ -3953,7 +3678,6 @@ class Shell:
                         else:
                             exit_code = slot.exit_code
                             ctx.process_slot = None
-                            self._notify_resumed_done(slot)
                             if exit_code and exit_code != 0:
                                 print(f"\n[Process exited with code {exit_code}]")
                             continue
@@ -3989,6 +3713,8 @@ class Shell:
                 if full_text.strip():
                     self._line_editor.add_to_history(full_text)
                     self._execute(full_text.strip())
+                    if self._exit_requested:
+                        break
             except KeyboardInterrupt:
                 continue
             except EOFError:

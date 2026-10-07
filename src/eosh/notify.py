@@ -22,13 +22,14 @@ Every failure is swallowed — a shell that dies because a notification
 couldn't be delivered would be far worse than a missed notification.
 
 **What triggers one** is decided by the shell (see ``Shell._execute`` and
-``Shell._notify_slot_done``), in two cases:
+``Shell._slot_finished``), in two cases — each piece of work is reported by
+exactly one of them, and only if it ran at least :func:`get_threshold`
+seconds:
 
-1. A foreground command line that ran to completion in at least
-   :func:`get_threshold` seconds.
-2. A backgrounded slot (``Ctrl+]`` or ``@bg``) that finishes while its
-   context is *not* the current one — the case where the user is provably
-   looking at something else.
+1. A foreground command line that ran to completion.
+2. A slot that was parked on a context (``Ctrl+]`` or ``@bg``), when it
+   ends.  The message carries the context's name when that context isn't
+   the current one — the user was looking elsewhere.
 
 **Configuration** — at the prompt via two registered variables, or from
 ``~/.eosh/config.py`` via :func:`configure`::
@@ -329,16 +330,16 @@ _FALSEY = {"off", "false", "no", "0", "disabled"}
 def register_vars() -> None:
     """Register ``notify`` and ``notify_threshold`` with the variable registry.
 
-    Called from ``Shell._register_builtins``.  Both variables are
-    process-global rather than per-context: they declare no ``env_keys``, so
-    a context switch neither saves nor restores them — "tell me when things
-    finish" is a property of the person at the keyboard, not of the AWS
-    account they happen to be pointing at.
+    Called from ``Shell._register_builtins``.  Both are :class:`GlobalVar` objects —
+    process-global rather than per-context, so a context switch neither
+    saves nor restores them: "tell me when things finish" is a property of
+    the person at the keyboard, not of the AWS account they happen to be
+    pointing at.
     """
     from .completion import ChoiceCompleter
-    from .variables import Var, registry as var_registry
+    from .variables import GlobalVar, registry as var_registry
 
-    class _NotifyEnabledVar(Var):
+    class _NotifyEnabledVar(GlobalVar):
         @property
         def name(self) -> str:
             return "notify"
@@ -366,7 +367,7 @@ def register_vars() -> None:
         def value_completer(self):
             return ChoiceCompleter(["on", "off"])
 
-    class _NotifyThresholdVar(Var):
+    class _NotifyThresholdVar(GlobalVar):
         @property
         def name(self) -> str:
             return "notify_threshold"

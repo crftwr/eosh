@@ -92,13 +92,12 @@ def error_code(exc: botocore.exceptions.ClientError) -> str:
 
 
 def guard(fn):
-    """Turn the expected AWS/usage failures into one-line messages.
+    """Turn the expected AWS/usage failures into one-line messages and exit 1.
 
-    An eosh command runs in-process, so an uncaught ``ClientError`` would
-    dump a traceback into the middle of the user's session and a bare
-    ``SystemExit`` could take the shell down with it.  Every leaf handler in
-    the ``awsut`` tree is wrapped, so a failure reads like a shell error
-    instead.
+    An uncaught ``ClientError`` would put a traceback in the middle of the
+    user's session.  Every leaf handler in the ``awsut`` tree is wrapped, so a
+    failure reads like a shell error instead — and returns status 1, so
+    ``awsut … && next`` stops there.
     """
 
     @functools.wraps(fn)
@@ -112,6 +111,7 @@ def guard(fn):
                   file=sys.stderr)
         except botocore.exceptions.ClientError as exc:
             print(f"error: {api_message(exc)}", file=sys.stderr)
+        return 1
 
     return wrapper
 

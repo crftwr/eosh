@@ -212,9 +212,9 @@ def _register_unavailable(name: str, missing: str) -> None:
     if registry.has(name) or shutil.which(name):
         return
 
-    def unavailable(*_args: str) -> None:
+    def unavailable(*_args: str) -> int:
         print(missing_message(name, missing), file=sys.stderr)
-        raise SystemExit(127)
+        return 127
 
     registry.command(name, help=f"(unavailable: needs {missing!r} — run it for details)")(unavailable)
 

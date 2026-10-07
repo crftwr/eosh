@@ -1,40 +1,35 @@
-"""Python-backed shell variables — Var ABC, VarRegistry, convenience subclasses, VarCompleter.
+"""Python-backed shell variables — Var, EnvVar, PyVar, GlobalVar, VarRegistry, VarCompleter.
 
-Users subclass Var and register instances with the module-level ``registry``
-to define variables that have custom get/set logic and optional value
-completion.  The built-in ``var`` command dispatches through VarRegistry
-before falling back to plain os.environ writes.
+Register a variable with the module-level ``registry`` to give
+``var NAME=VALUE`` (and bare ``NAME=VALUE``, and ``$NAME``) a logical name,
+a description and value completion.  Three kinds — where the value lives,
+and whether it follows the context:
+
+* :class:`EnvVar` — **declarative**: a logical name over one or more
+  ``os.environ`` keys.  The shell does every write, through the context
+  manager, so each key is saved and restored per context like any variable
+  set with ``var``.
+
+* :class:`PyVar` — a value kept on the **Python side** (an add-on's
+  endpoint URL): subclass it and implement ``get`` / ``set`` / ``unset``.
+  Per-context like an EnvVar, but never in ``os.environ``, so child
+  processes don't see it.
+
+* :class:`GlobalVar` — the same, but **process-global** (``notify``,
+  ``notify_threshold``): context switches leave it alone.
 
 Example::
 
-    from eosh import var_registry, Var, EnvVar
+    from eosh import var_registry, EnvVar
     from eosh.completion import ChoiceCompleter, CallbackCompleter
 
-    REGIONS = ["us-east-1", "us-west-2", "eu-west-1", "ap-northeast-1"]
-
-    class AwsRegionVar(Var):
-        name = "aws_region"
-        description = "AWS region — sets AWS_REGION + AWS_DEFAULT_REGION"
-
-        def get(self):
-            return os.environ.get("AWS_REGION")
-
-        def set(self, value):
-            os.environ["AWS_REGION"] = value
-            os.environ["AWS_DEFAULT_REGION"] = value
-
-        @property
-        def env_keys(self):
-            return ["AWS_REGION", "AWS_DEFAULT_REGION"]
-
-        @property
-        def value_completer(self):
-            return ChoiceCompleter(REGIONS)
-
-    var_registry.register(AwsRegionVar())
     var_registry.register(EnvVar(
-        name="aws_profile",
-        env_var="AWS_PROFILE",
+        "aws_region", keys=["AWS_REGION", "AWS_DEFAULT_REGION"],
+        completer=ChoiceCompleter(["us-east-1", "us-west-2", "eu-west-1"]),
+        description="AWS region — sets AWS_REGION + AWS_DEFAULT_REGION",
+    ))
+    var_registry.register(EnvVar(
+        "aws_profile", keys="AWS_PROFILE",
         completer=CallbackCompleter(list_aws_profiles),
         description="AWS named profile",
     ))
@@ -49,18 +44,15 @@ from __future__ import annotations
 import dataclasses
 import os
 from abc import ABC, abstractmethod
+from typing import Sequence
 
 from .completion import Completer, Completion, CompletionContext
 
 
 class Var(ABC):
-    """Base class for a Python-backed shell variable.
-
-    Subclass and register with the module-level ``registry`` to define a variable with
-    custom get/set logic and an optional value completer.  The env_keys
-    property tells the shell which ``os.environ`` keys to save/restore on
-    context switch.
-    """
+    """What ``var`` lists, reads and completes.  Register an :class:`EnvVar`,
+    a :class:`PyVar` or a :class:`GlobalVar` — the shell needs to know which
+    one it is writing."""
 
     @property
     @abstractmethod
@@ -70,33 +62,8 @@ class Var(ABC):
 
     @abstractmethod
     def get(self) -> str | None:
-        """Return the current display value, or None if unset."""
+        """Return the current value, or None if unset."""
         ...
-
-    @abstractmethod
-    def set(self, value: str) -> None:
-        """Apply the new value (called by ``var NAME=VALUE``)."""
-        ...
-
-    def unset(self) -> None:
-        """Remove the variable (called by ``var NAME=``).
-
-        Default implementation removes every key returned by :attr:`env_keys`
-        from ``os.environ``.  Override for custom teardown logic.
-        """
-        for k in self.env_keys:
-            os.environ.pop(k, None)
-
-    @property
-    def env_keys(self) -> list[str]:
-        """The actual ``os.environ`` keys this Var manages.
-
-        The shell registers these with the context manager so their values are
-        saved when leaving a context and restored when returning.  Override in
-        subclasses to declare which environment variables your ``set()``
-        implementation writes.
-        """
-        return []
 
     @property
     def value_completer(self) -> Completer | None:
@@ -110,12 +77,16 @@ class Var(ABC):
 
 
 class EnvVar(Var):
-    """1-to-1 passthrough to a single ``os.environ`` key with an optional completer.
+    """A logical name over one or more ``os.environ`` keys.
+
+    Declarative: the shell writes *keys* itself — every one gets the value —
+    through the context manager, so they are saved and restored per context.
+    Reading returns the first key.
 
     Args:
-        name:        Logical shell name (e.g. ``'aws_profile'``).
-        env_var:     The actual ``os.environ`` key to read/write.
-                     Defaults to *name* when omitted.
+        name:        Logical shell name (e.g. ``'aws_region'``).
+        keys:        The ``os.environ`` key, or keys, the name stands for.
+                     Defaults to *name*.
         completer:   Value completer shown when the user types ``NAME=<TAB>``.
         description: Short description shown in ``var`` listings.
     """
@@ -123,12 +94,18 @@ class EnvVar(Var):
     def __init__(
         self,
         name: str,
-        env_var: str | None = None,
+        keys: str | Sequence[str] | None = None,
         completer: Completer | None = None,
         description: str = "",
     ) -> None:
         self._name = name
-        self._env_var = env_var or name
+        if keys is None:
+            keys = [name]
+        elif isinstance(keys, str):
+            keys = [keys]
+        if not keys:
+            raise ValueError(f"EnvVar {name!r} needs at least one key")
+        self.keys: tuple[str, ...] = tuple(keys)
         self._completer = completer
         self._description = description
 
@@ -136,15 +113,8 @@ class EnvVar(Var):
     def name(self) -> str:
         return self._name
 
-    @property
-    def env_keys(self) -> list[str]:
-        return [self._env_var]
-
     def get(self) -> str | None:
-        return os.environ.get(self._env_var)
-
-    def set(self, value: str) -> None:
-        os.environ[self._env_var] = value
+        return os.environ.get(self.keys[0])
 
     @property
     def value_completer(self) -> Completer | None:
@@ -154,6 +124,39 @@ class EnvVar(Var):
     def description(self) -> str:
         return self._description
 
+
+class _ValueVar(Var):
+    """A value that lives on the Python side — no environment key, so it
+    never reaches a child process.  Subclass :class:`PyVar` or
+    :class:`GlobalVar`, implementing :meth:`get`, :meth:`set` and, if
+    "unset" means more than ``set("")``, :meth:`unset`."""
+
+    @abstractmethod
+    def set(self, value: str) -> None:
+        """Apply the new value (``var NAME=VALUE``)."""
+        ...
+
+    def unset(self) -> None:
+        """Clear it (``var NAME=``)."""
+        self.set("")
+
+
+class PyVar(_ValueVar):
+    """A per-context value kept on the Python side (an add-on's endpoint URL).
+
+    Like an :class:`EnvVar` it follows the context: the context manager
+    saves :meth:`get` when leaving a context and calls :meth:`set` (or
+    :meth:`unset`, for ``None``) when coming back, and a context made with
+    ``context new`` / Ctrl+N starts from the current value.  Unlike one, it
+    stays out of ``os.environ``, so child processes never see it.
+    """
+
+
+class GlobalVar(_ValueVar):
+    """A process-global value kept on the Python side (``notify``,
+    ``notify_threshold``): one value for the whole shell, untouched by
+    context switches — it belongs to the person at the keyboard, not to the
+    environment a context carries."""
 
 
 class VarRegistry:
@@ -169,7 +172,13 @@ class VarRegistry:
         self._builtin_names: set[str] = set()
 
     def register(self, var: Var) -> None:
-        """Register a :class:`Var` instance under its logical name."""
+        """Register an :class:`EnvVar`, :class:`PyVar` or :class:`GlobalVar`."""
+        if not isinstance(var, (EnvVar, PyVar, GlobalVar)):
+            raise TypeError(
+                f"{type(var).__name__}: register an EnvVar (os.environ keys), "
+                f"a PyVar subclass (a per-context Python value) or a GlobalVar "
+                f"subclass (a process-global Python value)"
+            )
         self._vars[var.name] = var
 
     def get(self, name: str) -> Var | None:
@@ -200,7 +209,7 @@ class VarCompleter(Completer):
     Three completion phases:
 
     * Typing ``aws_<TAB>``            → list registered Var names (with ``=`` appended).
-    * Typing ``aws_region=<TAB>``     → delegate to ``AwsRegionVar.value_completer``.
+    * Typing ``aws_region=<TAB>``     → delegate to the variable's ``value_completer``.
     * Typing ``aws_region=us-<TAB>``  → narrow the value list by prefix.
 
     The ``=``-split is local to this completer; the global tokeniser is not

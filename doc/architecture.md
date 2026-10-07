@@ -102,7 +102,7 @@ A handler-less `Command` (no callable attached) is treated by the dispatch path 
 
 ### variables.py — Variable Registry
 
-Python-backed shell variables. `Var` is the ABC; subclass and register instances with `var_registry`. The `var` built-in command and `$NAME` / `${NAME}` expansion both check the registry first, then fall back to `os.environ`. `EnvVar(name, env_var, completer=...)` is the convenience subclass for a 1-to-1 passthrough to a single env key. `VarCompleter` handles `KEY=VALUE` TAB completion locally without changing the global tokenizer. See the Variable Registry section in CLAUDE.md.
+Python-backed shell variables, registered with `var_registry`: an `EnvVar(name, keys=..., completer=...)` names one or more `os.environ` keys that the shell writes (per context, through the `ContextManager`), a `PyVar` subclass holds a per-context value on the Python side (saved and restored with the context, never in `os.environ`), and a `GlobalVar` subclass a process-global one. The `var` built-in command and `$NAME` / `${NAME}` expansion both check the registry first, then fall back to `os.environ`. `VarCompleter` handles `KEY=VALUE` TAB completion locally without changing the global tokenizer. See the Variable Registry section in CLAUDE.md.
 
 ### completion.py — Completion Engine
 
@@ -340,6 +340,6 @@ These are not bugs and they are not blocking work. They are the architectural ro
 - **`shell.py` imports private names from `pipeline.py`** — `_split_on_operators` is used both for completion-stage isolation and for decorator-prefix remainder validation. It is part of `pipeline.py`'s effective public surface; the leading underscore is a leftover.
 - **Two near-identical raw-mode forwarding loops** (`_enter_forwarding_mode` for PTY-backed `ProcessSlot`, `_enter_python_forwarding_mode` for `PythonCommandSlot`) duplicate ~80% of their logic — termios snapshot/restore, SIGWINCH/SIGINT install, `\x1d` interception, byte forwarding. Any fix has to be applied twice today.
 - **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.
-- **`PipelineSlot` reaches into `PythonCommandSlot` privates** (`_input_request`, `_pty_lock`, `_proxy`, ...) by mirroring `__init__` rather than calling `super().__init__()`. The base class is not subclass-friendly — the inheritance is more "happens to share fields" than "is-a."
+- **`PipelineSlot` reaches into `PythonCommandSlot` privates** (`_keybuf`, `_pty_lock`, `_proxy`, ...) by mirroring `__init__` rather than calling `super().__init__()`. The base class is not subclass-friendly — the inheritance is more "happens to share fields" than "is-a."
 
 The shape of the relief is sketched in `enhancements.md`: extract `slots.py` (Python-command slot family + thread-local routers + passthrough helpers), extract `dispatch.py` (the pipeline executor), unify the two forwarding loops behind a small slot interface, and replace the global setters with a single `ExecutionEnvironment` interface that `Shell` constructs and passes down. None of this is a one-shot refactor — it is a sequence of medium-risk moves, each independently valuable.

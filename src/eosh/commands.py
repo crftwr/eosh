@@ -287,6 +287,7 @@ class Command:
     description: str = ""     # first line of help, shown in listings and as CmdParser description
     help_text: str = ""
     delegate: Completer | None = None  # answers every completion slot (see registry.command)
+    sync: bool = False        # run on the main thread, not a backgroundable slot
     parent: "Command | None" = None
     children: dict[str, "Command"] = field(default_factory=dict)
 
@@ -414,26 +415,30 @@ class Command:
         remaining = [t for k, t in enumerate(tokens) if k not in consumed_indices]
         return node, remaining
 
-    def invoke(self, args: list[str] | tuple[str, ...]) -> None:
-        """Run this command (or the sub-command *args* resolve to)."""
-        node, remaining = self.resolve(list(args)) if self.children else (self, list(args))
-        node._invoke_self(remaining)
+    def invoke(self, args: list[str] | tuple[str, ...]):
+        """Run this command (or the sub-command *args* resolve to).
 
-    def _invoke_self(self, args: list[str]) -> None:
+        Returns what the handler returned — the shell takes an ``int`` as
+        the exit status — or ``2`` when argparse rejected the arguments
+        (its own convention; the error is already printed).
+        """
+        node, remaining = self.resolve(list(args)) if self.children else (self, list(args))
+        return node._invoke_self(remaining)
+
+    def _invoke_self(self, args: list[str]):
         if self.func is None:
             if self.children:
                 _print_group_help(self)
             else:
                 print(self.help_text or f"{self.name}: no handler")
-            return
+            return None
         if self.params is None:
             # A flat command declared without params: positional *args.
-            self.func(*args)
-            return
+            return self.func(*args)
         ns = _build_parser(self._full_name(), self.params, self.description or None).parse_args(args)
         if ns is None:
-            return
-        self.func(**vars(ns))
+            return 2   # usage error (or --help), already printed
+        return self.func(**vars(ns))
 
     def _full_name(self) -> str:
         """Space-separated full path from root, used in usage and errors."""
@@ -474,6 +479,7 @@ class CommandRegistry:
         params: list[Arg] | None = None,
         help: str | None = None,
         delegate: Completer | None = None,
+        sync: bool = False,
     ) -> Command:
         """Register a top-level command, group, or external recipe; return it.
 
@@ -491,6 +497,13 @@ class CommandRegistry:
         completion slot (flags and every positional), for an external tool
         that ships its own completion protocol (``aws_completer``, cobra's
         ``__complete``).  Cannot be combined with ``params``.
+
+        ``sync`` — run on the main thread instead of a background-thread
+        slot.  For commands that finish at once or change the shell's own
+        state (``cd``, ``var``, ``context``): no slot, no raw-mode
+        forwarding, no output proxy, and the state changes on the thread
+        that owns it.  The cost is that Ctrl+] can't background it while it
+        runs.  On Windows every Python command runs this way.
         """
         if not isinstance(name, str):
             raise TypeError("registry.command() needs a name: "
@@ -504,6 +517,7 @@ class CommandRegistry:
             description=help or "",
             help_text=_build_help_text(help, None, name, params),
             delegate=delegate,
+            sync=sync,
         )
         self._commands[name] = cmd
         return cmd

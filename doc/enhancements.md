@@ -177,10 +177,9 @@ of [architecture.md](architecture.md).
   ~80% of their logic — termios snapshot/restore, SIGWINCH+SIGINT
   install, `\x1d` interception, byte forwarding. Factor into one
   `ForwardingLoop` taking a slot interface
-  (`is_alive` / `write_stdin` / `kill` / `resize` /
-  `on_input_request()`). `ProcessSlot` returns `None` from
-  `on_input_request`; `PythonCommandSlot` returns its
-  passthrough-input coordination object. *Risk:* low — surface
+  (`is_alive` / `write_stdin` / `kill` / `resize`); input reads no
+  longer need a hook — `passthrough_input` reads the same key stream
+  the loop forwards (#38). *Risk:* low — surface
   is small; cuts ~100 lines and removes a bug class (any fix
   today must be applied twice).
 

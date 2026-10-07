@@ -89,47 +89,47 @@ finally:
 
 The `_backgrounded` flag is the interesting part. `Ctrl+]` and `@bg` both
 make `_execute` return long before the work finishes, so the line's own
-duration says nothing about it. Those paths set the flag and arm the slot
-instead (`_notify_when_backgrounded`).
+duration says nothing about it. Both hand the slot over through one helper,
+`_park`, which sets the flag along with `slot.parked`.
 
-**2. A backgrounded slot, via its exit callback.** `_notify_slot_done` looks
-up which context owns the slot *at exit time* and stays silent unless it
-finds one that is not the current context:
+**2. A parked slot, via its exit handler.** Every slot is constructed with
+`on_exit=Shell._slot_finished`, called once when its work ends (on the slot's
+own thread):
 
 ```python
+if not slot.parked:
+    return                      # foreground: _execute timed the whole line
 owner = next((n for n, c in ... if c.process_slot is slot), None)
-if owner is None or owner == self.context_manager.current_name:
-    return
+out_of_sight = owner is not None and owner != current
+notify.command_done(argv, slot.elapsed(), code,
+                    context=owner if out_of_sight else None)
 ```
 
-Both early returns are deliberate. No owner means the slot was never parked
-on a context — a plain foreground command, already reported by `_execute`.
-Owner == current means the user switched back and is watching it finish on
-screen; a popup for something you are looking at is noise. The remaining
-case — a context you are not looking at — is the one place where the user is
-*provably* elsewhere, and it is reported with the context name in the
-message: `[bg-1] make -j8`.
+A slot that was never parked ran in the foreground and is already covered by
+`_execute`. A parked one is always reported — `_execute` returned long ago —
+with the context's name in the message when that context isn't the current
+one (`[bg-1] make -j8`), the case where the user is *provably* elsewhere. One
+that was resumed and watched to the end is reported without the prefix; its
+duration then spans time the user spent watching.
 
-A slot that was backgrounded and then finishes while resumed is reported by
-`run()`'s resume paths through `_notify_resumed_done`, without a context
-prefix. That is the one case where the reported duration spans time the user
-spent watching.
+### Why the handler is wired at construction
 
-### The arming race
-
-The shell can only arm a slot *after* it has decided the slot went to the
-background — by which time the work may already be over.
-`ExitCallbackMixin` closes that gap with `_exit_pending`: `_fire_on_exit()`
-always records "I ended" even with nothing armed, and `arm_exit_callback()`
-fires immediately if it finds that record. A lock plus a `_on_exit_fired`
-flag guarantees exactly one of the two paths delivers.
+An earlier version armed the callback only once the shell had decided the
+slot went to the background — by which time the work could already be over —
+so `ExitCallbackMixin` needed a pending-exit record, a lock and a
+fired-once flag to make exactly one of two paths deliver, plus a separate
+`_notify_resumed_done` path in `run()`. Passing the handler to the
+constructor, before anything runs, removes the race: the decision moves to
+exit time, where `parked` already says everything. `@bg` slots are marked
+parked before they start, so a body that ends at once is still a parked one.
 
 It is a mixin rather than a base class because `PipelineSlot` deliberately
 bypasses its parent's `__init__` and hand-mirrors attributes; every slot
-type calls `_init_exit_callback()` from its own constructor. The three
-call sites for `_fire_on_exit()` are `ProcessSlot._reader_loop`'s `finally`
-(after the PTY is closed and the child reaped), and `PythonCommandSlot._run`
-/ `PipelineSlot._run` right after `self._finished.set()`.
+type calls `_init_exit_callback(on_exit)` from its own constructor. The
+three call sites for `_fire_on_exit()` are `ProcessSlot._reader_loop`'s
+`finally` (after the PTY is closed and the child reaped), and
+`PythonCommandSlot._run` / `PipelineSlot._run` right after
+`self._finished.set()`.
 
 ## The skip list
 
@@ -160,7 +160,7 @@ anything else prints an error and leaves the setting alone, as does a
 non-numeric or negative threshold. `var notify=` disables;
 `var notify_threshold=` restores the 10-second default.
 
-Both variables declare no `env_keys`, so they are process-global rather than
+Both are `GlobalVar`s, so they are process-global rather than
 per-context: a context switch neither saves nor restores them. "Tell me when
 things finish" is a property of the person at the keyboard, not of the AWS
 account they happen to be pointing at.

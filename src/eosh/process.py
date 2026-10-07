@@ -46,32 +46,33 @@ class OutputBuffer:
 
 
 class ExitCallbackMixin:
-    """One-shot "this slot finished" callback, shared by every slot type.
+    """The "this slot's work ended" hook and the facts it reports, shared by
+    every slot type.
 
     A slot's work ends on a thread the shell isn't watching — ``ProcessSlot``'s
-    reader thread, ``PythonCommandSlot``'s command thread — so anything that
-    should happen at that moment (today: the desktop notification in
-    :mod:`eosh.notify`) needs a hook there rather than a poll.
+    reader thread, ``PythonCommandSlot``'s command thread — so the shell
+    passes its handler (*on_exit*, called with the slot) when it constructs
+    the slot, and the end of the work calls it exactly once.  Wired at
+    construction, before anything runs, it can't race the slot's own end.
 
-    :meth:`arm_exit_callback` closes the race the shell can't otherwise avoid:
-    a slot is armed only *after* the code that owns it decides it went to the
-    background, by which time it may already have finished.  So the end-of-work
-    call records "I ended" even with no callback registered, and arming later
-    delivers immediately.  Exactly one of the two paths ever fires.
+    :attr:`parked` is what the handler decides on: the shell sets it when it
+    hands the slot to a context to keep running in the background (Ctrl+],
+    ``@bg``).  A slot that never was ran in the foreground, and the line's own
+    timing already covered it.
 
     Mixin rather than base class because ``PipelineSlot`` deliberately
     bypasses its parent's ``__init__``; every slot calls
     :meth:`_init_exit_callback` from its own constructor instead.
     """
 
-    def _init_exit_callback(self) -> None:
-        self.on_exit: Callable[[], None] | None = None
-        #: ``time.monotonic()`` at :meth:`start`, so the callback can report
+    def _init_exit_callback(self, on_exit: "Callable[[object], None] | None" = None) -> None:
+        self.on_exit = on_exit
+        #: Set by the shell when the slot is parked on a context.
+        self.parked = False
+        #: ``time.monotonic()`` at :meth:`start`, so the handler can report
         #: how long the work took.
         self.start_time: float | None = None
         self._on_exit_fired = False
-        self._exit_pending = False
-        self._on_exit_lock = threading.Lock()
 
     def mark_started(self) -> None:
         self.start_time = time.monotonic()
@@ -82,30 +83,13 @@ class ExitCallbackMixin:
             return 0.0
         return time.monotonic() - self.start_time
 
-    def arm_exit_callback(self, callback: Callable[[], None]) -> None:
-        """Register *callback*, firing it right away if the slot already ended."""
-        with self._on_exit_lock:
-            self.on_exit = callback
-            fire_now = self._exit_pending and not self._on_exit_fired
-            if fire_now:
-                self._on_exit_fired = True
-        if fire_now:
-            self._invoke_exit_callback(callback)
-
     def _fire_on_exit(self) -> None:
-        """Signal end-of-work; invoke ``on_exit`` if one is already armed."""
-        with self._on_exit_lock:
-            self._exit_pending = True
-            callback = self.on_exit
-            if callback is None or self._on_exit_fired:
-                return
-            self._on_exit_fired = True
-        self._invoke_exit_callback(callback)
-
-    @staticmethod
-    def _invoke_exit_callback(callback: Callable[[], None]) -> None:
+        """Signal end-of-work: call ``on_exit(self)`` once."""
+        if self._on_exit_fired or self.on_exit is None:
+            return
+        self._on_exit_fired = True
         try:
-            callback()
+            self.on_exit(self)
         except Exception:
             pass  # a slot's teardown must not die on a bad callback
 
@@ -163,8 +147,8 @@ def _opposite(action: bytes) -> bytes:
 class ProcessSlot(ExitCallbackMixin):
     """Manages a single PTY subprocess with output buffering for context switching."""
 
-    def __init__(self):
-        self._init_exit_callback()
+    def __init__(self, on_exit=None):
+        self._init_exit_callback(on_exit)
         self.pid: int = -1
         self.master_fd: int = -1
         self.argv: list[str] = []
