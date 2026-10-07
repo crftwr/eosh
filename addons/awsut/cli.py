@@ -36,14 +36,15 @@ column for column.
 
 Profile and region switching live in the ``aws`` recipe as ``EnvVar`` objects
 (``var aws_profile=...``, ``var aws_region=...``).  The SageMaker endpoint
-and SageMaker service name are ``Setting`` objects — set them
+and SageMaker service name are ``PyVar`` objects — set them
 at the prompt with ``var sagemaker_endpoint=...`` /
 ``var sagemaker_service_name=...`` (or ``var sagemaker_endpoint=`` to
 unset), as are the AgentCore endpoints — one per plane, since a memory is
 reached through both: ``var agentcore_control_endpoint=...`` and
 ``var agentcore_data_endpoint=...``, registered by that subpackage.  All
 of these are stored in module-level Python variables (not ``os.environ``), so
-they don't leak into subprocesses.
+they don't leak into subprocesses — and, being PyVars, each context keeps
+its own (a prod and a staging context can point at different endpoints).
 
 User-customisable defaults (read from ``~/.eosh/config.py`` if set):
 
@@ -73,7 +74,7 @@ from eosh.commands import registry as command_registry, arg
 from eosh.completion import Completer, Completion, CompletionContext, FileCompleter
 from eosh.completion_cache import aws_env_key, get_or_fetch
 from eosh import passthrough_input_block
-from eosh.variables import Setting, registry as var_registry
+from eosh.variables import PyVar, registry as var_registry
 from .common import (
     RED,
     RESET,
@@ -885,9 +886,9 @@ class _CfStackNameCompleter(Completer):
                 for s in stacks if s["StackName"].startswith(ctx.prefix)]
 
 
-# ─── module-level settings (`var NAME=…`) ───────────────────────────────────
+# ─── per-context Python-side variables (`var NAME=…`) ───────────────────────
 
-class _SagemakerEndpointVar(Setting):
+class _SagemakerEndpointVar(PyVar):
     name = "sagemaker_endpoint"
     description = "SageMaker endpoint URL (blank = AWS default)"
 
@@ -903,7 +904,7 @@ class _SagemakerEndpointVar(Setting):
         sagemaker_endpoint = ""
 
 
-class _SagemakerServiceNameVar(Setting):
+class _SagemakerServiceNameVar(PyVar):
     name = "sagemaker_service_name"
     description = "boto3 service name for SageMaker client (default: sagemaker)"
 

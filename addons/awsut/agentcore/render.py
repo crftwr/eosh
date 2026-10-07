@@ -49,7 +49,7 @@ import botocore
 import botocore.session
 
 from eosh.completion_cache import aws_env_key
-from eosh.variables import Setting
+from eosh.variables import PyVar
 from .. import cli as awsut
 from ..common import (  # noqa: F401  (re-exported for this package)
     DOT_INTERVAL,
@@ -303,9 +303,9 @@ def print_reasons(rows, name_of) -> None:
             print(row[REASON])
 
 
-# ─── module-level settings (`var NAME=…`) ───────────────────────────────────
+# ─── per-context Python-side variables (`var NAME=…`) ───────────────────────
 
-class ControlEndpointVar(Setting):
+class ControlEndpointVar(PyVar):
     name = "agentcore_control_endpoint"
     description = (f"{CONTROL_SERVICE} endpoint URL (blank = AWS default)")
 
@@ -321,7 +321,7 @@ class ControlEndpointVar(Setting):
         control_endpoint = ""
 
 
-class DataEndpointVar(Setting):
+class DataEndpointVar(PyVar):
     name = "agentcore_data_endpoint"
     description = (f"{DATA_SERVICE} endpoint URL (blank = AWS default)")
 

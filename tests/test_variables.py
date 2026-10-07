@@ -8,7 +8,8 @@ import pytest
 
 from eosh.variables import (
     EnvVar,
-    Setting,
+    GlobalVar,
+    PyVar,
     Var,
     VarCompleter,
     VarRegistry,
@@ -289,11 +290,72 @@ class TestVarCompleter:
 # Custom Var subclass (integration)
 # ---------------------------------------------------------------------------
 
-class TestSetting:
-    def _setting(self):
-        class Mode(Setting):
-            value: str = "auto"
-            name = "mode"
+def _value_var(base, var_name):
+    class Mode(base):
+        name = var_name
+        value: str = "auto"
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+        def unset(self):
+            self.value = "auto"
+
+    return Mode()
+
+
+@pytest.fixture
+def registered(monkeypatch):
+    """Register vars for one test; the registry is restored afterwards."""
+    before = dict(var_registry._vars)
+    yield var_registry.register
+    var_registry._vars = before
+
+
+class TestPyVarAndGlobalVar:
+    def test_the_shell_calls_set_and_unset_and_writes_no_environment(self, registered):
+        from eosh.shell import Shell
+
+        for base in (PyVar, GlobalVar):
+            v = _value_var(base, f"mode_{base.__name__}")
+            registered(v)
+            sh = Shell()
+            env_before = dict(os.environ)
+            sh._set_variable(v.name, "fast")
+            assert v.get() == "fast"
+            sh._unset_variable(v.name)
+            assert v.get() == "auto"
+            assert dict(os.environ) == env_before
+            assert v.name not in sh.context_manager.current().variables
+
+    def test_a_pyvar_follows_the_context(self, registered):
+        from eosh.shell import Shell
+
+        v = _value_var(PyVar, "endpoint")
+        registered(v)
+        sh = Shell()
+        cm = sh.context_manager
+        sh._set_variable("endpoint", "prod-url")
+        cm.new("staging")                # starts from the current value
+        cm.switch("staging")
+        assert v.get() == "prod-url"
+        sh._set_variable("endpoint", "staging-url")
+        cm.switch("default")
+        assert v.get() == "prod-url"
+        cm.switch("staging")
+        assert v.get() == "staging-url"
+        cm.remove("staging")             # closing returns to default's value
+        assert v.get() == "prod-url"
+
+    def test_an_unset_pyvar_is_restored_as_unset(self, registered):
+        from eosh.shell import Shell
+
+        class Url(PyVar):
+            name = "url"
+            value = None
 
             def get(self):
                 return self.value
@@ -301,33 +363,39 @@ class TestSetting:
             def set(self, value):
                 self.value = value
 
-        return Mode()
+            def unset(self):
+                self.value = None
 
-    def test_the_shell_calls_set_and_unset_and_writes_no_environment(self, monkeypatch):
+        v = Url()
+        registered(v)
+        sh = Shell()
+        cm = sh.context_manager
+        cm.new("other")
+        cm.switch("other")
+        sh._set_variable("url", "x")
+        cm.switch("default")
+        assert v.get() is None
+
+    def test_a_globalvar_ignores_the_context(self, registered):
         from eosh.shell import Shell
 
-        reg_before = dict(var_registry._vars)
-        s = self._setting()
-        var_registry.register(s)
-        try:
-            sh = Shell()
-            env_before = dict(os.environ)
-            sh._set_variable("mode", "fast")
-            assert s.get() == "fast"
-            sh._unset_variable("mode")
-            assert s.get() == ""            # default unset() is set("")
-            assert dict(os.environ) == env_before
-            assert "mode" not in sh.context_manager.current().variables
-        finally:
-            var_registry._vars = reg_before
+        v = _value_var(GlobalVar, "verbosity")
+        registered(v)
+        sh = Shell()
+        cm = sh.context_manager
+        cm.new("other")
+        cm.switch("other")
+        sh._set_variable("verbosity", "loud")
+        cm.switch("default")
+        assert v.get() == "loud"
 
     def test_defaults(self):
-        s = self._setting()
-        assert s.value_completer is None
-        assert s.description == ""
+        v = _value_var(PyVar, "m")
+        assert v.value_completer is None
+        assert v.description == ""
 
 
-class TestRegistryAcceptsOnlyTheTwoKinds:
+class TestRegistryAcceptsOnlyTheThreeKinds:
     def test_a_bare_var_subclass_is_refused(self):
         class Bare(Var):
             name = "bare"
@@ -335,5 +403,5 @@ class TestRegistryAcceptsOnlyTheTwoKinds:
             def get(self):
                 return None
 
-        with pytest.raises(TypeError, match="EnvVar .* or a Setting"):
+        with pytest.raises(TypeError, match="EnvVar .* PyVar .* GlobalVar"):
             VarRegistry().register(Bare())

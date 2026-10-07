@@ -179,7 +179,13 @@ Dispatch order:
 
 ### variables.py — Variable Registry
 
-Python-backed shell variables that mirror the `CommandRegistry` pattern: register one with `var_registry` and `var NAME=VALUE`, bare `NAME=VALUE` and `$NAME` all go through it. There are exactly two kinds, and the registry refuses anything else (`TypeError`):
+Python-backed shell variables that mirror the `CommandRegistry` pattern: register one with `var_registry` and `var NAME=VALUE`, bare `NAME=VALUE` and `$NAME` all go through it. There are exactly three kinds — by where the value lives and whether it follows the context — and the registry refuses anything else (`TypeError`):
+
+| Kind | Value lives in | Per context | Used by |
+|---|---|---|---|
+| `EnvVar` | `os.environ` (child processes see it) | yes | `aws_region`, `aws_profile` |
+| `PyVar` | Python (module state; children don't see it) | yes | awsut's endpoint URLs |
+| `GlobalVar` | Python | no — process-global | `notify`, `notify_threshold` |
 
 ```python
 class Var(ABC):                      # what `var` lists, reads and completes
@@ -193,13 +199,18 @@ class EnvVar(Var):                   # declarative: a name over os.environ keys
                  completer: Completer | None = None, description: str = ""): ...
     keys: tuple[str, ...]            # defaults to (name,); get() reads keys[0]
 
-class Setting(Var):                  # process-global value, no env key
+class PyVar(Var):                    # per-context value on the Python side
     def set(self, value: str) -> None: ...   # abstract
     def unset(self) -> None: ...             # default: set("")
+
+class GlobalVar(Var):                # process-global value on the Python side
+    def set(self, value: str) -> None: ...   # (same surface as PyVar)
+    def unset(self) -> None: ...
 ```
 
 - **`EnvVar` has no writer of its own.** The shell does every write: `Shell._set_variable` sets each of `keys` through `ContextManager.set_variable`, so they are saved and restored per context like any variable set with `var` — one logical name can drive several keys (`aws_region` → `AWS_REGION` + `AWS_DEFAULT_REGION`).
-- **`Setting`** is for values with no environment behind them — `notify`, `notify_threshold`, awsut's endpoint URLs. The shell calls `set()` / `unset()`, and a context switch leaves it alone: it belongs to the person at the keyboard, or to a tool's module state, not to the environment a context carries.
+- **`PyVar`** keeps its value on the Python side — out of `os.environ`, so child processes never see it — yet follows the context like an `EnvVar`: `ContextManager` saves `get()` into `Context.py_values` when a context is left and calls `set()` (or `unset()` for `None`) when it is entered again, the way it handles cwd; `context new` / Ctrl+N start from the current value. The shell's `var NAME=VALUE` just calls `set()`. awsut's endpoint URLs are PyVars, so a prod and a staging context can point at different endpoints.
+- **`GlobalVar`** has the same surface but ignores context switches — for things that belong to the person at the keyboard, not to the environment a context carries (`notify`, `notify_threshold`).
 
 #### Registry
 
@@ -209,7 +220,7 @@ The module-level singleton is named `registry` inside `variables.py` (mirroring 
 from eosh.variables import registry as var_registry
 # or, equivalently, `from eosh import var_registry`
 
-var_registry.register(var: EnvVar | Setting) -> None
+var_registry.register(var: EnvVar | PyVar | GlobalVar) -> None
 var_registry.get(name: str) -> Var | None
 var_registry.all() -> list[Var]
 ```
@@ -220,7 +231,7 @@ var_registry.all() -> list[Var]
 var                          → list all env vars + registered Vars with their get() values
 var aws_region               → print current value via get()
 var aws_region=us-east-1     → EnvVar: the shell sets AWS_REGION and AWS_DEFAULT_REGION
-var notify=off               → Setting: notify's set("off")
+var notify=off               → GlobalVar: notify's set("off")
 var AWS_SESSION_TOKEN=abc    → no Var registered: that one key, through the context manager
 ```
 
@@ -248,7 +259,7 @@ The split is local to `VarCompleter`; the global tokenizer is not changed.
 
 ```python
 # ~/.eosh/config.py
-from eosh import EnvVar, Setting, var_registry
+from eosh import EnvVar, GlobalVar, var_registry
 from eosh.completion import CallbackCompleter, ChoiceCompleter
 
 var_registry.register(EnvVar(
@@ -259,7 +270,7 @@ var_registry.register(EnvVar(
 var_registry.register(EnvVar("aws_profile", keys="AWS_PROFILE",
                              completer=CallbackCompleter(list_profiles)))
 
-class Verbosity(Setting):            # a process-global knob, no env key
+class Verbosity(GlobalVar):          # a process-global knob, no env key
     name = "verbosity"
     level = "normal"
     def get(self):
@@ -668,7 +679,7 @@ var notify=off                 # master switch (on/true/yes/1 | off/false/no/0)
 var notify_threshold=30        # seconds; unset restores DEFAULT_THRESHOLD
 ```
 
-Both are `Setting`s, so they are process-global rather than
+Both are `GlobalVar`s, so they are process-global rather than
 per-context — "tell me when things finish" belongs to the person at the
 keyboard, not to the AWS account they're pointing at.
 `notify.set_notifier(func)` replaces the backend entirely (Slack, `ntfy.sh`,
@@ -1138,7 +1149,7 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 7. **System command fallback** — anything not registered as a Python command is passed to the system shell via PTY, so eosh is a drop-in replacement for daily use.
 
-8. **Python-backed variables mirror the command registry pattern, with one writer for the environment** — an `EnvVar` only *declares* which `os.environ` keys a logical name stands for (e.g. `aws_region` → `AWS_REGION` + `AWS_DEFAULT_REGION`); the shell writes them, always through the `ContextManager`, so per-context save/restore can never be bypassed. A `Setting` is the separately named kind for process-global values with no env key. The `var` command and bare `NAME=VALUE` assignment dispatch through `VarRegistry` before falling back to plain env writes, and `$NAME` / `${NAME}` expansion does the same lookup in reverse — so registered Vars are read- and write-symmetric with `os.environ` and a Python-backed variable behaves transparently like an OS variable on the command line. `VarCompleter` handles `=`-split completion locally without touching the global tokenizer.
+8. **Python-backed variables mirror the command registry pattern, with one writer for the environment** — an `EnvVar` only *declares* which `os.environ` keys a logical name stands for (e.g. `aws_region` → `AWS_REGION` + `AWS_DEFAULT_REGION`); the shell writes them, always through the `ContextManager`, so per-context save/restore can never be bypassed. A value that must stay out of child processes is a `PyVar` (still per-context — the context manager saves and restores it like cwd) or, if it belongs to the whole shell, a `GlobalVar`. The `var` command and bare `NAME=VALUE` assignment dispatch through `VarRegistry` before falling back to plain env writes, and `$NAME` / `${NAME}` expansion does the same lookup in reverse — so registered Vars are read- and write-symmetric with `os.environ` and a Python-backed variable behaves transparently like an OS variable on the command line. `VarCompleter` handles `=`-split completion locally without touching the global tokenizer.
 
 9. **One reader for real stdin** — when a Python command spawns an interactive subprocess, the child must not inherit fd 0 directly. The main forwarding thread is already reading stdin in raw mode; a second reader (the subprocess) splits keystrokes unpredictably between them. `passthrough_run` enforces the rule by allocating a slot-owned PTY for the child, so the chain stays `stdin → main → master → subprocess`. This is the same architecture `ProcessSlot` uses for external commands; `passthrough_run` extends it to subprocesses launched from inside a `PythonCommandSlot`.
 

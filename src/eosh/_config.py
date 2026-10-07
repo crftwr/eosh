@@ -188,8 +188,9 @@ command_registry.alias("la", "ls -la")
 # Register variables to give `var NAME=VALUE` a logical name, a description
 # and TAB completion for the value side.  An EnvVar names one or more
 # os.environ keys; the shell writes them all, and saves/restores them per
-# context like any variable set with `var`.  (For a process-global value with
-# no env key, subclass eosh.variables.Setting instead.)
+# context like any variable set with `var`.  (For a value kept on the Python
+# side instead — out of child processes' environment — subclass
+# eosh.variables.PyVar, per-context, or GlobalVar, process-global.)
 #
 # At the prompt:
 #
@@ -225,8 +226,8 @@ var_registry.register(EnvVar(
 #     eosh> var notify=off              → disable for this session
 #     eosh> var notify_threshold=30     → only notify for commands ≥ 30s
 #
-# Both are Settings — process-global: unlike the EnvVars above, they are not
-# saved/restored on context switch.
+# Both are GlobalVars — process-global: unlike the EnvVars above, they are
+# not saved/restored on context switch.
 
 from eosh import notify
 

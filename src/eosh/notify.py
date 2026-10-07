@@ -330,16 +330,16 @@ _FALSEY = {"off", "false", "no", "0", "disabled"}
 def register_vars() -> None:
     """Register ``notify`` and ``notify_threshold`` with the variable registry.
 
-    Called from ``Shell._register_builtins``.  Both are :class:`Setting` objects —
+    Called from ``Shell._register_builtins``.  Both are :class:`GlobalVar` objects —
     process-global rather than per-context, so a context switch neither
     saves nor restores them: "tell me when things finish" is a property of
     the person at the keyboard, not of the AWS account they happen to be
     pointing at.
     """
     from .completion import ChoiceCompleter
-    from .variables import Setting, registry as var_registry
+    from .variables import GlobalVar, registry as var_registry
 
-    class _NotifyEnabledVar(Setting):
+    class _NotifyEnabledVar(GlobalVar):
         @property
         def name(self) -> str:
             return "notify"
@@ -367,7 +367,7 @@ def register_vars() -> None:
         def value_completer(self):
             return ChoiceCompleter(["on", "off"])
 
-    class _NotifyThresholdVar(Setting):
+    class _NotifyThresholdVar(GlobalVar):
         @property
         def name(self) -> str:
             return "notify_threshold"

@@ -102,7 +102,7 @@ A handler-less `Command` (no callable attached) is treated by the dispatch path 
 
 ### variables.py — Variable Registry
 
-Python-backed shell variables, registered with `var_registry`: an `EnvVar(name, keys=..., completer=...)` names one or more `os.environ` keys that the shell writes (per context, through the `ContextManager`), and a `Setting` subclass holds a process-global value with no env key. The `var` built-in command and `$NAME` / `${NAME}` expansion both check the registry first, then fall back to `os.environ`. `VarCompleter` handles `KEY=VALUE` TAB completion locally without changing the global tokenizer. See the Variable Registry section in CLAUDE.md.
+Python-backed shell variables, registered with `var_registry`: an `EnvVar(name, keys=..., completer=...)` names one or more `os.environ` keys that the shell writes (per context, through the `ContextManager`), a `PyVar` subclass holds a per-context value on the Python side (saved and restored with the context, never in `os.environ`), and a `GlobalVar` subclass a process-global one. The `var` built-in command and `$NAME` / `${NAME}` expansion both check the registry first, then fall back to `os.environ`. `VarCompleter` handles `KEY=VALUE` TAB completion locally without changing the global tokenizer. See the Variable Registry section in CLAUDE.md.
 
 ### completion.py — Completion Engine
 

@@ -275,7 +275,7 @@ def connect(account, region, instance_id):
 
 ### Python-Backed Variables
 
-Register a variable with `var_registry`, and the built-in `var` command, bare `NAME=VALUE` assignment and `$NAME` / `${NAME}` expansion all go through it — a Python-backed variable is read- and write-symmetric with `os.environ`. An `EnvVar` names one or more environment keys (the shell writes all of them, per context); a `Setting` subclass holds a process-global value with no environment behind it.
+Register a variable with `var_registry`, and the built-in `var` command, bare `NAME=VALUE` assignment and `$NAME` / `${NAME}` expansion all go through it — a Python-backed variable is read- and write-symmetric with `os.environ`. An `EnvVar` names one or more environment keys (the shell writes all of them, per context). For a value that should stay out of child processes, subclass `PyVar` (still per-context) or `GlobalVar` (one value for the whole shell).
 
 ```python
 # ~/.eosh/config.py

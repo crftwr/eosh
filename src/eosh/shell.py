@@ -46,7 +46,7 @@ from .completion import (
     HistoryCompleter,
     get_argcomplete_fallback,
 )
-from .variables import EnvVar, Setting, registry as var_registry, VarCompleter
+from .variables import EnvVar, registry as var_registry, VarCompleter
 from .context import ContextManager, ContextState
 from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor
 from .parsing import expand_vars, split_for_completion, tokenize
@@ -2333,16 +2333,17 @@ class Shell:
     def _env_keys_for(self, key: str) -> tuple[str, ...] | None:
         """The ``os.environ`` keys an assignment to *key* writes — an
         :class:`EnvVar`'s keys, *key* itself for a plain name — or ``None``
-        for a :class:`Setting`, which writes no environment at all."""
+        for a PyVar / GlobalVar, whose value lives on the Python side."""
         var = var_registry.get(key)
-        if isinstance(var, Setting):
-            return None
-        return var.keys if isinstance(var, EnvVar) else (key,)
+        if var is None:
+            return (key,)
+        return var.keys if isinstance(var, EnvVar) else None
 
     def _set_variable(self, key: str, value: str) -> None:
         """``KEY=VALUE`` — every environment write goes through the context
-        manager (so it is saved and restored per context); a Setting sets
-        itself."""
+        manager (so it is saved and restored per context); a PyVar or
+        GlobalVar sets itself (and the context manager saves a PyVar's value
+        when the context is left)."""
         keys = self._env_keys_for(key)
         if keys is None:
             var_registry.get(key).set(value)

@@ -1,18 +1,22 @@
-"""Python-backed shell variables — Var, EnvVar, Setting, VarRegistry, VarCompleter.
+"""Python-backed shell variables — Var, EnvVar, PyVar, GlobalVar, VarRegistry, VarCompleter.
 
 Register a variable with the module-level ``registry`` to give
 ``var NAME=VALUE`` (and bare ``NAME=VALUE``, and ``$NAME``) a logical name,
-a description and value completion.  Two kinds:
+a description and value completion.  Three kinds — where the value lives,
+and whether it follows the context:
 
 * :class:`EnvVar` — **declarative**: a logical name over one or more
   ``os.environ`` keys.  The shell does every write, through the context
   manager, so each key is saved and restored per context like any variable
   set with ``var``.
 
-* :class:`Setting` — a **process-global** value with no environment key
-  (``notify``, ``notify_threshold``, an add-on's endpoint URL): subclass it
-  and implement ``get`` / ``set`` / ``unset``.  Context switches leave it
-  alone.
+* :class:`PyVar` — a value kept on the **Python side** (an add-on's
+  endpoint URL): subclass it and implement ``get`` / ``set`` / ``unset``.
+  Per-context like an EnvVar, but never in ``os.environ``, so child
+  processes don't see it.
+
+* :class:`GlobalVar` — the same, but **process-global** (``notify``,
+  ``notify_threshold``): context switches leave it alone.
 
 Example::
 
@@ -46,8 +50,9 @@ from .completion import Completer, Completion, CompletionContext
 
 
 class Var(ABC):
-    """What ``var`` lists, reads and completes.  Register an :class:`EnvVar`
-    or a :class:`Setting` — the shell needs to know which one it is writing."""
+    """What ``var`` lists, reads and completes.  Register an :class:`EnvVar`,
+    a :class:`PyVar` or a :class:`GlobalVar` — the shell needs to know which
+    one it is writing."""
 
     @property
     @abstractmethod
@@ -120,15 +125,11 @@ class EnvVar(Var):
         return self._description
 
 
-class Setting(Var):
-    """A process-global value with no environment key — subclass and
-    implement :meth:`get`, :meth:`set` and, if "unset" means more than
-    ``set("")``, :meth:`unset`.
-
-    Not saved or restored on a context switch: a setting belongs to the
-    person at the keyboard (``notify``), or to a tool's own module state (an
-    endpoint URL), not to the environment a context carries.
-    """
+class _ValueVar(Var):
+    """A value that lives on the Python side — no environment key, so it
+    never reaches a child process.  Subclass :class:`PyVar` or
+    :class:`GlobalVar`, implementing :meth:`get`, :meth:`set` and, if
+    "unset" means more than ``set("")``, :meth:`unset`."""
 
     @abstractmethod
     def set(self, value: str) -> None:
@@ -138,6 +139,24 @@ class Setting(Var):
     def unset(self) -> None:
         """Clear it (``var NAME=``)."""
         self.set("")
+
+
+class PyVar(_ValueVar):
+    """A per-context value kept on the Python side (an add-on's endpoint URL).
+
+    Like an :class:`EnvVar` it follows the context: the context manager
+    saves :meth:`get` when leaving a context and calls :meth:`set` (or
+    :meth:`unset`, for ``None``) when coming back, and a context made with
+    ``context new`` / Ctrl+N starts from the current value.  Unlike one, it
+    stays out of ``os.environ``, so child processes never see it.
+    """
+
+
+class GlobalVar(_ValueVar):
+    """A process-global value kept on the Python side (``notify``,
+    ``notify_threshold``): one value for the whole shell, untouched by
+    context switches — it belongs to the person at the keyboard, not to the
+    environment a context carries."""
 
 
 class VarRegistry:
@@ -153,11 +172,12 @@ class VarRegistry:
         self._builtin_names: set[str] = set()
 
     def register(self, var: Var) -> None:
-        """Register an :class:`EnvVar` or a :class:`Setting` under its name."""
-        if not isinstance(var, (EnvVar, Setting)):
+        """Register an :class:`EnvVar`, :class:`PyVar` or :class:`GlobalVar`."""
+        if not isinstance(var, (EnvVar, PyVar, GlobalVar)):
             raise TypeError(
-                f"{type(var).__name__}: register an EnvVar (os.environ keys) "
-                f"or a Setting subclass (a process-global value)"
+                f"{type(var).__name__}: register an EnvVar (os.environ keys), "
+                f"a PyVar subclass (a per-context Python value) or a GlobalVar "
+                f"subclass (a process-global Python value)"
             )
         self._vars[var.name] = var
 

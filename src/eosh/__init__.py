@@ -9,7 +9,7 @@ from .shell import (
     passthrough_input_block,
     passthrough_run,
 )
-from .variables import Var, EnvVar, Setting, registry as var_registry
+from .variables import Var, EnvVar, PyVar, GlobalVar, registry as var_registry
 
 #: Single source of truth for the version string -- the ONLY place the literal
 #: appears in this repo. pyproject.toml derives it via its dynamic ``version``
@@ -24,7 +24,8 @@ __all__ = [
     "set_prompt",
     "Var",
     "EnvVar",
-    "Setting",
+    "PyVar",
+    "GlobalVar",
     "var_registry",
     "command_registry",
     "passthrough_run",
