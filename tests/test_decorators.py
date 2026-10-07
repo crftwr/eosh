@@ -533,8 +533,8 @@ def test_stdout_isatty_visible_to_decorator_body():
 def test_watch_split_to_lines_strips_ansi_and_normalises_endings():
     """Real CLI output often includes ANSI colour / cursor-control codes
     even when stdout is redirected (TTY-autodetection is not reliable).
-    ``_split_to_lines`` must strip them so footer line counts are real
-    and lines never render in a leftover SGR state."""
+    ``_split_to_lines`` must strip them so lines are cut to the screen by
+    their visible width and never render in a leftover SGR state."""
     from eosh.decorators.watch import _split_to_lines
 
     # SGR colour around content — both ends should be removed, and the
@@ -551,100 +551,31 @@ def test_watch_split_to_lines_strips_ansi_and_normalises_endings():
     assert out == ["hello"]
 
 
-def test_watch_apply_scroll_key_clamps_to_range():
-    """Scroll deltas must clamp to ``[0, max]`` so the user can't navigate
-    past the start or end of the buffered output."""
-    from eosh.decorators.watch import (
-        _KEY_DOWN, _KEY_END, _KEY_HOME, _KEY_PAGE_DOWN, _KEY_PAGE_UP, _KEY_UP,
-        _apply_scroll_key,
-    )
+def test_watch_frame_fits_the_screen_without_wrapping():
+    """A frame is the header, a blank row, then what fits — every row one
+    cell short of the width, so nothing wraps or scrolls the screen."""
+    from eosh.decorators.watch import _frame
 
-    common = dict(body_rows=10, total_lines=100, max_line_len=80, body_cols=80)
-
-    # PageDown from 0 → +10.  Up from 0 → still 0.
-    assert _apply_scroll_key(_KEY_PAGE_DOWN, scroll_y=0, scroll_x=0, **common)[0] == 10
-    assert _apply_scroll_key(_KEY_UP, scroll_y=0, scroll_x=0, **common)[0] == 0
-    # G jumps to the bottom; further Down stays clamped.
-    end_y = _apply_scroll_key(_KEY_END, scroll_y=0, scroll_x=0, **common)[0]
-    assert end_y == 90  # total - body_rows
-    assert _apply_scroll_key(_KEY_DOWN, scroll_y=end_y, scroll_x=0, **common)[0] == end_y
-    # Home returns to the top.
-    assert _apply_scroll_key(_KEY_HOME, scroll_y=end_y, scroll_x=0, **common)[0] == 0
-    # PageUp from middle clamps to 0 when the chunk overshoots.
-    assert _apply_scroll_key(_KEY_PAGE_UP, scroll_y=5, scroll_x=0, **common)[0] == 0
+    frame = _frame("Every 2s: ls", ["a" * 20, "b", "c", "d"], cols=10, rows=4)
+    rows = frame.removeprefix("\x1b[H\x1b[J").split("\r\n")
+    assert rows == ["Every 2s:", "", "a" * 9, "b"]
+    assert not frame.endswith("\r\n")
 
 
-def test_watch_render_scrollbar_thumb_size_and_position():
-    """Scrollbar thumb is proportional to visible/total and slides as we scroll."""
-    from eosh.colors import _bg, get_color_scheme
-    from eosh.decorators.watch import _render_scrollbar
-
-    s = get_color_scheme()
-    thumb_sgr = _bg(*s.scroll_thumb)
-    track_sgr = _bg(*s.scroll_track)
-
-    def is_thumb(cell: str) -> bool:
-        return thumb_sgr in cell
-
-    # No scrollbar when content fits.
-    bar = _render_scrollbar(body_rows=10, scroll_y=0, total_lines=10)
-    assert bar == [" "] * 10
-
-    # 100 lines into a 10-row body → thumb is 1 row at the very top.
-    bar = _render_scrollbar(body_rows=10, scroll_y=0, total_lines=100)
-    assert is_thumb(bar[0])
-    assert sum(1 for c in bar if is_thumb(c)) >= 1
-    assert all(is_thumb(c) or track_sgr in c for c in bar)
-
-    # Scrolled to bottom → thumb is at the last row.
-    bar = _render_scrollbar(body_rows=10, scroll_y=90, total_lines=100)
-    assert is_thumb(bar[-1])
-
-
-def test_watch_slice_for_render_pads_and_trims():
-    """The visible window is body_rows tall, body_cols wide, padded with
-    blanks when the buffered output is shorter than the body."""
-    from eosh.decorators.watch import _slice_for_render
-
-    lines = ["aaa", "bbbb", "cc"]
-    out = _slice_for_render(lines, scroll_y=0, scroll_x=0, body_rows=5, body_cols=3)
-    assert out == ["aaa", "bbb", "cc", "", ""]
-
-    # Vertical scroll skips the head.
-    out = _slice_for_render(lines, scroll_y=1, scroll_x=0, body_rows=2, body_cols=10)
-    assert out == ["bbbb", "cc"]
-
-    # Horizontal scroll skips columns.
-    out = _slice_for_render(lines, scroll_y=0, scroll_x=2, body_rows=3, body_cols=10)
-    assert out == ["a", "bb", ""]
-
-
-def test_watch_pipeline_redirected_to_helper():
-    """`@watch`'s alt-screen path appends a `> /tmp/...` redirect to the
-    body's last stage so output can be captured before drawing.  The
-    helper that builds the redirected Pipeline must leave the original
-    AST untouched (subsequent iterations re-run the user's pipeline as
-    written) and override prior stdout redirects on the last stage."""
-    from eosh.decorators.watch import _pipeline_redirected_to
+def test_watch_captured_redirects_the_last_stage_only():
+    """The body is captured by redirecting its last stage's stdout and
+    stderr; the user's pipeline is left as written for the next run."""
+    from eosh.decorators.watch import _captured
     from eosh.pipeline import Pipeline, Redirect, Stage
 
-    original = Pipeline(stages=[
-        Stage(text="echo hi"),
-        Stage(text="grep h"),
-    ])
-    redirected = _pipeline_redirected_to(original, "/tmp/out")
-    # Original is untouched.
+    original = Pipeline(stages=[Stage(text="echo hi"), Stage(text="grep h")])
+    captured = _captured(original, "/tmp/out")
     assert [s.redirects for s in original.stages] == [[], []]
-    # First stage unchanged; last stage gets stdout + stderr redirected
-    # so command errors land in the watch frame rather than bleeding onto
-    # the alt-screen UI.
-    assert redirected.stages[0].redirects == []
-    assert redirected.stages[-1].redirects == [
+    assert captured.stages[0].redirects == []
+    assert captured.stages[-1].redirects == [
         Redirect(kind=">", target="/tmp/out"),
         Redirect(kind="2>&1", target="1"),
     ]
-    # Stage text is preserved.
-    assert [s.text for s in redirected.stages] == ["echo hi", "grep h"]
 
 
 def test_python_command_slot_poll_key_returns_buffered_bytes():

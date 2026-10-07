@@ -522,7 +522,7 @@ Shipped:
 
 | Decorator | Purpose |
 |-----------|---------|
-| `@watch [-n SEC] [--no-clear]` | re-run pipeline on a timer |
+| `@watch [-n SEC] [--no-clear]` | re-run pipeline on a timer, showing the latest output |
 | `@time` | print wall/user/sys time after the pipeline finishes |
 | `@retry [-n N] [--delay SEC]` | re-run on non-zero exit, up to N times |
 | `@quiet [--stderr]` | discard stdout (and optionally stderr) |
@@ -533,6 +533,17 @@ context — but for a single command `Ctrl+]` already does that, and the rest
 late-bound runner hook and dispatch rules copied from `_execute_stage`.
 Discussion #39 removed it: run the pipeline and press `Ctrl+]`, which
 backgrounds the whole thing.
+
+`@watch` is deliberately watch(1)-sized: an alternate screen with a
+one-line header and the last run's output cut to the screen, `q` or
+Ctrl+C to quit, and plain streaming off a terminal or with `--no-clear`.
+It used to be a full pager — scrolling in both directions, pause, a
+spinner, a scrollbar and a worker thread so keys stayed live mid-run —
+about 660 lines for a marginal feature; discussion #39 cut it to the core.
+For output longer than the screen, pipe the body through `tail` or `head`.
+The run itself gets the cooked terminal, so Ctrl+C stops a slow body at
+once (a run ending in 130 ends the loop, in either mode); `q` is read
+between runs. See [limitations.md](limitations.md#watch-shows-one-screenful-and-q-waits-for-the-current-run).
 
 `@quiet` is implemented by appending `> /dev/null` (and `2>&1` with
 `--stderr`) to the body's last stage via the same `Redirect` AST the
@@ -628,7 +639,8 @@ follow-up items."
    thread's rebound stdio (the outer pipe ends).
 5. **`@watch` built-in** in
    [eosh/decorators/watch.py](../src/eosh/decorators/watch.py)
-   — TTY-aware screen-clear, `BrokenPipeError` graceful exit.
+   — alternate screen with a header off a TTY-aware check, streaming
+   otherwise, `BrokenPipeError` graceful exit.
 6. **`@<TAB>` completion** in
    [shell.py::_maybe_decorator_completion](../src/eosh/shell.py):
    three cases — decorator-name list, decorator-flag picker via

@@ -332,8 +332,8 @@ from eosh import set_color_scheme, ColorScheme
 #     picker_row_fg=(220, 220, 220),       # non-selected picker row foreground
 #     picker_sel_bg=(80, 40, 160),         # selected row background
 #     picker_sel_fg=(255, 255, 255),       # selected row foreground
-#     scroll_thumb=(120, 120, 120),        # scrollbar thumb (picker + @watch)
-#     scroll_track=(40, 40, 50),           # scrollbar track (picker + @watch)
-#     statusbar_bg=(30, 30, 30),           # picker bottom bar + @watch header/footer bg
-#     statusbar_fg=(200, 200, 200),        # picker bottom bar + @watch header/footer fg
+#     scroll_thumb=(120, 120, 120),        # scrollbar thumb (picker)
+#     scroll_track=(40, 40, 50),           # scrollbar track (picker)
+#     statusbar_bg=(30, 30, 30),           # picker bottom bar bg
+#     statusbar_fg=(200, 200, 200),        # picker bottom bar fg
 # ))
