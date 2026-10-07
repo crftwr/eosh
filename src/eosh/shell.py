@@ -35,7 +35,7 @@ if not IS_WINDOWS:
 
 from . import terminal
 from .commands import (
-    _FLAG_PREFIXES, arg, Command, CommandRegistry, options_completer,
+    _FLAG_PREFIXES, arg, Command, CommandRegistry,
     registry as command_registry,
 )
 from .completion import (
@@ -1452,8 +1452,6 @@ class Shell:
         self._register_builtins()
         self.registry.mark_builtins()
         var_registry.mark_builtins()
-        from .decorators import registry as decorator_registry
-        decorator_registry.mark_builtins()
         self._load_user_config()
         # Install thread-local stdio routers so Python command threads can
         # rebind their own stdin/stdout/stderr (for buffering proxies or pipe
@@ -1528,70 +1526,56 @@ class Shell:
           cursor is in the body; caller continues with normal completion
           using the rewritten locals.
         """
-        from .decorators import registry as decorator_registry
-
         # Case A: ``@<partial>`` — completing the decorator name itself.
         if not tokens and prefix.startswith("@"):
-            partial = prefix[1:]
-            decos = decorator_registry.list_decorators()
             completions = [
-                Completion(
-                    value=f"@{name}",
-                    display=f"@{name}",
-                    description=decorator_registry.get(name).description,
-                )
-                for name in sorted(decos)
-                if name.startswith(partial)
+                Completion(value=name, description=self.registry.get(name).description)
+                for name in sorted(self.registry.list_commands())
+                if name.startswith("@") and name.startswith(prefix)
             ]
             return "return", (completions, prefix, "decorator")
 
         # Case B/C: a decorator name has already been typed.
         if not tokens or not tokens[0].startswith("@"):
             return None
-        deco_name = tokens[0][1:]
-        deco = decorator_registry.get(deco_name)
+        deco = self.registry.get(tokens[0])
         if deco is None:
             return None  # unknown decorator; fall through (treats it like a command)
 
         # Walk past the decorator's flags to find where the body starts.
+        body_start = len(tokens)
         i = 1
-        body_start = 1
         while i < len(tokens):
             tok = tokens[i]
-            if not tok.startswith(("-", "+")):
-                body_start = i
-                break
             if tok == "--":
                 body_start = i + 1
                 break
-            i += 1
-            # If the flag we just consumed takes a value, consume the value too.
-            if (
-                i < len(tokens)
-                and "=" not in tok
-                and decorator_registry.flag_takes_value(deco_name, tok)
-            ):
-                i += 1
-            body_start = i
-        else:
-            body_start = len(tokens)
+            if not tok.startswith(("-", "+")):
+                body_start = i
+                break
+            i += 2 if ("=" not in tok and deco.takes_value(tok)) else 1
 
-        # Case B: cursor is on a decorator-flag token (``@watch -<TAB>``).
-        if prefix.startswith(("-", "+")) and body_start >= len(tokens):
-            deco_options = options_completer(deco.params or [])
-            if deco_options is None:
-                return "return", ([], prefix, f"@{deco_name}")
-            ctx = CompletionContext(
-                command=f"@{deco_name}",
-                args=tokens[1:],
-                arg_index=0,
-                prefix=prefix,
-                line=line_before_cursor,
-                shell_context=self.context_manager.current(),
-            )
-            if deco_options.should_activate(ctx):
-                return "return", (deco_options.complete(ctx), prefix, f"@{deco_name} option")
-            return "return", ([], prefix, f"@{deco_name} option")
+        # Case B: still in the decorator's flags (``@watch -<TAB>``,
+        # ``@watch -n <TAB>``) — the decorator is a command, so its flags and
+        # their values complete exactly as a command's do.
+        if body_start >= len(tokens):
+            slot = _resolve_slot(deco, tokens[1:], prefix)
+            if slot.kind in ("flag", "value"):
+                ctx = CompletionContext(
+                    command=deco.name,
+                    args=slot.args,
+                    arg_index=len(slot.args),
+                    prefix=prefix,
+                    line=line_before_cursor,
+                    shell_context=self.context_manager.current(),
+                )
+                flags = deco.options_completer()
+                if slot.kind == "flag":
+                    found = flags.complete(ctx) if flags.should_activate(ctx) else []
+                    return "return", (found, prefix, f"{deco.name} option")
+                flag, arg_hint, description, value_completer = flags.get_preceding_flag_hint(ctx)
+                found = value_completer.complete(ctx) if value_completer else []
+                return "return", (found, prefix, _flag_label(flag, arg_hint, description))
 
         # Case C: cursor is in the body.  Strip the decorator portion and
         # let normal completion run on what's left.  We rebuild the line
@@ -2117,11 +2101,18 @@ class Shell:
                 else:
                     print(f"Unknown command: {command_name}")
             else:
-                print("Available commands:")
-                for name in sorted(self.registry.list_commands()):
-                    cmd = self.registry.get(name)
-                    desc = cmd.help_text.split("\n")[0] if cmd.help_text else ""
-                    print(f"  {name:20s} {desc}")
+                names = sorted(self.registry.list_commands())
+                for title, group in (
+                    ("Available commands:", [n for n in names if not n.startswith("@")]),
+                    ("Decorators (@name [flags] {pipeline}):", [n for n in names if n.startswith("@")]),
+                ):
+                    if not group:
+                        continue
+                    print(title)
+                    for name in group:
+                        cmd = self.registry.get(name)
+                        desc = cmd.help_text.split("\n")[0] if cmd.help_text else ""
+                        print(f"  {name:20s} {desc}")
 
         _names_after_subcommands = {"switch", "kill"}
 
@@ -2244,9 +2235,9 @@ class Shell:
             else:
                 print(f"Unknown subcommand: {subcommand}")
 
-        # Register built-in pipeline decorators.
-        from .decorators import enable as enable_decorators
-        enable_decorators("watch", "time", "retry", "quiet", "bg")
+        # Built-in pipeline decorators — commands named `@watch`, `@time`, …
+        from .decorators import register_builtins as register_builtin_decorators
+        register_builtin_decorators()
 
         # `var notify=off` / `var notify_threshold=30`.
         notify.register_vars()
@@ -2259,7 +2250,23 @@ class Shell:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(_DEFAULT_CONFIG_PATH.read_text())
 
+        import importlib
         import importlib.util
+
+        # ~/.eosh is on sys.path while config.py runs, as a script's own
+        # directory is: your own recipes and decorators live in modules there
+        # (`import my_tools`), or anywhere config.py adds to sys.path.
+        home = config_path.parent.resolve()
+        if str(home) not in sys.path:
+            sys.path.insert(0, str(home))
+        # A module imported from there on an earlier load is forgotten, so
+        # `reload` runs it again — `reload` just cleared what it registered.
+        for name, mod in list(sys.modules.items()):
+            origin = getattr(mod, "__file__", None)
+            if origin and Path(origin).resolve().is_relative_to(home):
+                del sys.modules[name]
+        importlib.invalidate_caches()
+
         sys.modules.pop("eosh_user_config", None)
         spec = importlib.util.spec_from_file_location("eosh_user_config", config_path)
         if spec and spec.loader:
@@ -3053,21 +3060,16 @@ class Shell:
     def _invoke_decorator(self, decorator_call):
         """Run a ``@name`` decorator over its body; returns its result.
 
-        127 for an unknown decorator and 2 for a flag error (already printed
-        by its parser), matching what a command line would report.
+        A decorator is the command ``@name``: its flags are parsed like any
+        command's (a flag error is status 2, already printed) and its handler
+        gets the body ``Pipeline`` first.  An unknown decorator is 127, as an
+        unknown command would be.
         """
-        # Local import — keeps decorators-package init lazy and avoids any
-        # circular-import surprises during module load.
-        from .decorators import registry as decorator_registry, parse_decorator_args
-
-        deco = decorator_registry.get(decorator_call.name)
+        deco = self.registry.get(f"@{decorator_call.name}")
         if deco is None:
             print(f"eosh: unknown decorator: @{decorator_call.name}", file=sys.stderr)
             return 127
-        kwargs = parse_decorator_args(deco, decorator_call.flag_tokens)
-        if kwargs is None:
-            return 2
-        return deco.func(decorator_call.body, **kwargs)
+        return deco.invoke(decorator_call.flag_tokens, decorator_call.body)
 
     def _execute_decorator_stage(self, stage: Stage) -> int:
         """Run a lone ``@name`` stage on the main thread."""

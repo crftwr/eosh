@@ -7,7 +7,7 @@ import sys
 import time as _time
 
 from ..pipeline import Pipeline
-from . import registry as decorator_registry
+from ..commands import registry as command_registry
 
 
 def _format(seconds: float) -> str:
@@ -17,8 +17,8 @@ def _format(seconds: float) -> str:
 
 
 def register() -> None:
-    @decorator_registry.decorator(
-        name="time",
+    @command_registry.command(
+        "@time",
         help="Print elapsed wall/user/sys time after the pipeline finishes.",
     )
     def time_(pipeline: Pipeline) -> int:

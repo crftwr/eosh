@@ -4,7 +4,7 @@ Recipes provide TAB completion for system commands. Enable them in
 ~/.eosh/config.py:
 
     from eosh.recipes import enable
-    enable("*")              # all built-in + user recipes
+    enable("*")              # every built-in recipe and bundled add-on
     enable("make", "git")    # or pick specific ones
 
 Available recipes:
@@ -48,14 +48,17 @@ metadata, kept under ``addons/`` in the repository and installed as
               cloudformation, SageMaker, Bedrock AgentCore); needs the
               ``eosh[awsut]`` extra
 
-Recipes for external commands silently skip registration when the
-underlying command is not available on ``PATH`` — ``enable("tar")`` on a
-host without ``tar`` is a no-op rather than a hard failure.
+A recipe's command is dropped again when its executable isn't on ``PATH`` —
+``enable("tar")`` on a host without ``tar`` is a no-op rather than a hard
+failure (see :func:`enable`; recipes don't check for themselves).
+
+Your own recipes are plain Python: call ``registry.command(...)`` in
+``config.py``, or in a module ``config.py`` imports.
 
 Tools built on cobra are opted in by name, never detected — detecting one
 would mean running an arbitrary command with ``__complete`` as its argument.
 ``enable("cobra")`` covers the well-known ones; name your own with
-``enable_cobra``, from ``config.py`` or a user recipe's ``register()``::
+``enable_cobra``, from ``config.py`` or a module it imports::
 
     from eosh.recipes import enable, enable_cobra
     enable("cobra")
@@ -64,110 +67,74 @@ would mean running an arbitrary command with ``__complete`` as its argument.
 
 from __future__ import annotations
 
-import importlib.util
+import shutil
 import sys
 from importlib import import_module
 from pathlib import Path
 
-from ..paths import config_dir
+from ..commands import registry as command_registry
 from .cobra import enable_cobra  # noqa: F401  (public API)
-
-# Directories searched in order when a recipe is not found in the built-in
-# package.  The default entry covers the conventional user recipe location;
-# call add_recipe_path() to register additional directories.
-recipe_search_path: list[Path] = [config_dir() / "recipes"]
-
-
-def add_recipe_path(path: str | Path) -> None:
-    """Append *path* to the recipe search path.
-
-    Recipes in directories added earlier in the list take priority over those
-    added later.  The built-in package always has the highest priority.
-
-    Example (in ~/.eosh/config.py)::
-
-        from eosh.recipes import add_recipe_path, enable
-        add_recipe_path("/team/shared/recipes")
-        enable("my_tool")   # found in ~/.eosh/recipes/ or /team/shared/recipes/
-    """
-    recipe_search_path.append(Path(path))
 
 
 def enable(*recipe_names: str) -> None:
-    """Enable one or more completion recipes by name.
+    """Enable built-in recipes and bundled add-ons by name.
 
-    Pass ``"*"`` to enable all discoverable recipes (built-in, add-ons,
-    search path).
+    ``"*"`` enables every one.  Lookup: the built-in package
+    (``eosh.recipes.<name>``), then the bundled add-ons (``eosh_addons.<name>``,
+    found through the ``eosh.addons`` entry-point group).  An unknown name
+    raises ``ImportError``.
 
-    Lookup order for each name:
+    A recipe for an external tool doesn't check that the tool is installed:
+    whatever completion-only command its ``register()`` adds is dropped
+    again here when no executable of that name is on ``PATH``
+    (:func:`_drop_absent_tools`).  So ``enable("tar")`` on a host without
+    ``tar`` is a no-op, and one recipe registering several names (``grep``,
+    ``egrep``, ``rgrep``) keeps exactly the ones that exist.
 
-    1. Built-in package (``eosh.recipes.<name>``).
-    2. Bundled add-on (``eosh_addons.<name>``, found through the
-       ``eosh.addons`` entry-point group).
-    3. Each directory in :data:`recipe_search_path` in order
-       (default: ``~/.eosh/recipes/``).
+    An add-on whose *dependency* is missing (``awsut`` without boto3, i.e.
+    installed without the ``eosh[awsut]`` extra) is skipped under ``"*"`` and
+    recorded in :data:`skipped_recipes`; a placeholder command named after it
+    says what is missing when run (unless that name means something already).
+    Naming such an add-on explicitly raises, with the install hint as the
+    message.
 
-    Raises ``ImportError`` if the recipe is not found anywhere.
-
-    With ``"*"``, an add-on whose *dependency* is missing (``awsut`` without
-    boto3, i.e. installed without the ``eosh[awsut]`` extra) is skipped and
-    recorded in :data:`skipped_recipes` instead of aborting the whole call —
-    the same "absent tool is a no-op" rule as a recipe whose command is not
-    on ``PATH``.  Naming such an add-on explicitly still raises, with the
-    install hint as the message.
-
-    Skipping is not silent at the point of use, though: unless it would
-    shadow a real executable, a placeholder command named after the recipe is
-    registered, and running it says what is missing.  It also shows up in
-    ``help``.
-
-    A *user* recipe that fails under ``"*"`` — for any reason, including an
-    import failing inside a helper module it imports — is reported on stderr
-    with a traceback through the user's files, and the remaining recipes
-    still load.  Only an add-on's missing dependency is skipped quietly: that
-    is an optional extra not installed, while a user recipe's
-    ``ModuleNotFoundError`` is as likely a typo as a missing package.
+    Your own recipes aren't looked up here: define them in ``config.py``, or
+    in a module ``config.py`` imports (``sys.path.append`` a team directory).
     """
     wildcard = "*" in recipe_names
     names = _discover_all_recipes() if wildcard else recipe_names
     for name in names:
         try:
             module = _load_recipe(name)
-            skipped_recipes.pop(name, None)
-            module.register()
-        except Exception as e:
-            ours = _is_builtin(name) or name in _addons()
-            if isinstance(e, ModuleNotFoundError) and name in _addons():
-                missing = e.name or str(e)
-                if not wildcard:
-                    raise ModuleNotFoundError(
-                        missing_message(name, missing), name=e.name
-                    ) from e
-                skipped_recipes[name] = missing
-                _register_unavailable(name, missing)
-                continue
-            if not wildcard:
+        except ModuleNotFoundError as e:
+            if name not in _addons():
                 raise
-            if ours:
-                raise  # a bug in eosh itself — don't hide it
-            _report_user_recipe_error(name, e)
-            if isinstance(e, ModuleNotFoundError):
-                missing = e.name or str(e)
-                skipped_recipes[name] = missing
-                _register_unavailable(name, missing)
+            missing = e.name or str(e)
+            if not wildcard:
+                raise ModuleNotFoundError(missing_message(name, missing), name=e.name) from e
+            skipped_recipes[name] = missing
+            _register_unavailable(name, missing)
+            continue
+        skipped_recipes.pop(name, None)
+        before = set(command_registry.list_commands())
+        module.register()
+        _drop_absent_tools(set(command_registry.list_commands()) - before)
+
+
+def _drop_absent_tools(names: set[str]) -> None:
+    """Remove the completion-only commands among *names* — recipes for an
+    external tool — whose executable isn't on ``PATH``.  A command with a
+    Python handler (an add-on's) is not a tool and always stays."""
+    for name in names:
+        cmd = command_registry.get(name)
+        if cmd is not None and not cmd.has_any_handler() and shutil.which(name) is None:
+            command_registry.remove(name)
 
 
 def missing_message(name: str, module: str) -> str:
-    """One line saying what *name* needs.  Add-ons name their extra after
-    themselves (see ``pyproject.toml``), so the hint needs no lookup table."""
-    if name in _addons():
-        return f"{name}: needs the Python module {module!r} — install eosh[{name}]"
-    return f"{name}: needs the Python module {module!r}, which is not installed"
-
-
-def _is_builtin(name: str) -> bool:
-    here = Path(__file__).parent
-    return (here / f"{name}.py").exists() or (here / name / "__init__.py").exists()
+    """One line saying what add-on *name* needs.  Add-ons name their extra
+    after themselves (see ``pyproject.toml``), so the hint needs no table."""
+    return f"{name}: needs the Python module {module!r} — install eosh[{name}]"
 
 
 def _addons() -> dict[str, str]:
@@ -180,13 +147,6 @@ def _addons() -> dict[str, str]:
     from importlib.metadata import entry_points
 
     return {ep.name: ep.value for ep in entry_points(group="eosh.addons")}
-
-
-def _report_user_recipe_error(name: str, exc: Exception) -> None:
-    from ..user_errors import format_user_exception
-
-    print(f"eosh: recipe {name!r} failed to load and was skipped:", file=sys.stderr)
-    print(format_user_exception(exc), file=sys.stderr, end="")
 
 
 # Recipes ``enable("*")`` skipped because a dependency could not be imported:
@@ -206,69 +166,38 @@ def _register_unavailable(name: str, missing: str) -> None:
     command, or an executable on ``PATH``.  A recipe that only adds completion
     to ``git`` must leave ``git`` itself runnable when its dependency is gone.
     """
-    import shutil
-    from ..commands import registry
-
-    if registry.has(name) or shutil.which(name):
+    if command_registry.has(name) or shutil.which(name):
         return
 
     def unavailable(*_args: str) -> int:
         print(missing_message(name, missing), file=sys.stderr)
         return 127
 
-    registry.command(name, help=f"(unavailable: needs {missing!r} — run it for details)")(unavailable)
+    command_registry.command(name, help=f"(unavailable: needs {missing!r} — run it for details)")(unavailable)
 
 
 def _discover_all_recipes() -> list[str]:
-    """Return sorted list of all available recipe names (built-in, add-ons,
-    search path).
+    """Every built-in recipe and bundled add-on, sorted.
 
-    A leading underscore means "not a recipe": a recipe is a module with a
-    ``register()`` function, and a support module a recipe imports (a user's
-    own ``_helpers.py``) has none, so globbing it in would make
-    ``enable("*")`` fail on an ``AttributeError``.
+    A leading underscore means "not a recipe": support modules
+    (``_missing.py`` once, ``cobra``'s helpers) have no ``register()``.
     """
-    found: set[str] = set(_addons())
-
-    for directory in [Path(__file__).parent, *recipe_search_path]:
-        if not directory.is_dir():
-            continue
-        for p in directory.glob("*.py"):
-            if not p.stem.startswith("_"):
-                found.add(p.stem)
-
+    found = set(_addons())
+    found.update(p.stem for p in Path(__file__).parent.glob("*.py")
+                 if not p.stem.startswith("_"))
     return sorted(found)
 
 
 def _load_recipe(name: str):
-    """Return the module for *name*, searching built-ins then recipe_search_path."""
-    # 1. Try built-in package first.
+    """The module for *name*: a built-in recipe, else a bundled add-on."""
     try:
         return import_module(f".{name}", package=__package__)
     except ImportError as e:
-        # Only swallow the error if the recipe module itself is missing.
-        # If a dependency (e.g. boto3) is missing, propagate the error.
+        # Only swallow the error if the recipe module itself is missing; a
+        # missing dependency (boto3) propagates.
         if e.name != f"{__package__}.{name}":
             raise
-
-    # 2. A bundled add-on.  As above, a missing dependency propagates.
     addon = _addons().get(name)
     if addon is not None:
         return import_module(addon)
-
-    # 3. Walk recipe_search_path; return the first match.
-    for directory in recipe_search_path:
-        candidate = Path(directory) / f"{name}.py"
-        if candidate.exists():
-            spec = importlib.util.spec_from_file_location(
-                f"eosh_user_recipe_{name}", candidate
-            )
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-
-    # 4. Not found anywhere.
-    searched = ", ".join(str(d) for d in recipe_search_path)
-    raise ImportError(
-        f"Recipe {name!r} not found in built-in recipes, add-ons or search path: [{searched}]"
-    )
+    raise ImportError(f"No recipe or add-on named {name!r}")

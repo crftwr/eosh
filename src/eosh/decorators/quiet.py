@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from ..commands import arg
 from ..pipeline import Pipeline, Redirect
-from . import registry as decorator_registry
+from ..commands import registry as command_registry
 
 
 def _silenced(pipeline: Pipeline, *, also_stderr: bool) -> Pipeline:
@@ -27,8 +27,8 @@ def _silenced(pipeline: Pipeline, *, also_stderr: bool) -> Pipeline:
 
 
 def register() -> None:
-    @decorator_registry.decorator(
-        name="quiet",
+    @command_registry.command(
+        "@quiet",
         help="Discard pipeline stdout (and stderr with --stderr).",
         params=[
             arg("--stderr", action="store_true",

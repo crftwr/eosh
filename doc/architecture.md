@@ -174,7 +174,7 @@ Opt-in completion recipes for system commands. Each recipe calls `registry.comma
 
 ```python
 from eosh.recipes import enable
-enable("*")                                     # all built-in + user recipes
+enable("*")                                     # every built-in recipe + bundled add-on
 enable("git", "make", "ssh", "kill", "aws")     # or pick specific ones
 ```
 
@@ -182,7 +182,7 @@ Cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …) need no hand-written 
 
 ### decorators/ — Pipeline Decorators
 
-A decorator is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how it runs. Authors register a function with `@decorator_registry.decorator(name, params=[...])` that receives a parsed `Pipeline` AST and the parsed flag namespace. Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, `@bg`. Loaded with `enable_decorators(...)`. Pipelines that contain `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. See [decorators.md](decorators.md).
+A decorator is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how it runs. A decorator is a command named `@name` in the command registry: authors register a function with `@registry.command("@name", params=[...])` that receives a parsed `Pipeline` AST and the parsed flag namespace. Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, `@bg`, registered by `eosh.decorators.register_builtins()`. Pipelines that contain `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. See [decorators.md](decorators.md).
 
 ### parsing.py — Line Tokenization
 
@@ -286,10 +286,10 @@ eosh/
 │       ├── terminal.py         # cross-platform raw-mode + key reading
 │       ├── tui.py              # InlinePicker, InlineArgPrompt
 │       ├── recipes/            # external-command completion recipes (28+ files)
-│       │   ├── __init__.py     # enable(*names) helper, recipe_search_path, add_recipe_path
+│       │   ├── __init__.py     # enable(*names): built-in recipes + add-ons
 │       │   └── <name>.py       # see Available recipes block in __init__.py
 │       └── decorators/
-│           ├── __init__.py     # DecoratorRegistry, enable_decorators, add_decorator_path
+│           ├── __init__.py     # register_builtins(), the @bg runner hook
 │           ├── watch.py        # @watch built-in
 │           ├── time.py         # @time built-in
 │           ├── retry.py        # @retry built-in

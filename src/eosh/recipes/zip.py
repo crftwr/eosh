@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import FileCompleter
 
 
 def register() -> None:
-    if shutil.which("zip") is None:
-        return
     command_registry.command(
         "zip",
         help="package and compress files into a zip archive",

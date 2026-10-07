@@ -1,4 +1,4 @@
-"""Report an exception raised by user code (config.py, user recipes).
+"""Report an exception raised by user code (config.py and the modules it imports).
 
 The full traceback of a config-load failure is mostly eosh's own loader and
 ``<frozen importlib…>`` frames; what the user needs is the chain through

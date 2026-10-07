@@ -17,12 +17,13 @@ import sys
 
 from ..commands import arg
 from ..pipeline import Pipeline
-from . import registry as decorator_registry, run_in_background
+from ..commands import registry as command_registry
+from . import run_in_background
 
 
 def register() -> None:
-    @decorator_registry.decorator(
-        name="bg",
+    @command_registry.command(
+        "@bg",
         help="Run pipeline in a background context slot.",
         params=[
             arg("--as", "-n", dest="ctx_name", metavar="NAME", default=None,

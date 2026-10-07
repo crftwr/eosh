@@ -7,7 +7,6 @@ since enumerating remote paths requires an SSH round-trip per keystroke.
 
 from __future__ import annotations
 
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import (
@@ -69,8 +68,6 @@ class _RemoteOrFileCompleter(Completer):
 
 
 def register() -> None:
-    if shutil.which("rsync") is None:
-        return
     command_registry.command(
         "rsync",
         help="fast, incremental file transfer (local or over SSH)",

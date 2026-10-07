@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import (
@@ -126,8 +125,6 @@ class _TarPositionalCompleter(Completer):
 
 
 def register() -> None:
-    if shutil.which("tar") is None:
-        return
     command_registry.command(
         "tar",
         help="create, extract, or list tar archives",

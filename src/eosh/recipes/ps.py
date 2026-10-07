@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 
 from ..commands import arg, registry as command_registry
@@ -40,8 +39,6 @@ class PidCompleter(Completer):
 
 
 def register() -> None:
-    if shutil.which("ps") is None:
-        return
     command_registry.command(
         "ps",
         help="report a snapshot of current processes",

@@ -7,11 +7,9 @@ A **recipe** adds TAB completion to an external (system) command — one that ru
 > - **Cobra** — Go-based CLIs that expose a `__complete` subcommand (`docker`, `kubectl`, `helm`, `gh`, `argocd`, `doctl`, `linkerd`, `istioctl`, `hcloud`, `hugo`, `oras`, …). Opt-in by name, because detecting one would mean running it: the built-in `cobra` recipe lists the well-known tools, and one line covers yours. See [cobra.md](cobra.md).
 >
 >   ```python
->   # ~/.eosh/recipes/mytools.py  (or straight in config.py)
+>   # ~/.eosh/config.py (or a module it imports)
 >   from eosh.recipes import enable_cobra
->
->   def register():
->       enable_cobra("mytool", "othertool")
+>   enable_cobra("mytool", "othertool")
 >   ```
 >
 > - **argcomplete** — Python CLIs that ship completions via the [argcomplete](https://kislyuk.github.io/argcomplete/) library (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, `nox`, `virtualenv`, …). Automatic: eosh reads the script for the marker without running it. See [argcomplete-fallback.md](argcomplete-fallback.md).
@@ -244,15 +242,17 @@ conventions in [addons/awsut/README.md](../addons/awsut/README.md).
 Two rules from that world still apply to recipes:
 
 - **Name a shared helper module with a leading underscore.** `enable("*")`
-  discovers recipes by globbing `*.py` and calls `register()` on each hit, so
-  a support module without one would break config loading for every
-  `enable("*")` user. `_discover_all_recipes()` skips any stem starting with
-  `_`, and that applies to your own `~/.eosh/recipes/_shared.py`.
-- **A missing third-party import is reported, not fatal.** When a user
-  recipe's import raises `ModuleNotFoundError`, `enable("*")` prints the
-  traceback, records it in `recipes.skipped_recipes`, registers a placeholder
-  command that names the missing module, and loads the rest of the config.
-  Naming the recipe explicitly still raises.
+  discovers the built-in recipes by globbing `recipes/*.py` and calls
+  `register()` on each hit, so a support module without one would break
+  config loading for every `enable("*")` user. `_discover_all_recipes()`
+  skips any stem starting with `_`.
+- **Your own recipes aren't looked up by `enable()`.** There is no search
+  path: write the `registry.command(...)` call in `config.py`, or in a module
+  it imports (`~/.eosh` is on `sys.path` while `config.py` runs, and `reload`
+  re-runs those modules). An error there is a config-load error, with a
+  traceback through your own files.
+- **Don't check `PATH` in a recipe.** `enable()` drops every completion-only
+  command a recipe registered whose name isn't on `PATH`.
 
 ## Checklist for a New Recipe
 

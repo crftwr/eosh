@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 
 from ..commands import arg, registry as command_registry
@@ -42,8 +41,6 @@ def _linux_flags() -> list:
 
 
 def register() -> None:
-    if shutil.which("rm") is None:
-        return
     flags = _macos_flags() if sys.platform == "darwin" else _linux_flags()
     command_registry.command(
         "rm",

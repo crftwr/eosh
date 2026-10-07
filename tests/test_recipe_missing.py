@@ -26,24 +26,19 @@ def test_message_for_an_addon_names_its_extra():
     )
 
 
-def test_message_for_a_user_recipe_names_only_the_module():
-    msg = missing_message("my_tool", "requests")
-    assert "'requests'" in msg
-    assert "eosh[" not in msg
-
-
 # ---------------------------------------------------------------------------
 # enable("*") → placeholder command
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
-    """A search path holding one recipe whose dependency is missing."""
-    (tmp_path / "needs_dep.py").write_text(
+    """An add-on, ``needs_dep``, whose dependency is missing."""
+    (tmp_path / "eosh_t_needs_dep.py").write_text(
         "import eosh_no_such_dependency\n"
         "def register(): pass\n"
     )
-    monkeypatch.setattr(recipes_pkg, "recipe_search_path", [tmp_path])
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(recipes_pkg, "_addons", lambda: {"needs_dep": "eosh_t_needs_dep"})
     monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["needs_dep"])
     monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
     monkeypatch.setattr(registry, "_commands", dict(registry._commands))
@@ -59,7 +54,7 @@ def test_skipped_recipe_registers_a_placeholder(isolated, capsys):
     assert "unavailable" in cmd.help_text
     assert cmd.invoke(["any", "args"]) == 127   # the exit status, not a SystemExit
     err = capsys.readouterr().err
-    assert "needs_dep: needs the Python module 'eosh_no_such_dependency'" in err
+    assert "needs_dep: needs the Python module 'eosh_no_such_dependency' — install eosh[needs_dep]" in err
 
 
 def test_placeholder_never_shadows_an_executable(isolated, monkeypatch):

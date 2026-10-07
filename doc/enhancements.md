@@ -25,9 +25,6 @@ here in enhancements.md until each item lands.
 - **More built-ins** — `@time`, `@retry`, `@quiet`, and `@bg` are
   shipped (alongside `@watch`).  Future candidates: `@confirm`
   (prompt before running) and `@nice -n N` (process-priority wrapper).
-- **Reload integration** — `reload` should call
-  `decorator_registry.clear_user_decorators()` once user decorators
-  start landing in `~/.eosh/decorators/`.
 - **Slot-aware `@watch`** — route long-running decorator bodies
   through `PythonCommandSlot` so `Ctrl+]` backgrounding works the
   same as for regular Python commands.
@@ -212,12 +209,6 @@ of [architecture.md](architecture.md).
   `history.py` was deleted in the #43 sweep.) *Risk:* trivial;
   re-export `History` from `lineedit` for the tests that import it
   from there.
-
-- **Reload integration for user decorators.** Once
-  `~/.eosh/decorators/` lands, `reload` should call
-  `decorator_registry.clear_user_decorators()` (the method
-  already exists). Already noted under "Pipeline decorators —
-  follow-up items"; mentioned here for completeness.
 
 These are sequenced from highest payoff (shrinks `shell.py` the
 most, exposes the cleanest public interface) to lowest. Doing the

@@ -9,7 +9,6 @@ This recipe models the surface area as a static subcommand tree (mirroring
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 
 from ..commands import registry as command_registry, arg
@@ -84,9 +83,6 @@ def _plan_file_completer() -> Completer:
 # ─── Tree definition ─────────────────────────────────────────────────────────
 
 def register() -> None:
-    if shutil.which("terraform") is None:
-        return
-
     tf = command_registry.command("terraform", help="infrastructure as code")
 
     # ── init ──

@@ -698,9 +698,9 @@ from eosh.recipes import enable
 enable("make", "git", "ssh", "kill", "tail", "ls", "grep", "find", "du", "df", "aws")
 ```
 
-Available built-in recipes: `aws`, `chmod`, `chown`, `cobra`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/eosh/recipes/__init__.py` for descriptions). Bundled add-ons (`awsut`) are enabled by name the same way (see **addons/** below). Use `enable("*")` to load all built-ins, add-ons and user recipes.
+Available built-in recipes: `aws`, `chmod`, `chown`, `cobra`, `cp`, `curl`, `df`, `du`, `find`, `git`, `grep`, `kill`, `ls`, `lsof`, `make`, `mv`, `ps`, `rm`, `rsync`, `scp`, `ssh`, `tail`, `tar`, `terraform`, `top`, `unzip`, `zip` (see the `Available recipes:` block in `src/eosh/recipes/__init__.py` for descriptions). Bundled add-ons (`awsut`) are enabled by name the same way (see **addons/** below). Use `enable("*")` to load every built-in recipe and bundled add-on.
 
-**Cobra-based CLIs — opt-in by name.** `CobraCompleter` drives `<cmd> __complete` for cobra-based CLIs (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …), but only for commands that have been named. The `cobra` recipe lists the well-known ones, and `enable_cobra("mytool")` adds more, from `config.py` or a user recipe's `register()`. Each name becomes a completion-only recipe with the completer as its `delegate`. It is skipped when the name isn't on `PATH` or is already registered. The tool's directive decides whether an empty answer falls back to files. Nothing is ever probed, because finding out whether a tool speaks the protocol means running it with `__complete` as an argument (`touch`, `./deploy.sh`). See `doc/cobra.md`.
+**Cobra-based CLIs — opt-in by name.** `CobraCompleter` drives `<cmd> __complete` for cobra-based CLIs (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …), but only for commands that have been named. The `cobra` recipe lists the well-known ones, and `enable_cobra("mytool")` adds more, from `config.py` or a module it imports. Each name becomes a completion-only recipe with the completer as its `delegate`. It is skipped when the name isn't on `PATH` or is already registered. The tool's directive decides whether an empty answer falls back to files. Nothing is ever probed, because finding out whether a tool speaks the protocol means running it with `__complete` as an argument (`touch`, `./deploy.sh`). See `doc/cobra.md`.
 
 **argcomplete fallback** — auto-activates where no completer is registered, no `enable()` required: **`ArgcompleteCompleter`** drives the argcomplete protocol (env vars + fd 8) for Python CLIs marked with `# PYTHON_ARGCOMPLETE_OK` (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, …). Detection reads the script and never runs it. See `doc/argcomplete-fallback.md`.
 
@@ -708,53 +708,51 @@ Every subprocess run at completion time gets `stdin=subprocess.DEVNULL`, so a mi
 
 Each recipe calls `registry.command(name, help=..., params=[...])` (with no handler attached) to register completion + flag metadata for an external command.  The shell's dispatch path (`shell.py:_execute`) treats handler-less Commands as external recipes and falls through to the system-command path.
 
-#### User-Defined Recipes
+**Recipes don't check `PATH` themselves.** After a recipe's `register()`, `enable()` drops every *completion-only* command it added whose name isn't on `PATH` (`recipes._drop_absent_tools`) — so `enable("tar")` without `tar` is a no-op, and the `grep` recipe keeps `egrep` but not a missing `rgrep`. A command with a Python handler (an add-on's) always stays.
 
-`enable()` searches `recipe_search_path` (a `list[Path]`) when no built-in recipe matches. The default list contains only `~/.eosh/recipes/`; call `add_recipe_path()` to append more directories. The call site in `config.py` is unchanged.
+#### Your Own Recipes
 
-Lookup order for every `enable()` call:
-
-1. Built-in package (`eosh.recipes.<name>`) — always highest priority.
-2. Each directory in `recipe_search_path` in order — first match wins.
-3. `ImportError` with the searched directories listed if nothing is found.
-
-A user recipe file must define a `register()` function with the same shape as built-in recipes:
+There is no recipe search path: `enable()` covers the built-in recipes and
+the bundled add-ons only. A recipe of your own is plain Python — call
+`registry.command(...)` in `config.py`, or in a module it imports.
+`~/.eosh` is on `sys.path` while `config.py` runs (as a script's own
+directory is), so `~/.eosh/my_tools.py` is `import my_tools`; a team
+directory is a `sys.path.append(...)` away. On `reload`, modules imported
+from `~/.eosh` are forgotten first so they run — and register — again. An
+error in one is a config-load error, printed with a traceback through your
+own files (`user_errors.format_user_exception` drops eosh-internal and
+`<frozen importlib>` frames).
 
 ```python
-# ~/.eosh/recipes/my_tool.py
+# ~/.eosh/my_tools.py
 from eosh.commands import arg, registry
-from eosh.completion import CallbackCompleter, ChoiceCompleter
+from eosh.completion import CallbackCompleter
 
-def register():
-    registry.command(
-        "my-tool",
-        help="my-tool — deploy/rollback/status helper",
-        params=[
-            arg("subcommand", choices=["deploy", "rollback", "status"]),
-            arg("target", help="deploy target", completer=CallbackCompleter(_list_targets)),
-            arg("-v", "--verbose", action="store_true", help="verbose"),
-            arg("--dry-run", action="store_true", help="don't apply changes"),
-        ],
-    )
-
-def _list_targets():
-    return ["web", "worker", "scheduler"]
+registry.command(
+    "my-tool",
+    help="my-tool — deploy/rollback/status helper",
+    params=[
+        arg("subcommand", choices=["deploy", "rollback", "status"]),
+        arg("target", help="deploy target",
+            completer=CallbackCompleter(lambda: ["web", "worker", "scheduler"])),
+        arg("--dry-run", action="store_true", help="don't apply changes"),
+    ],
+)
 ```
 
 ```python
 # ~/.eosh/config.py
-from eosh.recipes import add_recipe_path, enable
+import sys
+sys.path.append("/team/shared/eosh")    # optional: a shared directory
+from eosh.recipes import enable
 
-add_recipe_path("/team/shared/recipes")  # optional extra directory
-enable("git")          # built-in
-enable("my_tool")      # found in ~/.eosh/recipes/ or /team/shared/recipes/
+enable("git")       # built-in
+import my_tools     # your own, from ~/.eosh
 ```
 
-`recipe_search_path` is a plain `list[Path]` and can be read or manipulated directly when finer control is needed.
-
-**Missing dependencies.** Under `enable("*")`, a recipe or add-on whose
+**Missing dependencies.** Under `enable("*")`, an add-on whose
 import fails with `ModuleNotFoundError` (`awsut` without the `eosh[awsut]`
-extra, a user recipe importing `requests`) is skipped, recorded in
+extra) is skipped, recorded in
 `recipes.skipped_recipes`, and replaced by a placeholder command of the same
 name — unless that name is already registered or on `PATH`, so a
 completion-only recipe never shadows the real executable. Running the
@@ -763,16 +761,6 @@ names the extra, which by convention is named after the add-on
 (`awsut: needs the Python module 'boto3' — install eosh[awsut]`), so the core
 holds no table of which add-on needs what. Naming an add-on explicitly
 (`enable("awsut")`) raises with the same message.
-
-**User recipe errors are never silent.** Under `enable("*")`, *any* exception
-from a user recipe (search-path, not built-in) — including a
-`ModuleNotFoundError` raised by a helper it imports, which is as likely a typo
-as a missing package — is printed to stderr with a traceback, and the loop
-moves on to the next recipe. Only an add-on's missing dependency stays quiet.
-Config-load failures print a traceback too. Both go through
-`user_errors.format_user_exception`, which drops eosh-internal and
-`<frozen importlib>` frames so the report shows the chain through the user's
-own files.
 
 ### addons/ — Bundled Add-ons
 
@@ -827,14 +815,21 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 3. `${name}` parameter expansion: matched as its own balanced `{...}` so the inner closing brace doesn't decrement the outer counter.
 4. Backslash escapes: `\{` and `\}` are literal.
 
+**A decorator is a command** named `@name` in the one command registry
+(discussion #40): argparse parses its flags, completion treats them like any
+command's (`_resolve_slot`), `reload` clears config-defined ones with the other
+user commands, and `help` lists them under their own heading. The `@` keeps
+them apart from commands — `@time` and the system `time` never collide, and
+command-name completion leaves `@` names out. The handler gets the wrapped
+`Pipeline` ahead of the parsed flags (`Command.invoke(args, pipeline)`).
+
 **Authoring a decorator:**
 
 ```python
-from eosh.commands import arg
-from eosh.decorators import registry as decorator_registry
+from eosh.commands import arg, registry
 
-@decorator_registry.decorator(
-    name="watch",
+@registry.command(
+    "@watch",
     help="Repeatedly run a pipeline until interrupted.",
     params=[
         arg("-n", "--interval", type=float, default=2.0, metavar="SEC"),
@@ -853,7 +848,7 @@ The decorator function receives a `Pipeline` (the parsed AST of the wrapped body
 
 **Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet`, `@bg` (each in its own `eosh/decorators/<name>.py`).
 
-**Loading:** `Shell._register_builtins` calls `enable_decorators("watch", "time", "retry", "quiet", "bg")` on construction. The `enable("*")` helper, search-path mechanism, and `add_decorator_path()` mirror `eosh/recipes/`.
+**Loading:** `Shell._register_builtins` calls `eosh.decorators.register_builtins()`, before `mark_builtins`, so the built-ins survive `reload`. There is no decorator search path; your own are defined in `config.py` (or a module it imports), like a recipe.
 
 **`@bg` and slot infrastructure.** `@bg` runs its body on a `PipelineSlot` — a subclass of `PythonCommandSlot` whose work unit is a `Pipeline.run()` call instead of a single Python command. It registers itself as the new context's `process_slot`, so the run-loop's existing resume path (proxy buffering, `Ctrl+]` switching, `_compute_exit_code`) handles it without further wiring. The decorator-side hook is `set_background_runner()` in `eosh.decorators` (parallel to `set_pipeline_executor`); `Shell.__init__` registers `_run_in_background` against it.
 
@@ -896,8 +891,8 @@ def connect(account, region, instance_id):
 
 #### Custom Decorators
 
-Custom decorators register the same way commands do — import
-`eosh.decorators.registry` and decorate a function. The function
+A decorator is a command named `@name` — register it with
+`registry.command("@name", ...)` and decorate a function. The function
 receives the wrapped `Pipeline` as its first positional argument and the
 parsed flag namespace as kwargs; call `pipeline.run()` to execute the
 body. Return the int exit code (or let the return value of `pipeline.run()`
@@ -907,12 +902,11 @@ propagate).
 # ~/.eosh/config.py
 import sys
 import time
-from eosh.commands import arg
-from eosh.decorators import registry as decorator_registry
+from eosh.commands import arg, registry
 from eosh.pipeline import Pipeline
 
-@decorator_registry.decorator(
-    name="repeat",
+@registry.command(
+    "@repeat",
     help="Run the pipeline N times, stopping early on the first failure.",
     params=[
         arg("-n", "--count", type=int, default=3, metavar="N",
@@ -941,18 +935,8 @@ eosh> @repeat -n 5 --delay 1 ls
 eosh> @repeat -n 3 {make && ./run-tests}
 ```
 
-For decorators shared across machines or teammates, drop a module under
-`~/.eosh/decorators/<name>.py` that defines `register()` (same shape
-as the built-ins) and call `enable()` from `config.py`:
-
-```python
-# ~/.eosh/config.py
-from eosh.decorators import add_decorator_path, enable as enable_decorators
-
-add_decorator_path("/team/shared/decorators")   # optional extra directory
-enable_decorators("repeat")                     # found in ~/.eosh/decorators/
-                                                # or /team/shared/decorators/
-```
+To share decorators across machines or teammates, put them in a module on
+`sys.path` and import it from `config.py` — the same as your own recipes.
 
 ## File Layout
 
@@ -1012,7 +996,7 @@ eosh/
 │       │   ├── ssh.py
 │       │   └── tail.py
 │       └── decorators/
-│           ├── __init__.py     # Decorator/DecoratorRegistry/enable(*names)
+│           ├── __init__.py     # register_builtins(), the @bg runner hook
 │           ├── watch.py        # @watch built-in
 │           ├── time.py         # @time built-in
 │           ├── retry.py        # @retry built-in
@@ -1046,13 +1030,9 @@ eosh/
     └── test_variables.py
 
 ~/.eosh/
-├── config.py           # user configuration (commands, completers, recipes)
+├── config.py           # user configuration (commands, recipes, decorators, vars)
 ├── history             # persistent command history
-├── history.dirs        # JSON: which directories each history line was run in
-├── recipes/            # user-defined recipes (loaded by enable("<name>"))
-│   └── <name>.py       # must define register()
-└── decorators/         # user-defined decorators (loaded by enable("<name>"))
-    └── <name>.py       # must define register()
+└── history.dirs        # JSON: which directories each history line was run in
 ```
 
 ## Shell Operator Support

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import ChoiceCompleter, FileCompleter
@@ -39,8 +38,6 @@ COMMON_MODES: list[str] = [
 
 
 def register() -> None:
-    if shutil.which("chmod") is None:
-        return
     command_registry.command(
         "chmod",
         help="change file mode bits",

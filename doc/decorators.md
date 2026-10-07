@@ -70,7 +70,7 @@ What we borrow:
 - **`@<TAB>` discovery** mirrors `%lsmagic` — list everything available
   without needing docs.
 - **User-defined magics via a Python decorator**
-  (`@register_line_magic`) — our `@decorator_registry.decorator(...)`
+  (`@register_line_magic`) — our `@registry.command("@name", ...)`
   API has the same shape.
 
 What we deliberately don't borrow:
@@ -481,16 +481,17 @@ that's a one-line `try`/`except BrokenPipeError` around
 
 ## Decorator API sketch
 
-The API reuses the existing `arg(...)` helper from `commands.py` — no
-parallel `deco_arg`, no parallel parser. A decorator is essentially a
-command that receives a `Pipeline` instead of running directly.
+A decorator **is** a command — one named `@name` in the command registry,
+whose handler receives the wrapped `Pipeline` ahead of its parsed flags
+(discussion #40). It reuses `arg(...)`, argparse, completion and `reload`;
+the `@` keeps it from colliding with a command (`@time` vs. `time`), and
+command-name completion and `help` keep the two apart.
 
 ```python
-from eosh.commands import arg
-from eosh.decorators import registry as decorator_registry
+from eosh.commands import arg, registry
 
-@decorator_registry.decorator(
-    name="watch",
+@registry.command(
+    "@watch",
     help="Repeatedly run a pipeline until interrupted.",
     params=[
         arg("-n", "--interval", type=float, default=2.0, help="seconds between runs"),
@@ -579,10 +580,10 @@ Future ideas:
    thread-local stdio installed in `Shell.__init__`).  Convention
    only: diagnostic lines should go to `sys.stderr` so they don't
    poison piped output.
-5. **Reload semantics.** `decorator_registry.mark_builtins()` runs
-   alongside the existing command/var calls in `Shell.__init__`;
-   `clear_user_decorators()` exists for parity even though `reload`
-   doesn't yet call it.
+5. **Reload semantics.** Decorators are commands, so the one
+   `mark_builtins()` / `clear_user_commands()` pair covers them: built-in
+   decorators survive `reload`, config-defined ones are cleared and
+   re-registered by the re-run config.
 
 Open questions are tracked in
 [enhancements.md](enhancements.md) under "Pipeline decorators —
@@ -616,14 +617,12 @@ follow-up items."
    handed back to `parse_line`, which prepends the decorator-stage
    to a regular multi-stage pipeline.  `;`/`&&`/`||` after the
    closing `}` are rejected with a focused error.
-2. **Registry** in
-   [eosh/decorators/__init__.py](../src/eosh/decorators/__init__.py):
-   `Decorator` dataclass, `DecoratorRegistry`, module-level `registry`
-   singleton, `@registry.decorator(...)` API with three call forms
-   matching `CommandRegistry.command(...)`. Reuses `arg(...)`,
-   `CmdParser`, `_build_completers`, `_build_help_text` from
-   `commands.py` — no parallel helpers. `enable("*")` /
-   search-path mechanism mirrors `eosh/recipes/`.
+2. **Registry** — the command registry: a decorator is the `Command`
+   `@name` (discussion #40 folded the former `DecoratorRegistry` into
+   it). `Command.invoke(flag_tokens, pipeline)` parses the flags with
+   argparse and passes the `Pipeline` first; the parser's
+   "does this flag take a value?" question is `Command.takes_value`.
+   Built-ins are registered by `eosh.decorators.register_builtins()`.
 3. **`Pipeline.run()` indirection** in
    [pipeline.py](../src/eosh/pipeline.py): `Pipeline.run(stdin=,
    stdout=, stderr=) -> int` calls into a registered executor. The
@@ -670,9 +669,6 @@ follow-up items."
 - **More built-ins** — `@time`, `@retry`, `@quiet`, and `@bg` are
   shipped.  Future candidates: `@confirm` (prompt before running)
   and `@nice -n N` (process-priority wrapper).
-- **Reload integration** — `reload` should call
-  `decorator_registry.clear_user_decorators()` once user decorators
-  start landing in `~/.eosh/decorators/`.
 - **Slot-aware `@watch`** — route long-running decorator bodies
   through `PythonCommandSlot` so `Ctrl+]` backgrounding works the
   same as for regular Python commands.

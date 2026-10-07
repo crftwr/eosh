@@ -57,8 +57,9 @@ the core has to know about the add-on. Under `enable("*")` the add-on is then
 skipped quietly and a placeholder command explains the gap. Naming it
 explicitly raises with the same message.
 
-Lookup order in `enable(name)`: built-in recipe → add-on → user recipe search
-path.
+Lookup order in `enable(name)`: built-in recipe → add-on. There is no user
+search path; your own recipes are defined in `config.py` or a module it
+imports.
 
 ## The public-API rule
 
