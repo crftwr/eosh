@@ -18,7 +18,7 @@ from ..colors import _bg, _fg, get_color_scheme
 from ..commands import arg
 from ..pipeline import Pipeline, Redirect
 from ..scrollbar import render_column as _scrollbar_column
-from . import registry as decorator_registry
+from ..commands import registry as command_registry
 
 
 # Alt-screen entry/exit + cursor-home, matching POSIX watch(1):
@@ -329,8 +329,8 @@ def _split_to_lines(text: str) -> list[str]:
 
 
 def register() -> None:
-    @decorator_registry.decorator(
-        name="watch",
+    @command_registry.command(
+        "@watch",
         help="Repeatedly run a pipeline (q quits; arrows / PgUp / PgDn scroll).",
         params=[
             arg("-n", "--interval", type=float, default=2.0, metavar="SEC",

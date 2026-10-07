@@ -11,10 +11,6 @@ import os
 import pytest
 
 from eosh.commands import arg, registry as command_registry
-from eosh.decorators import (
-    parse_decorator_args,
-    registry as decorator_registry,
-)
 from eosh.pipeline import (
     DecoratorParseError,
     Pipeline,
@@ -31,24 +27,19 @@ from eosh.shell import Shell
 
 @pytest.fixture(autouse=True)
 def _isolate_test_decorators():
-    """Snapshot decorator + command registries; restore after each test."""
-    deco_before = dict(decorator_registry._decorators)
+    """Snapshot the command registry (decorators live there as ``@name``)."""
     cmd_before = dict(command_registry._commands)
+    builtins_before = set(command_registry._builtin_names)
     yield
-    # Drop only the new entries added during the test.
-    for name in list(decorator_registry._decorators):
-        if name not in deco_before:
-            del decorator_registry._decorators[name]
-    for name in list(command_registry._commands):
-        if name not in cmd_before:
-            del command_registry._commands[name]
+    command_registry._commands = cmd_before
+    command_registry._builtin_names = builtins_before
 
 
 @pytest.fixture
 def watch_deco():
     """Register a minimal @watch-shaped decorator for parser tests."""
-    @decorator_registry.decorator(
-        name="watch",
+    @command_registry.command(
+        "@watch",
         params=[
             arg("-n", "--interval", type=float, default=2.0),
             arg("--no-clear", action="store_true"),
@@ -56,46 +47,57 @@ def watch_deco():
     )
     def _watch(pipeline, *, interval, no_clear):
         pass
-    return decorator_registry.get("watch")
+    return command_registry.get("@watch")
 
 
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
-def test_register_decorator(watch_deco):
-    assert decorator_registry.has("watch")
-    assert "watch" in decorator_registry.list_decorators()
-    assert watch_deco.name == "watch"
+def test_a_decorator_is_a_command_named_with_an_at(watch_deco):
+    assert command_registry.has("@watch")
+    assert watch_deco.name == "@watch"
+    assert not command_registry.has("watch")   # no collision with a `watch` command
 
 
-def test_parse_decorator_args(watch_deco):
-    assert parse_decorator_args(watch_deco, []) == {"interval": 2.0, "no_clear": False}
-    assert parse_decorator_args(watch_deco, ["-n", "5"]) == {"interval": 5.0, "no_clear": False}
-    assert parse_decorator_args(watch_deco, ["--no-clear"]) == {"interval": 2.0, "no_clear": True}
-    # argparse rejects unknown flags — should return None, not raise.
-    assert parse_decorator_args(watch_deco, ["--bogus"]) is None
+def test_flags_parse_like_a_command_and_the_pipeline_comes_first(watch_deco):
+    received = {}
+
+    @command_registry.command("@_t_args", params=[
+        arg("-n", "--interval", type=float, default=2.0),
+        arg("--no-clear", action="store_true"),
+    ])
+    def _args(pipeline, *, interval, no_clear):
+        received.update(pipeline=pipeline, interval=interval, no_clear=no_clear)
+
+    deco = command_registry.get("@_t_args")
+    deco.invoke(["-n", "5"], "PIPE")
+    assert received == {"pipeline": "PIPE", "interval": 5.0, "no_clear": False}
+    # argparse rejects unknown flags — a usage error, status 2, not an exception.
+    assert deco.invoke(["--bogus"], "PIPE") == 2
 
 
-def test_flag_takes_value(watch_deco):
-    assert decorator_registry.flag_takes_value("watch", "-n") is True
-    assert decorator_registry.flag_takes_value("watch", "--interval") is True
-    assert decorator_registry.flag_takes_value("watch", "--no-clear") is False
-    assert decorator_registry.flag_takes_value("watch", "--missing") is False
-    assert decorator_registry.flag_takes_value("nonexistent", "-n") is False
+def test_the_parser_asks_the_registry_which_flags_take_a_value(watch_deco):
+    from eosh.pipeline import _flag_takes_value
+    assert _flag_takes_value("watch", "-n") is True
+    assert _flag_takes_value("watch", "--interval") is True
+    assert _flag_takes_value("watch", "--no-clear") is False
+    assert _flag_takes_value("watch", "--missing") is False
+    assert _flag_takes_value("nonexistent", "-n") is False
 
 
-def test_clear_user_decorators_keeps_builtins(watch_deco):
-    decorator_registry.mark_builtins()
+def test_reload_clears_user_decorators_and_keeps_builtins(watch_deco):
+    """One registry, one sweep — `reload` used to leave config decorators."""
+    command_registry.mark_builtins()
 
-    @decorator_registry.decorator(name="_t_user")
+    @command_registry.command("@_t_user")
     def _user(pipeline):
         pass
 
-    assert decorator_registry.has("_t_user")
-    decorator_registry.clear_user_decorators()
-    assert decorator_registry.has("watch")  # builtin survives
-    assert not decorator_registry.has("_t_user")  # user decorator gone
+    assert command_registry.has("@_t_user")
+    command_registry.clear_user_commands()
+    assert command_registry.has("@watch")        # builtin survives
+    assert not command_registry.has("@_t_user")  # user decorator gone
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +361,7 @@ def test_decorator_dispatch_passes_pipeline_and_args():
     sh = Shell()
     received = {}
 
-    @decorator_registry.decorator(name="_t_capture", params=[arg("-n", type=int, default=1)])
+    @command_registry.command("@_t_capture", params=[arg("-n", type=int, default=1)])
     def _capture(pipeline, *, n):
         received["n"] = n
         received["body_texts"] = [s.text for s in pipeline.stages]
@@ -384,7 +386,7 @@ def test_unknown_decorator_returns_127(capsys):
 def test_decorator_argparse_error_returns_2():
     sh = Shell()
 
-    @decorator_registry.decorator(name="_t_argerr", params=[arg("-n", type=int, default=1)])
+    @command_registry.command("@_t_argerr", params=[arg("-n", type=int, default=1)])
     def _h(pipeline, *, n):
         pass
 
@@ -411,7 +413,7 @@ def test_compose_decorator_pipes_body_output_through_next_stage(tmp_path):
         print("banana")
         print("cherry")
 
-    @decorator_registry.decorator(name="_t_once")
+    @command_registry.command("@_t_once")
     def _once(pipeline):
         # Run the body once and return — exercises the composition path
         # without the timing complexity @watch brings.
@@ -435,7 +437,7 @@ def test_compose_decorator_runs_body_inside_outer_pipe(tmp_path):
         print("yy")
         print("xz")
 
-    @decorator_registry.decorator(name="_t_once_b")
+    @command_registry.command("@_t_once_b")
     def _once(pipeline):
         pipeline.run()
 
@@ -701,8 +703,8 @@ def _enable_builtin(name: str) -> None:
     Tests that just need the decorator registered (parsing / arg checks)
     can call this and rely on the autouse fixture to pop it again.
     """
-    from eosh.decorators import enable as enable_decorators
-    enable_decorators(name)
+    from eosh.decorators import register_builtins
+    register_builtins()
 
 
 def _make_recording_pipeline(callback):
@@ -723,7 +725,7 @@ def _make_recording_pipeline(callback):
 
 def test_time_decorator_runs_body_and_emits_summary(capsys):
     _enable_builtin("time")
-    deco = decorator_registry.get("time")
+    deco = command_registry.get("@time")
 
     calls = {"n": 0}
 
@@ -742,7 +744,7 @@ def test_time_decorator_runs_body_and_emits_summary(capsys):
 
 def test_retry_succeeds_first_attempt(capsys):
     _enable_builtin("retry")
-    deco = decorator_registry.get("retry")
+    deco = command_registry.get("@retry")
     calls = {"n": 0}
 
     def _ok():
@@ -757,7 +759,7 @@ def test_retry_succeeds_first_attempt(capsys):
 
 def test_retry_eventual_success(capsys):
     _enable_builtin("retry")
-    deco = decorator_registry.get("retry")
+    deco = command_registry.get("@retry")
     calls = {"n": 0}
 
     def _flaky():
@@ -774,7 +776,7 @@ def test_retry_eventual_success(capsys):
 
 def test_retry_gives_up(capsys):
     _enable_builtin("retry")
-    deco = decorator_registry.get("retry")
+    deco = command_registry.get("@retry")
     calls = {"n": 0}
 
     def _bad():
@@ -791,7 +793,7 @@ def test_retry_gives_up(capsys):
 
 def test_retry_invalid_attempts(capsys):
     _enable_builtin("retry")
-    deco = decorator_registry.get("retry")
+    deco = command_registry.get("@retry")
     pipeline = _make_recording_pipeline(lambda: 0)
     rc = deco.func(pipeline, attempts=0, delay=0.0)
     assert rc == 2
@@ -911,7 +913,7 @@ def test_bg_decorator_function_calls_runner(capsys):
     the ``set_background_runner`` hook.  Verify the message format and
     return code without spinning up a real Shell."""
     _enable_builtin("bg")
-    deco = decorator_registry.get("bg")
+    deco = command_registry.get("@bg")
     from eosh.decorators import set_background_runner
 
     received = {}
@@ -1058,3 +1060,38 @@ def test_bg_multi_stage_body_uses_pipeline_slot():
     finally:
         if slot._thread.is_alive():
             slot._thread.join(timeout=1.0)
+
+
+# ---------------------------------------------------------------------------
+# Decorators share the command registry — kept apart where it shows
+# ---------------------------------------------------------------------------
+
+def test_command_name_completion_leaves_decorators_out(watch_deco):
+    shell = Shell()
+    completions, _, _ = shell._get_base_completions("w")
+    assert "@watch" not in [c.value for c in completions]
+
+
+def test_help_lists_decorators_under_their_own_heading(watch_deco, capsys):
+    shell = Shell()
+    shell.registry.get("help").invoke([])
+    out = capsys.readouterr().out
+    commands, _, decorators = out.partition("Decorators")
+    assert "@watch" in decorators and "@watch" not in commands
+    shell.registry.get("help").invoke(["@watch"])
+    assert "@watch" in capsys.readouterr().out
+
+
+def test_a_decorator_flag_value_completes_like_a_commands():
+    from eosh.completion import ChoiceCompleter
+
+    @command_registry.command("@_t_val", params=[
+        arg("-m", "--mode", metavar="MODE", completer=ChoiceCompleter(["fast", "slow"])),
+    ])
+    def _val(pipeline, *, mode):
+        pass
+
+    shell = Shell()
+    completions, _, label = shell._get_base_completions("@_t_val -m ")
+    assert [c.value for c in completions] == ["fast", "slow"]
+    assert label.startswith("-m <MODE>")

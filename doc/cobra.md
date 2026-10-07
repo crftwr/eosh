@@ -28,7 +28,7 @@ enable("cobra")             # well-known tools (kubectl, helm, gh, docker, …)
 enable_cobra("mytool")      # any other cobra-based CLI you use
 ```
 
-`enable("*")` includes the `cobra` recipe. A user recipe can call `enable_cobra(...)` from its own `register()`.
+`enable("*")` includes the `cobra` recipe. Call `enable_cobra(...)` from `config.py` or a module it imports.
 
 `enable_cobra(*names)` registers each name as a completion-only recipe whose `delegate` is a shared `CobraCompleter`, so every slot (flags and positionals alike) is answered by the tool. Two rules match the other recipes:
 

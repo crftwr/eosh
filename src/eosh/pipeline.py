@@ -93,26 +93,16 @@ def set_pipeline_executor(fn: Callable[..., int] | None) -> None:
     _executor = fn
 
 
-# Late-bound lookup for decorator value-taking-flag information.  The
-# decorator parser needs to know which flags consume the next token (so
-# ``@watch -n 5 ls`` correctly takes ``5`` as ``-n``'s value, leaving
-# ``ls`` as the body).  Registering a callback keeps pipeline.py free of
-# a hard import of eosh.decorators (which would invert the layering —
-# decorators import the parser, not the other way around).
-_decorator_value_flag_lookup: Optional[Callable[[str, str], bool]] = None
-
-
-def set_decorator_value_flag_lookup(fn: Callable[[str, str], bool] | None) -> None:
-    """Register ``(decorator_name, flag) -> bool`` to identify value-taking flags."""
-    global _decorator_value_flag_lookup
-    _decorator_value_flag_lookup = fn
-
-
 def _flag_takes_value(decorator_name: str, flag: str) -> bool:
-    """True if *flag* on *decorator_name* consumes the next token as its value."""
-    if _decorator_value_flag_lookup is None:
-        return False
-    return _decorator_value_flag_lookup(decorator_name, flag)
+    """True if *flag* on ``@decorator_name`` consumes the next token as its
+    value — so ``@watch -n 5 ls`` takes ``5`` as ``-n``'s value and leaves
+    ``ls`` as the body.  Decorators are commands named ``@name`` in the
+    command registry (imported here, at call time, to keep module loading
+    one-way: the registry never imports the parser)."""
+    from .commands import registry
+
+    deco = registry.get(f"@{decorator_name}")
+    return deco is not None and deco.takes_value(flag)
 
 
 # ---------------------------------------------------------------------------

@@ -97,8 +97,6 @@ class OwnerCompleter(Completer):
 
 
 def register() -> None:
-    if shutil.which("chown") is None:
-        return
     command_registry.command(
         "chown",
         help="change file owner and group",

@@ -155,6 +155,8 @@ class CommandNameCompleter(Completer):
         recipe_names: set[str] = set()
 
         for name in sorted(self._registry.list_commands()):
+            if name.startswith("@"):
+                continue   # a decorator: completed only after an `@` (see Shell)
             if name.startswith(prefix):
                 cmd = self._registry.get(name)
                 if cmd is not None and not cmd.has_any_handler():

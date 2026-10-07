@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import (
@@ -57,8 +56,6 @@ class ZipArchiveCompleter(Completer):
 
 
 def register() -> None:
-    if shutil.which("unzip") is None:
-        return
     command_registry.command(
         "unzip",
         help="list, test, or extract files from a zip archive",

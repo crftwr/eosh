@@ -17,7 +17,7 @@ driven in completion mode only after it is named here or in
     enable("cobra")             # the well-known tools below
     enable_cobra("mytool")      # any other cobra-based CLI you use
 
-A user recipe can call :func:`enable_cobra` from its own ``register()`` just
+A module your ``config.py`` imports can call :func:`enable_cobra` just
 the same.
 """
 

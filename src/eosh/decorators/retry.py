@@ -7,12 +7,12 @@ import time
 
 from ..commands import arg
 from ..pipeline import Pipeline
-from . import registry as decorator_registry
+from ..commands import registry as command_registry
 
 
 def register() -> None:
-    @decorator_registry.decorator(
-        name="retry",
+    @command_registry.command(
+        "@retry",
         help="Re-run pipeline until exit-status 0, up to -n attempts.",
         params=[
             arg("-n", "--attempts", type=int, default=3, metavar="N",

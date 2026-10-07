@@ -415,17 +415,20 @@ class Command:
         remaining = [t for k, t in enumerate(tokens) if k not in consumed_indices]
         return node, remaining
 
-    def invoke(self, args: list[str] | tuple[str, ...]):
+    def invoke(self, args: list[str] | tuple[str, ...], *lead):
         """Run this command (or the sub-command *args* resolve to).
+
+        *lead* are positional values passed ahead of the parsed arguments —
+        a decorator's handler gets the wrapped ``Pipeline`` this way.
 
         Returns what the handler returned — the shell takes an ``int`` as
         the exit status — or ``2`` when argparse rejected the arguments
         (its own convention; the error is already printed).
         """
         node, remaining = self.resolve(list(args)) if self.children else (self, list(args))
-        return node._invoke_self(remaining)
+        return node._invoke_self(remaining, lead)
 
-    def _invoke_self(self, args: list[str]):
+    def _invoke_self(self, args: list[str], lead: tuple = ()):
         if self.func is None:
             if self.children:
                 _print_group_help(self)
@@ -434,11 +437,11 @@ class Command:
             return None
         if self.params is None:
             # A flat command declared without params: positional *args.
-            return self.func(*args)
+            return self.func(*lead, *args)
         ns = _build_parser(self._full_name(), self.params, self.description or None).parse_args(args)
         if ns is None:
             return 2   # usage error (or --help), already printed
-        return self.func(**vars(ns))
+        return self.func(*lead, **vars(ns))
 
     def _full_name(self) -> str:
         """Space-separated full path from root, used in usage and errors."""
@@ -530,6 +533,10 @@ class CommandRegistry:
 
     def has(self, name: str) -> bool:
         return name in self._commands
+
+    def remove(self, name: str) -> None:
+        """Forget command *name* (no-op if it isn't registered)."""
+        self._commands.pop(name, None)
 
     def mark_builtins(self) -> None:
         """Snapshot current commands as builtins (won't be removed on reload)."""

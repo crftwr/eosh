@@ -1,311 +1,134 @@
-"""Tests for the recipe loader (enable / add_recipe_path / recipe_search_path)."""
+"""Tests for the recipe loader: enable() over built-in recipes and add-ons.
+
+Your own recipes aren't looked up by the loader (discussion #40): they are
+defined in config.py, or in a module it imports.
+"""
 
 from __future__ import annotations
 
-import importlib
-import re
-import textwrap
-from pathlib import Path
+import sys
+import types
 
 import pytest
 
 import eosh.recipes as recipes_pkg
+from eosh.commands import registry as command_registry
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _reset_search_path(monkeypatch, paths: list[Path]) -> None:
-    """Replace recipe_search_path for the duration of a test."""
-    monkeypatch.setattr(recipes_pkg, "recipe_search_path", list(paths))
-
-
-def _write_recipe(directory: Path, name: str, side_effect_list: list) -> Path:
-    """Write a minimal recipe that appends *name* to *side_effect_list* on register()."""
-    path = directory / f"{name}.py"
-    path.write_text(
-        textwrap.dedent(f"""\
-            _results = {side_effect_list!r}  # reference kept by caller
-
-            def register():
-                import eosh.recipes._test_results as _mod
-                _mod.results.append({name!r})
-        """)
-    )
-    return path
-
-
-def _make_recipe(tmp_path: Path, name: str) -> Path:
-    """Write a recipe that records its name in a shared results list."""
-    path = tmp_path / f"{name}.py"
-    path.write_text(
-        textwrap.dedent(f"""\
-            def register():
-                import eosh.recipes._test_results as _mod
-                _mod.results.append({name!r})
-        """)
-    )
-    return path
-
-
-# We use a tiny helper sub-module to collect side-effects across dynamically
-# loaded recipe files (they can't share a list via closure easily).
 @pytest.fixture(autouse=True)
-def _result_module(monkeypatch):
-    """Inject a fresh eosh.recipes._test_results module for each test."""
-    import types
-    mod = types.ModuleType("eosh.recipes._test_results")
-    mod.results = []
-    monkeypatch.setitem(
-        importlib.import_module("eosh.recipes").__dict__,
-        "_test_results_mod",
-        mod,
-    )
-    import sys
-    monkeypatch.setitem(sys.modules, "eosh.recipes._test_results", mod)
-    return mod
+def _isolate_commands(monkeypatch):
+    monkeypatch.setattr(command_registry, "_commands", dict(command_registry._commands))
+    monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-class TestBuiltinRecipes:
-    def test_builtin_recipe_loads(self):
-        """enable() can load a built-in recipe without error."""
-        # 'ls' is a lightweight built-in recipe (no external dependencies).
-        # We just want to confirm it loads; we don't care about completers here.
-        recipes_pkg.enable("ls")   # should not raise
-
-
-class TestUserRecipes:
-    def test_user_recipe_in_default_path(self, tmp_path, monkeypatch, _result_module):
-        _reset_search_path(monkeypatch, [tmp_path])
-        _make_recipe(tmp_path, "my_tool")
-
-        recipes_pkg.enable("my_tool")
-
-        assert _result_module.results == ["my_tool"]
-
-    def test_not_found_raises_import_error(self, tmp_path, monkeypatch):
-        _reset_search_path(monkeypatch, [tmp_path])
-
-        with pytest.raises(ImportError, match="nonexistent"):
-            recipes_pkg.enable("nonexistent")
-
-    def test_error_message_lists_searched_dirs(self, tmp_path, monkeypatch):
-        _reset_search_path(monkeypatch, [tmp_path])
-
-        with pytest.raises(ImportError, match=re.escape(str(tmp_path))):
-            recipes_pkg.enable("ghost")
-
-
-class TestAddRecipePath:
-    def test_add_recipe_path_appends(self, monkeypatch):
-        _reset_search_path(monkeypatch, [])
-        p = Path("/some/dir")
-
-        recipes_pkg.add_recipe_path(p)
-
-        assert recipes_pkg.recipe_search_path == [p]
-
-    def test_add_recipe_path_accepts_string(self, monkeypatch):
-        _reset_search_path(monkeypatch, [])
-
-        recipes_pkg.add_recipe_path("/some/dir")
-
-        assert recipes_pkg.recipe_search_path == [Path("/some/dir")]
-
-    def test_first_match_wins(self, tmp_path, monkeypatch, _result_module):
-        dir_a = tmp_path / "a"
-        dir_b = tmp_path / "b"
-        dir_a.mkdir()
-        dir_b.mkdir()
-
-        _make_recipe(dir_a, "shared")
-        _make_recipe(dir_b, "shared")
-
-        _reset_search_path(monkeypatch, [dir_a, dir_b])
-        recipes_pkg.enable("shared")
-
-        # Only the recipe from dir_a (first in path) should have fired.
-        assert _result_module.results == ["shared"]
-
-    def test_falls_through_to_second_dir(self, tmp_path, monkeypatch, _result_module):
-        dir_a = tmp_path / "a"
-        dir_b = tmp_path / "b"
-        dir_a.mkdir()
-        dir_b.mkdir()
-
-        # Recipe only in dir_b.
-        _make_recipe(dir_b, "only_in_b")
-
-        _reset_search_path(monkeypatch, [dir_a, dir_b])
-        recipes_pkg.enable("only_in_b")
-
-        assert _result_module.results == ["only_in_b"]
-
-    def test_builtin_takes_priority_over_search_path(self, tmp_path, monkeypatch, _result_module):
-        """A user file named 'ls' must not shadow the built-in ls recipe."""
-        _make_recipe(tmp_path, "ls")
-        _reset_search_path(monkeypatch, [tmp_path])
-
-        # Should load built-in ls, not our fake one — so results stay empty.
-        recipes_pkg.enable("ls")
-
-        assert _result_module.results == []
+def _fake_recipe(monkeypatch, name: str, register) -> None:
+    """Install a built-in-looking recipe module ``eosh.recipes.<name>``."""
+    mod = types.ModuleType(f"eosh.recipes.{name}")
+    mod.register = register
+    monkeypatch.setitem(sys.modules, f"eosh.recipes.{name}", mod)
 
 
 def _without_boto3(monkeypatch) -> None:
     """Make the awsut add-on import as if boto3 were not installed."""
-    import sys
     monkeypatch.setitem(sys.modules, "boto3", None)
     for mod in [m for m in sys.modules if m.startswith("eosh_addons.awsut")]:
         monkeypatch.delitem(sys.modules, mod)
 
 
+class TestLookup:
+    def test_a_builtin_recipe_loads(self):
+        recipes_pkg.enable("ls")
+        assert command_registry.has("ls")
+
+    def test_an_addon_loads(self):
+        recipes_pkg.enable("awsut")
+        assert command_registry.get("awsut").has_any_handler()
+
+    def test_an_unknown_name_raises(self):
+        with pytest.raises(ImportError, match="No recipe or add-on named 'no_such'"):
+            recipes_pkg.enable("no_such")
+
+    def test_there_are_no_user_search_paths(self):
+        assert not hasattr(recipes_pkg, "recipe_search_path")
+        assert not hasattr(recipes_pkg, "add_recipe_path")
+
+
+class TestAbsentTools:
+    """enable() drops a recipe's command when the tool isn't installed, so
+    recipes don't each check PATH themselves."""
+
+    def test_a_command_for_a_missing_tool_is_dropped(self, monkeypatch):
+        def register():
+            command_registry.command("eosh-no-such-tool", help="recipe")
+        _fake_recipe(monkeypatch, "_t_absent", register)
+        recipes_pkg.enable("_t_absent")
+        assert not command_registry.has("eosh-no-such-tool")
+
+    def test_each_name_a_recipe_registers_is_checked_on_its_own(self, monkeypatch):
+        def register():
+            command_registry.command("sh", help="present everywhere")
+            command_registry.command("eosh-no-such-tool", help="absent")
+        _fake_recipe(monkeypatch, "_t_mixed", register)
+        recipes_pkg.enable("_t_mixed")
+        assert command_registry.has("sh")
+        assert not command_registry.has("eosh-no-such-tool")
+
+    def test_a_python_command_is_never_dropped(self, monkeypatch):
+        def register():
+            @command_registry.command("eosh-python-cmd")
+            def handler():
+                pass
+        _fake_recipe(monkeypatch, "_t_python", register)
+        recipes_pkg.enable("_t_python")
+        assert command_registry.has("eosh-python-cmd")
+
+    def test_a_name_that_was_already_registered_is_left_alone(self, monkeypatch):
+        command_registry.command("eosh-no-such-tool", help="the user's own")
+        def register():
+            command_registry.command("eosh-no-such-tool", help="recipe")
+        _fake_recipe(monkeypatch, "_t_known", register)
+        recipes_pkg.enable("_t_known")
+        assert command_registry.has("eosh-no-such-tool")
+
+
 class TestEnableAll:
-    """``enable("*")`` — discovery must only ever offer real recipes.
+    """``enable("*")`` — discovery must only ever offer real recipes, since
+    ``enable()`` calls ``register()`` on whatever it returns."""
 
-    ``enable()`` calls ``register()`` on whatever discovery returns, so a
-    module without one turns a user's ``enable("*")`` into an
-    ``AttributeError`` at config-load time.  That is not hypothetical: a
-    support module placed next to the recipes once broke exactly this,
-    because the glob excluded only ``__init__``.
-    """
-
-    def test_every_discovered_builtin_has_a_register(self, monkeypatch):
-        """The invariant enable("*") depends on, checked against the real package."""
-        _reset_search_path(monkeypatch, [])
-
+    def test_every_discovered_name_has_a_register(self):
         names = recipes_pkg._discover_all_recipes()
-
-        assert "ls" in names           # discovery still finds actual recipes
-        assert "awsut" in names        # ... and the bundled add-ons
+        assert "ls" in names and "awsut" in names
         for name in names:
             module = recipes_pkg._load_recipe(name)
-            assert callable(getattr(module, "register", None)), (
-                f"recipe {name!r} was discovered but has no register()"
-            )
+            assert callable(getattr(module, "register", None)), name
 
-    def test_missing_dependency_skips_only_that_recipe(
-            self, tmp_path, monkeypatch, _result_module):
-        """``awsut`` without boto3 must not take the recipes after it down too.
+    def test_support_modules_are_not_discovered(self):
+        """A leading underscore means "imported by a recipe", not "is a recipe"."""
+        assert [n for n in recipes_pkg._discover_all_recipes() if n.startswith("_")] == []
 
-        The failing recipe sorts first on purpose: a loop that aborted on it
-        would never reach ``zzz_ok``.
-        """
-        (tmp_path / "aaa_needs_dep.py").write_text(
-            "import eosh_no_such_dependency\n"
-            "def register(): pass\n"
-        )
-        _make_recipe(tmp_path, "zzz_ok")
-        _reset_search_path(monkeypatch, [tmp_path])
-        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes",
-                            lambda: ["aaa_needs_dep", "zzz_ok"])
-        monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
-
-        recipes_pkg.enable("*")
-
-        assert _result_module.results == ["zzz_ok"]
-        assert recipes_pkg.skipped_recipes == {
-            "aaa_needs_dep": "eosh_no_such_dependency"}
-
-    def test_user_recipe_failure_is_reported_with_its_file_and_line(
-            self, tmp_path, monkeypatch, capsys):
-        """Issue #45: a failing import *inside a helper* the user recipe
-        imports used to be skipped without a word.  The report must name both
-        files on the way down, not just the missing module."""
-        (tmp_path / "my_tool.py").write_text(
-            "import eosh_test_helper_45\n"
-            "def register(): pass\n"
-        )
-        helper_dir = tmp_path / "lib"
-        helper_dir.mkdir()
-        (helper_dir / "eosh_test_helper_45.py").write_text("import requets\n")
-        monkeypatch.syspath_prepend(str(helper_dir))
-        _reset_search_path(monkeypatch, [tmp_path])
-        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["my_tool"])
-        monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
-
-        recipes_pkg.enable("*")
-
-        err = capsys.readouterr().err
-        assert "recipe 'my_tool' failed to load" in err
-        assert "my_tool.py\", line 1" in err
-        assert "eosh_test_helper_45.py\", line 1" in err
-        assert "No module named 'requets'" in err
-        assert "frozen" not in err
-
-    def test_user_recipe_error_skips_only_that_recipe(
-            self, tmp_path, monkeypatch, _result_module, capsys):
-        """Any exception — not just a missing module — in a user recipe is
-        reported and the recipes after it still load."""
-        (tmp_path / "aaa_broken.py").write_text(
-            "def register():\n"
-            "    raise ValueError('boom in register')\n"
-        )
-        _make_recipe(tmp_path, "zzz_ok")
-        _reset_search_path(monkeypatch, [tmp_path])
-        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes",
-                            lambda: ["aaa_broken", "zzz_ok"])
-
-        recipes_pkg.enable("*")
-
-        assert _result_module.results == ["zzz_ok"]
-        err = capsys.readouterr().err
-        assert "recipe 'aaa_broken' failed to load" in err
-        assert "ValueError: boom in register" in err
-
-    def test_addon_missing_dependency_stays_quiet(self, monkeypatch, capsys):
-        """``awsut`` without the eosh[awsut] extra is a choice, not an error."""
+    def test_an_addon_missing_a_dependency_is_skipped_quietly(self, monkeypatch, capsys):
+        """``awsut`` without the eosh[awsut] extra is a choice, not an error —
+        and the recipes after it still load."""
         _without_boto3(monkeypatch)
-        _reset_search_path(monkeypatch, [])
-        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["awsut"])
-        monkeypatch.setattr(recipes_pkg, "skipped_recipes", {})
+        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["awsut", "ls"])
         monkeypatch.setattr(recipes_pkg, "_register_unavailable", lambda *a: None)
 
         recipes_pkg.enable("*")
 
         assert recipes_pkg.skipped_recipes == {"awsut": "boto3"}
+        assert command_registry.has("ls")
         assert capsys.readouterr().err == ""
 
-    def test_missing_dependency_still_raises_when_named(
-            self, tmp_path, monkeypatch):
-        (tmp_path / "needs_dep.py").write_text(
-            "import eosh_no_such_dependency\n"
-            "def register(): pass\n"
-        )
-        _reset_search_path(monkeypatch, [tmp_path])
-
-        with pytest.raises(ModuleNotFoundError):
-            recipes_pkg.enable("needs_dep")
-
-    def test_awsut_without_boto3_names_the_extra(self, monkeypatch):
-        """Named explicitly, the error says how to fix it, and keeps ``e.name``."""
+    def test_named_explicitly_it_raises_with_the_extra(self, monkeypatch):
         _without_boto3(monkeypatch)
-
         with pytest.raises(ModuleNotFoundError, match=r"eosh\[awsut\]") as excinfo:
             recipes_pkg.enable("awsut")
         assert excinfo.value.name == "boto3"
 
-    def test_support_modules_are_not_discovered(self, monkeypatch):
-        """A leading underscore means "imported by a recipe", not "is a recipe"."""
-        _reset_search_path(monkeypatch, [])
-
-        names = recipes_pkg._discover_all_recipes()
-
-        assert [n for n in names if n.startswith("_")] == []
-
-    def test_user_helper_beside_a_user_recipe_is_skipped(
-            self, tmp_path, monkeypatch, _result_module):
-        """The same rule applies to a user's own shared helper module."""
-        _make_recipe(tmp_path, "my_tool")
-        (tmp_path / "_shared.py").write_text("# helper imported by my_tool\n")
-        _reset_search_path(monkeypatch, [tmp_path])
-
-        names = recipes_pkg._discover_all_recipes()
-
-        assert "my_tool" in names
-        assert "_shared" not in names
+    def test_a_builtin_recipe_bug_is_not_hidden(self, monkeypatch):
+        def register():
+            raise ValueError("bug in a recipe")
+        _fake_recipe(monkeypatch, "_t_buggy", register)
+        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["_t_buggy"])
+        with pytest.raises(ValueError, match="bug in a recipe"):
+            recipes_pkg.enable("*")

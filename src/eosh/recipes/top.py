@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 
 from ..commands import arg, registry as command_registry
@@ -74,8 +73,6 @@ def _linux_params() -> list:
 
 
 def register() -> None:
-    if shutil.which("top") is None:
-        return
     params = _macos_params() if sys.platform == "darwin" else _linux_params()
     command_registry.command(
         "top",

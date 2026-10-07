@@ -304,18 +304,17 @@ eosh> aws ec2 describe-instances --region $aws_region
 
 ### Custom Decorators
 
-To author your own decorator, decorate a function with `decorator_registry.decorator(...)`. The function receives the wrapped `Pipeline` as its first positional argument and the parsed flag namespace as kwargs; call `pipeline.run()` to execute the body and return the exit code.
+A decorator is a command named `@name`: register it with `registry.command("@name", ...)`, exactly as you would a command. The function receives the wrapped `Pipeline` as its first positional argument and the parsed flag namespace as kwargs; call `pipeline.run()` to execute the body and return the exit code.
 
 ```python
 # ~/.eosh/config.py
 import sys
 import time
-from eosh.commands import arg
-from eosh.decorators import registry as decorator_registry
+from eosh.commands import arg, registry
 from eosh.pipeline import Pipeline
 
-@decorator_registry.decorator(
-    name="repeat",
+@registry.command(
+    "@repeat",
     help="Run the pipeline N times, stopping early on the first failure.",
     params=[
         arg("-n", "--count", type=int, default=3, metavar="N",
@@ -343,16 +342,7 @@ eosh> @repeat -n 5 --delay 1 ls
 eosh> @repeat -n 3 {make && ./run-tests}
 ```
 
-To share decorators across machines or teammates, drop a module under `~/.eosh/decorators/<name>.py` that defines `register()` (same shape as the built-ins) and call `enable()` from `config.py`:
-
-```python
-# ~/.eosh/config.py
-from eosh.decorators import add_decorator_path, enable as enable_decorators
-
-add_decorator_path("/team/shared/decorators")   # optional extra directory
-enable_decorators("repeat")                     # found in ~/.eosh/decorators/
-                                                # or /team/shared/decorators/
-```
+To share decorators across machines or teammates, put them in a module and import it from `config.py` — see [Your Own Recipes](#your-own-recipes).
 
 ### Spawning Interactive Subprocesses
 
@@ -469,65 +459,41 @@ Two protocols cover whole families of tools without a per-tool recipe:
 - **Cobra-based tools** (`docker`, `kubectl`, `helm`, `gh`, `argocd`, …) — `CobraCompleter` drives their `__complete` subcommand, including live resource enumeration (running containers, k8s resources, GitHub issues, …). Opt-in by name: `enable("cobra")` covers the well-known tools, and `enable_cobra("mytool")` adds your own. See [doc/cobra.md](doc/cobra.md).
 - **argcomplete-based Python CLIs** (automatic) (`pipx`, `conda`, `pre-commit`, `tox`, `pdm`, `httpie`, …) — `ArgcompleteCompleter` detects the `# PYTHON_ARGCOMPLETE_OK` marker and drives the argcomplete protocol. See [doc/argcomplete-fallback.md](doc/argcomplete-fallback.md).
 
-#### User-Defined Recipes
+#### Your Own Recipes
 
-You can write your own recipes and place them in `~/.eosh/recipes/` (or any directory you add to the search path). `enable()` checks the search path automatically after the built-ins, so the call site in `config.py` is identical:
-
-```python
-from eosh.recipes import enable
-enable("git")          # built-in
-enable("my_tool")      # found in ~/.eosh/recipes/my_tool.py
-```
-
-A recipe file must define a `register()` function:
+A recipe is plain Python: register a command with no handler, and its `params` drive completion for the external tool. Write it in `config.py`, or in a module next to it — `~/.eosh` is on `sys.path` while `config.py` runs, and `reload` re-runs the modules imported from there:
 
 ```python
-# ~/.eosh/recipes/my_tool.py
+# ~/.eosh/my_tools.py
 from eosh.commands import arg, registry
-from eosh.completion import CallbackCompleter, ChoiceCompleter
+from eosh.completion import CallbackCompleter
 
-def register():
-    registry.command(
-        "my-tool",
-        help="my-tool — deploy/rollback/status helper",
-        params=[
-            arg("subcommand", choices=["deploy", "rollback", "status"]),
-            arg("target", help="deploy target", completer=CallbackCompleter(_list_targets)),
-            arg("-v", "--verbose", action="store_true", help="verbose"),
-            arg("--dry-run", action="store_true", help="don't apply changes"),
-        ],
-    )
-
-def _list_targets():
-    # Return dynamic values (cached, fetched from an API, etc.)
-    return ["web", "worker", "scheduler"]
+registry.command(
+    "my-tool",
+    help="my-tool — deploy/rollback/status helper",
+    params=[
+        arg("subcommand", choices=["deploy", "rollback", "status"]),
+        arg("target", help="deploy target",
+            completer=CallbackCompleter(lambda: ["web", "worker", "scheduler"])),
+        arg("-v", "--verbose", action="store_true", help="verbose"),
+        arg("--dry-run", action="store_true", help="don't apply changes"),
+    ],
+)
 ```
-
-#### Recipe Search Path
-
-The default search path contains only `~/.eosh/recipes/`. Call `add_recipe_path()` to add more directories — useful for sharing recipes across a team:
 
 ```python
-from eosh.recipes import add_recipe_path, enable
+# ~/.eosh/config.py
+import sys
+sys.path.append("/team/shared/eosh")   # optional: recipes shared by a team
+from eosh.recipes import enable
 
-add_recipe_path("/team/shared/recipes")   # checked after ~/.eosh/recipes/
-enable("my_tool")   # found in whichever directory contains my_tool.py first
+enable("git")       # built-in
+import my_tools     # your own, from ~/.eosh
 ```
 
-Lookup order for every `enable()` call:
-
-1. Built-in package (`eosh.recipes.<name>`) — always highest priority
-2. `~/.eosh/recipes/<name>.py` — personal recipes
-3. Additional paths in the order they were added via `add_recipe_path()`
-
-You can also read or modify `recipe_search_path` directly (it is a plain `list[Path]`).
-
-A recipe may import third-party packages, but they must be installed in
-eosh's own environment (see [Installation](#installation) for `uv tool` /
-`pipx`). When one is missing, `enable("*")` skips that recipe instead of
-failing the whole config and registers a placeholder command under the
-recipe's name (unless that name is already a command or an executable on
-`PATH`); running it says which module is missing and how to install it.
+A module you import may use third-party packages, but they must be installed
+in eosh's own environment (see [Installation](#installation) for `uv tool` /
+`pipx`).
 Naming the recipe explicitly — `enable("my_tool")` — still raises.
 
 Any error in one of *your* recipes — a typo in an import (even one inside a
@@ -586,8 +552,7 @@ registry.command(
 | `~/.eosh/config.py` | User configuration |
 | `~/.eosh/history` | Command history |
 | `~/.eosh/history.dirs` | Directories each history line was run in (scopes history TAB candidates) |
-| `~/.eosh/recipes/<name>.py` | User-defined completion recipes (loaded by `enable("<name>")`) |
-| `~/.eosh/decorators/<name>.py` | User-defined pipeline decorators (loaded by `enable("<name>")`) |
+| `~/.eosh/*.py` | Your own modules (recipes, commands, decorators) — on `sys.path` while `config.py` runs |
 
 ## Platform Support
 

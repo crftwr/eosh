@@ -7,7 +7,6 @@ to the user (would require a remote round-trip per keystroke).
 
 from __future__ import annotations
 
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import (
@@ -64,8 +63,6 @@ class _RemoteOrFileCompleter(Completer):
 
 
 def register() -> None:
-    if shutil.which("scp") is None:
-        return
     command_registry.command(
         "scp",
         help="secure copy files between hosts over SSH",

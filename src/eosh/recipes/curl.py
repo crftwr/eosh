@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import ChoiceCompleter, FileCompleter
@@ -14,8 +13,6 @@ _HTTP_METHODS = [
 
 
 def register() -> None:
-    if shutil.which("curl") is None:
-        return
     command_registry.command(
         "curl",
         help="transfer data from or to a URL",

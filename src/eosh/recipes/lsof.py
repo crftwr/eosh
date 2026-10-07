@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 
 from ..commands import arg, registry as command_registry
 from ..completion import FileCompleter
@@ -10,8 +9,6 @@ from .ps import PidCompleter
 
 
 def register() -> None:
-    if shutil.which("lsof") is None:
-        return
     command_registry.command(
         "lsof",
         help="list open files",
