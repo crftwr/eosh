@@ -577,8 +577,9 @@ Future ideas:
    only: diagnostic lines should go to `sys.stderr` so they don't
    poison piped output.
 5. **Reload semantics.** Decorators are commands, so the one
-   `mark_builtins()` / `clear_user_commands()` pair covers them: built-in
-   decorators survive `reload`, config-defined ones are cleared and
+   `defining_builtins()` / `clear_user_commands()` pair covers them:
+   built-in decorators survive `reload` (and a config needs
+   `override=True` to replace one), config-defined ones are cleared and
    re-registered by the re-run config.
 
 Open questions are tracked in

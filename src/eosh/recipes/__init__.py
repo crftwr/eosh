@@ -73,6 +73,7 @@ from importlib import import_module
 from pathlib import Path
 
 from ..commands import registry as command_registry
+from ..user_errors import config_warning
 from .cobra import enable_cobra  # noqa: F401  (public API)
 
 
@@ -92,11 +93,16 @@ def enable(*recipe_names: str) -> None:
     ``egrep``, ``rgrep``) keeps exactly the ones that exist.
 
     An add-on whose *dependency* is missing (``awsut`` without boto3, i.e.
-    installed without the ``eosh[awsut]`` extra) is skipped under ``"*"`` and
-    recorded in :data:`skipped_recipes`; a placeholder command named after it
-    says what is missing when run (unless that name means something already).
-    Naming such an add-on explicitly raises, with the install hint as the
-    message.
+    installed without the ``eosh[awsut]`` extra) is skipped, recorded in
+    :data:`skipped_recipes`, and stood in for by a placeholder command named
+    after it that says what is missing when run (unless that name means
+    something already).  Under ``"*"`` that is quiet — not installing an
+    extra is a choice; naming the add-on explicitly also prints the install
+    hint as a ``config warning:``.
+
+    No name stops the others, or the rest of ``config.py``: an unknown name
+    or a recipe whose ``register()`` raises is a ``config warning:`` (with
+    the traceback, for the latter) and ``enable()`` moves on.
 
     Your own recipes aren't looked up here: define them in ``config.py``, or
     in a module ``config.py`` imports (``sys.path.append`` a team directory).
@@ -105,20 +111,29 @@ def enable(*recipe_names: str) -> None:
     names = _discover_all_recipes() if wildcard else recipe_names
     for name in names:
         try:
-            module = _load_recipe(name)
-        except ModuleNotFoundError as e:
-            if name not in _addons():
-                raise
-            missing = e.name or str(e)
-            if not wildcard:
-                raise ModuleNotFoundError(missing_message(name, missing), name=e.name) from e
-            skipped_recipes[name] = missing
-            _register_unavailable(name, missing)
-            continue
-        skipped_recipes.pop(name, None)
-        before = set(command_registry.list_commands())
-        module.register()
-        _drop_absent_tools(set(command_registry.list_commands()) - before)
+            _enable_one(name, quiet_if_missing=wildcard)
+        except _UnknownRecipe as e:
+            config_warning(str(e))
+        except Exception as e:
+            config_warning(f"enable({name!r}) failed:", e)
+
+
+def _enable_one(name: str, quiet_if_missing: bool) -> None:
+    try:
+        module = _load_recipe(name)
+    except ModuleNotFoundError as e:
+        if name not in _addons():
+            raise
+        missing = e.name or str(e)
+        skipped_recipes[name] = missing
+        _register_unavailable(name, missing)
+        if not quiet_if_missing:
+            config_warning(missing_message(name, missing))
+        return
+    skipped_recipes.pop(name, None)
+    before = set(command_registry.list_commands())
+    module.register()
+    _drop_absent_tools(set(command_registry.list_commands()) - before)
 
 
 def _drop_absent_tools(names: set[str]) -> None:
@@ -149,7 +164,7 @@ def _addons() -> dict[str, str]:
     return {ep.name: ep.value for ep in entry_points(group="eosh.addons")}
 
 
-# Recipes ``enable("*")`` skipped because a dependency could not be imported:
+# Add-ons ``enable()`` skipped because a dependency could not be imported:
 # recipe name → missing module name (e.g. ``{"awsut": "boto3"}``).
 skipped_recipes: dict[str, str] = {}
 
@@ -200,4 +215,8 @@ def _load_recipe(name: str):
     addon = _addons().get(name)
     if addon is not None:
         return import_module(addon)
-    raise ImportError(f"No recipe or add-on named {name!r}")
+    raise _UnknownRecipe(f"No recipe or add-on named {name!r}")
+
+
+class _UnknownRecipe(ImportError):
+    """``enable()`` was given a name that is neither a recipe nor an add-on."""

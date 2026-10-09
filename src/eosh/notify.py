@@ -75,6 +75,8 @@ SKIP_COMMANDS: set[str] = {
     "exit",
 }
 
+_DEFAULT_SKIP_COMMANDS = frozenset(SKIP_COMMANDS)
+
 _enabled = True
 _threshold = DEFAULT_THRESHOLD
 _notifier: Callable[[str, str], None] | None = None
@@ -118,6 +120,18 @@ def set_notifier(func: Callable[[str, str], None] | None) -> None:
     """
     global _notifier
     _notifier = func
+
+
+def reset_config() -> None:
+    """Undo what a config set up here — called by ``reload`` before it runs
+    the config again: the built-in backend chain and the default skip list.
+
+    The ``notify`` / ``notify_threshold`` values stay: ``var`` sets them at
+    the prompt too, and ``reload`` doesn't reset variables.
+    """
+    global SKIP_COMMANDS
+    set_notifier(None)
+    SKIP_COMMANDS = set(_DEFAULT_SKIP_COMMANDS)
 
 
 def is_enabled() -> bool:

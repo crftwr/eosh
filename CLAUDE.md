@@ -118,8 +118,16 @@ Entry point. Reads input, parses lines, dispatches commands.
 - Runs external commands in PTY-backed subprocess slots (`process.py`)
 - Executes pipelines (`|`), sequences (`;`, `&&`, `||`), and redirections (`>`, `>>`, `<`, `2>`, `2>&1`)
 
-**Built-in commands:** `cd`, `exit`, `reload`, `var`, `alias`, `unalias`, `source-bash`, `help`, `context`
+**Built-in commands:** `cd`, `exit`, `reload`, `config` (`config edit`), `var`, `alias`, `unalias`, `source-bash`, `help`, `context`
 (`var NAME=` unsets; there is no separate `unset`.)
+
+**`reload` is one sweep.** `Shell._clear_user_config` puts every registry a
+config writes to back to its built-in state — commands, decorators and
+aliases, Vars, `recipes.skipped_recipes`, the prompt, `notify`'s backend and
+skip list — and the config runs again. A new kind of config registration
+(hooks, key bindings, …) adds its reset there. `config edit` runs
+`$VISUAL` / `$EDITOR` (`vi`, `notepad` on Windows) on `config.py` through
+`passthrough_run` and reloads when the editor exits 0.
 
 **`source-bash` — run a bash script, import what it left behind.** The escape
 hatch for anything bash can express and eosh can't (`$(…)`, `for`, heredocs,
@@ -165,12 +173,12 @@ def hello(name):
 ```
 
 Methods:
-- `command(name, *, help=None, params=None, delegate=None) -> Command` — register a root. Two forms, both returning the `Command`. Use a **plain call** for a group or an external recipe (`git = registry.command("git", ...)`), and a **decorator** to attach a handler (`@registry.command("hello", ...)` or `name="hello"`). A name is always required. `params=[arg(...)]` declares positionals and flags. argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`, `node.takes_value(flag)`); there is no pre-built completer dict. `delegate=Completer` is a `Command` attribute that answers every completion slot, for a tool with its own completion protocol (`aws_completer`, cobra). It can't be combined with `params`.
+- `command(name, *, help=None, params=None, delegate=None, sync=False, override=False) -> Command` — register a root. Two forms, both returning the `Command`. Use a **plain call** for a group or an external recipe (`git = registry.command("git", ...)`), and a **decorator** to attach a handler (`@registry.command("hello", ...)` or `name="hello"`). A name is always required. `params=[arg(...)]` declares positionals and flags. argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`, `node.takes_value(flag)`); there is no pre-built completer dict. `delegate=Completer` is a `Command` attribute that answers every completion slot, for a tool with its own completion protocol (`aws_completer`, cobra). It can't be combined with `params`.
 - `node.command(name, ...)` — the same two forms one level down (see [doc/subcommands.md](doc/subcommands.md)). A node's flags are **its own** and are never inherited from ancestors; a flag shared by several commands is one `arg(...)` listed on each. A node never has both a handler and children: either order raises `ValueError`. A flat command is a root with no children, so completion, the status bar and dispatch all follow the same per-node rules, through `shell._resolve_slot`.
 - `sync=True` (on `registry.command`) runs the command on the main thread instead of a backgroundable `PythonCommandSlot` — for commands that finish at once or change shell state; every built-in sets it.
 - **A handler's return value is its exit status** — an `int` is the status, anything else (usually `None`) is 0, so `my_cmd && next` sees a failure the handler reports. A `SystemExit` is only a status too (it never ends the shell; `exit` sets `Shell._exit_requested` instead), `KeyboardInterrupt` is 130, an exception is 1 with the traceback on stderr, and an argparse usage error is 2. Every execution path — foreground slot, pipeline stage, decorator, main-thread run — goes through one function, `shell.run_handler`.
-- `mark_builtins()` — snapshot current commands as builtins (not removed on `reload`)
-- `clear_user_commands()` — remove non-builtin commands and aliases
+- `defining_builtins()` — context manager the shell registers its own commands in; exactly what is registered inside it is the built-in set. Afterwards, registering a built-in name without `override=True` prints a `config warning:` and keeps the built-in (the decorator form gets a detached node, so the config runs on). `is_builtin(name)` is false for an override, which `help` lists under "Commands from your config". `mark_builtins()` snapshots everything (for hand-built test registries).
+- `clear_user_commands()` — back to the built-in set: drops config commands and aliases and restores any built-in a config overrode
 
 Dispatch order:
 1. Built-in commands (cd, exit, reload, var, unset, help, context)
@@ -220,7 +228,7 @@ The module-level singleton is named `registry` inside `variables.py` (mirroring 
 from eosh.variables import registry as var_registry
 # or, equivalently, `from eosh import var_registry`
 
-var_registry.register(var: EnvVar | PyVar | GlobalVar) -> None
+var_registry.register(var: EnvVar | PyVar | GlobalVar, *, override=False) -> None   # built-ins need override=True
 var_registry.get(name: str) -> Var | None
 var_registry.all() -> list[Var]
 ```
@@ -760,7 +768,11 @@ placeholder prints one line from `recipes.missing_message`. For an add-on it
 names the extra, which by convention is named after the add-on
 (`awsut: needs the Python module 'boto3' — install eosh[awsut]`), so the core
 holds no table of which add-on needs what. Naming an add-on explicitly
-(`enable("awsut")`) raises with the same message.
+(`enable("awsut")`) does the same and prints that message as a
+`config warning:`. No name stops `enable()` or the config: an unknown name
+or a `register()` that raises is a `config warning:` (via
+`user_errors.config_warning`, with the traceback for the latter) and the
+remaining names still load.
 
 ### addons/ — Bundled Add-ons
 
@@ -848,7 +860,7 @@ The decorator function receives a `Pipeline` (the parsed AST of the wrapped body
 
 **Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet` (each in its own `eosh/decorators/<name>.py`). There is no `@bg` (removed in discussion #39): to background something, run it and press `Ctrl+]` — a whole pipeline goes with it.
 
-**Loading:** `Shell._register_builtins` calls `eosh.decorators.register_builtins()`, before `mark_builtins`, so the built-ins survive `reload`. There is no decorator search path; your own are defined in `config.py` (or a module it imports), like a recipe.
+**Loading:** `Shell._register_builtins` calls `eosh.decorators.register_builtins()` inside `defining_builtins()`, so the built-ins survive `reload` and a config needs `override=True` to replace one. There is no decorator search path; your own are defined in `config.py` (or a module it imports), like a recipe.
 
 **Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `passthrough_run`/`passthrough_input` raise `RuntimeError` from a piped decorator.
 

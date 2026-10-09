@@ -152,7 +152,7 @@ def _clean_aws_registration(monkeypatch):
     else:
         command_registry._commands.pop("aws", None)
     for name in ("aws_region", "aws_profile"):
-        if name not in getattr(var_registry, "_builtin_names", set()):
+        if name not in var_registry._builtins:
             var_registry._vars.pop(name, None) if hasattr(var_registry, "_vars") else None
 
 

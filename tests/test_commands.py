@@ -403,3 +403,65 @@ def test_list_aliases_returns_copy():
     snapshot = reg.list_aliases()
     snapshot["hp"] = "tampered"
     assert reg.get_alias("hp") == "awsut hyperpod"
+
+
+# ── Built-ins: override=True, and reload puts them back ─────────────────────
+
+def _registry_with_builtin_cd():
+    reg = CommandRegistry()
+    with reg.defining_builtins():
+        @reg.command("cd")
+        def cd():
+            return "builtin"
+    return reg
+
+
+def test_a_builtin_is_not_replaced_without_override(capsys):
+    reg = _registry_with_builtin_cd()
+    builtin = reg.get("cd")
+
+    @reg.command("cd")            # the decorator form still works…
+    def my_cd():
+        return "mine"
+
+    assert reg.get("cd") is builtin  # …but goes nowhere
+    assert capsys.readouterr().err == (
+        "config warning: 'cd' is a built-in command — not replaced "
+        "(pass override=True to replace it)\n")
+
+
+def test_override_replaces_a_builtin_and_clear_puts_it_back():
+    reg = _registry_with_builtin_cd()
+    builtin = reg.get("cd")
+
+    @reg.command("cd", override=True)
+    def my_cd():
+        return "mine"
+
+    assert reg.get("cd").func() == "mine"
+    assert not reg.is_builtin("cd")
+    reg.clear_user_commands()
+    assert reg.get("cd") is builtin
+    assert reg.is_builtin("cd")
+
+
+def test_builtins_are_exactly_what_defining_builtins_registered():
+    """Not whatever happened to be in the registry already — a second shell
+    in the same process must not turn earlier user commands into built-ins."""
+    reg = CommandRegistry()
+    reg.command("user-before")
+    with reg.defining_builtins():
+        reg.command("cd")
+    reg.command("user-before", help="re-registered")   # no warning, not built-in
+    assert reg.is_builtin("cd")
+    assert not reg.is_builtin("user-before")
+    reg.clear_user_commands()
+    assert reg.list_commands() == ["cd"]
+
+
+def test_a_non_builtin_is_replaced_silently(capsys):
+    reg = CommandRegistry()
+    reg.command("git", help="recipe")
+    reg.command("git", help="mine")
+    assert reg.get("git").help == "mine"
+    assert capsys.readouterr().err == ""

@@ -178,6 +178,11 @@ notify.configure(skip_commands={"vim"})  # or replace the set wholesale
 terminal. `set_notifier(None)` restores the built-in chain. The test suite
 uses this hook to capture notifications instead of posting them.
 
+`reload` undoes both before re-running the config (`notify.reset_config`):
+the backend goes back to the built-in chain and `SKIP_COMMANDS` to its
+defaults. The `notify` / `notify_threshold` values stay, since `var` sets
+them at the prompt too.
+
 ## Message format
 
 ```

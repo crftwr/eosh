@@ -78,6 +78,7 @@ eosh
 | `unalias NAME [NAME ...]` | Remove aliases |
 | `source-bash [FILE [ARG ...]]` | Run a bash script (or a pasted block) and import its variables and cwd |
 | `reload` | Reload `~/.eosh/config.py` without restarting |
+| `config edit` | Open `~/.eosh/config.py` in `$VISUAL` / `$EDITOR`, then reload it |
 | `exit` | Exit the shell |
 
 Any command not listed above is passed through to the system shell (e.g., `ls`, `git`, `grep`).
@@ -240,7 +241,9 @@ See the [Custom Decorators](#custom-decorators) section below for authoring your
 
 ## Customization
 
-Create `~/.eosh/config.py` to define custom commands and completers. This file is plain Python that imports from eosh. Use `reload` to apply changes without restarting.
+Create `~/.eosh/config.py` to define custom commands and completers. This file is plain Python that imports from eosh. Use `reload` to apply changes without restarting, or `config edit` to open it in your editor and reload when you quit. `reload` starts from a clean slate: everything the previous run registered (commands, decorators, aliases, variables, the prompt, a custom notifier) is dropped before the config runs again.
+
+A config can't replace a built-in (`cd`, `help`, `@watch`, the `notify` variable, …) by accident: registering one of those names prints a `config warning:` line and keeps the built-in. Pass `override=True` (`registry.command("cd", override=True)`, `var_registry.register(v, override=True)`) when you mean it; `help` lists your commands apart from the built-ins, and removing the override and running `reload` brings the built-in back.
 
 ```python
 # ~/.eosh/config.py
@@ -492,12 +495,12 @@ import my_tools     # your own, from ~/.eosh
 A module you import may use third-party packages, but they must be installed
 in eosh's own environment (see [Installation](#installation) for `uv tool` /
 `pipx`).
-Naming the recipe explicitly — `enable("my_tool")` — still raises.
 
-Any error in one of *your* recipes — a typo in an import (even one inside a
-helper module the recipe imports), an exception in `register()`, a syntax
-error — is printed at startup with a traceback through your files, and under
-`enable("*")` the remaining recipes still load.
+`enable()` never stops your config: an unknown name, or a recipe whose
+`register()` raises, is a `config warning:` line (the latter with its
+traceback) and the remaining names still load. An error in a module of your
+own — a typo in an import, a syntax error — is printed at startup with a
+traceback through your files.
 
 ### Writing a Custom Completer
 

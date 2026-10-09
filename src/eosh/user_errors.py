@@ -9,6 +9,7 @@ file nor the line holding the typo.
 
 from __future__ import annotations
 
+import sys
 import traceback
 from pathlib import Path
 
@@ -39,3 +40,16 @@ def format_user_exception(exc: BaseException) -> str:
     lines += traceback.format_list(user_frames or frames)
     lines += traceback.format_exception_only(exc)
     return "".join(lines)
+
+
+def config_warning(message: str, exc: BaseException | None = None) -> None:
+    """Report a problem with one registration and let the config carry on.
+
+    Printed as a ``config warning:`` line (plus *exc*'s user-side traceback,
+    when given) on stderr.  For the problems eosh can contain to a single
+    entry — a refused built-in override, a recipe that failed to enable —
+    so the rest of ``config.py`` still runs.
+    """
+    print(f"config warning: {message}", file=sys.stderr)
+    if exc is not None:
+        print(format_user_exception(exc), file=sys.stderr, end="")

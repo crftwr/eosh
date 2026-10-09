@@ -44,9 +44,12 @@ class TestLookup:
         recipes_pkg.enable("awsut")
         assert command_registry.get("awsut").has_any_handler()
 
-    def test_an_unknown_name_raises(self):
-        with pytest.raises(ImportError, match="No recipe or add-on named 'no_such'"):
-            recipes_pkg.enable("no_such")
+    def test_an_unknown_name_is_a_warning_and_the_rest_still_load(self, capsys):
+        recipes_pkg.enable("no_such", "ls")
+        err = capsys.readouterr().err
+        assert "config warning: No recipe or add-on named 'no_such'" in err
+        assert "Traceback" not in err          # a typo needs no traceback
+        assert command_registry.has("ls")
 
     def test_there_are_no_user_search_paths(self):
         assert not hasattr(recipes_pkg, "recipe_search_path")
@@ -119,16 +122,24 @@ class TestEnableAll:
         assert command_registry.has("ls")
         assert capsys.readouterr().err == ""
 
-    def test_named_explicitly_it_raises_with_the_extra(self, monkeypatch):
+    def test_named_explicitly_it_warns_with_the_extra(self, monkeypatch, capsys):
         _without_boto3(monkeypatch)
-        with pytest.raises(ModuleNotFoundError, match=r"eosh\[awsut\]") as excinfo:
-            recipes_pkg.enable("awsut")
-        assert excinfo.value.name == "boto3"
+        monkeypatch.setattr(recipes_pkg, "_register_unavailable", lambda *a: None)
+        recipes_pkg.enable("awsut")
+        assert recipes_pkg.skipped_recipes == {"awsut": "boto3"}
+        assert capsys.readouterr().err == (
+            "config warning: awsut: needs the Python module 'boto3' "
+            "— install eosh[awsut]\n")
 
-    def test_a_builtin_recipe_bug_is_not_hidden(self, monkeypatch):
+    def test_a_builtin_recipe_bug_is_reported_and_the_rest_still_load(
+            self, monkeypatch, capsys):
         def register():
             raise ValueError("bug in a recipe")
         _fake_recipe(monkeypatch, "_t_buggy", register)
-        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes", lambda: ["_t_buggy"])
-        with pytest.raises(ValueError, match="bug in a recipe"):
-            recipes_pkg.enable("*")
+        monkeypatch.setattr(recipes_pkg, "_discover_all_recipes",
+                            lambda: ["_t_buggy", "ls"])
+        recipes_pkg.enable("*")
+        err = capsys.readouterr().err
+        assert "config warning: enable('_t_buggy') failed:" in err
+        assert "ValueError: bug in a recipe" in err   # with its traceback
+        assert command_registry.has("ls")
