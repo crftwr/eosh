@@ -130,7 +130,7 @@ aliases, Vars, `recipes.skipped_recipes`, the prompt, `notify`'s backend and
 skip list — and the config runs again. A new kind of config registration
 (hooks, key bindings, …) adds its reset there. `config edit` runs
 `$VISUAL` / `$EDITOR` (`vi`, `notepad` on Windows) on `config.py` through
-`passthrough_run` and reloads when the editor exits 0.
+`_run_interactive` and reloads when the editor exits 0.
 
 **`source-bash` — run a bash script, import what it left behind.** The escape
 hatch for anything bash can express and eosh can't (`$(…)`, `for`, heredocs,
@@ -142,7 +142,7 @@ source-bash setup.sh s3     # source a file with arguments
 source-bash -c 'export A=1'
 ```
 
-The body runs in a child `bash` via `passthrough_run` (so a script that prompts
+The body runs in a child `bash` via `_run_interactive` (so a script that prompts
 for `sudo` or an MFA code still owns the terminal), and the child's **final
 environment and cwd are imported back** — the way bash's own `source` leaves
 them in the calling shell. The child writes a NUL-delimited
@@ -176,8 +176,9 @@ def hello(name):
 ```
 
 Methods:
-- `command(name, *, help=None, params=None, delegate=None, sync=False, override=False) -> Command` — register a root. Two forms, both returning the `Command`. Use a **plain call** for a group or an external recipe (`git = registry.command("git", ...)`), and a **decorator** to attach a handler (`@registry.command("hello", ...)` or `name="hello"`). A name is always required. `params=[arg(...)]` declares positionals and flags. argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`, `node.takes_value(flag)`); there is no pre-built completer dict. `delegate=Completer` is a `Command` attribute that answers every completion slot, for a tool with its own completion protocol (`aws_completer`, cobra). It can't be combined with `params`.
+- `command(name, *, help=None, params=None, delegate=None, sync=False, override=False, pass_context=False) -> Command` — register a root. Two forms, both returning the `Command`. Use a **plain call** for a group or an external recipe (`git = registry.command("git", ...)`), and a **decorator** to attach a handler (`@registry.command("hello", ...)` or `name="hello"`). A name is always required. `params=[arg(...)]` declares positionals and flags. argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`, `node.takes_value(flag)`); there is no pre-built completer dict. `delegate=Completer` is a `Command` attribute that answers every completion slot, for a tool with its own completion protocol (`aws_completer`, cobra). It can't be combined with `params`.
 - `node.command(name, ...)` — the same two forms one level down (see [doc/subcommands.md](doc/subcommands.md)). A node's flags are **its own** and are never inherited from ancestors; a flag shared by several commands is one `arg(...)` listed on each. A node never has both a handler and children: either order raises `ValueError`. A flat command is a root with no children, so completion, the status bar and dispatch all follow the same per-node rules, through `shell._resolve_slot`.
+- `pass_context=True` (on `registry.command` or `node.command`) makes the handler receive a `CommandContext` as its first argument — see **command_context.py** below.
 - `sync=True` (on `registry.command`) runs the command on the main thread instead of a backgroundable `PythonCommandSlot` — for commands that finish at once or change shell state; every built-in sets it.
 - **A handler's return value is its exit status** — an `int` is the status, anything else (usually `None`) is 0, so `my_cmd && next` sees a failure the handler reports. A `SystemExit` is only a status too (it never ends the shell; `exit` sets `Shell._exit_requested` instead), `KeyboardInterrupt` is 130, an exception is 1 with the traceback on stderr, and an argparse usage error is 2. Every execution path — foreground slot, pipeline stage, decorator, main-thread run — goes through one function, `shell.run_handler`.
 - `defining_builtins()` — context manager the shell registers its own commands in; exactly what is registered inside it is the built-in set. Afterwards, registering a built-in name without `override=True` prints a `config warning:` and keeps the built-in (the decorator form gets a detached node, so the config runs on). `is_builtin(name)` is false for an override, which `help` lists under "Commands from your config". `mark_builtins()` snapshots everything (for hand-built test registries).
@@ -308,7 +309,7 @@ class CompletionContext:
     arg_index: int             # which argument position is being completed
     prefix: str               # partial text of current argument being completed
     line: str                 # full raw line
-    shell_context: Context    # current shell context (account, region, etc.)
+    shell_context: ShellView  # current context, read-only: context_name, cwd, get_var()
 ```
 
 #### Completer Protocol
@@ -525,6 +526,9 @@ class ContextManager:
     def set_variable(self, key, value): ...    # set on current context + os.environ
     def unset_variable(self, key): ...         # remove from current context + os.environ
     def get_variable(self, key) -> str | None: ...
+    def env_value_in(self, ctx, key) -> str | None: ...  # ctx's view, current or not
+    lock: threading.RLock      # held by switch/remove/set — a background command
+                               # reads and writes its own context's variables
 ```
 
 Context switching (shell commands):
@@ -548,8 +552,8 @@ Completers can use `ctx.shell_context` to adapt:
 ```python
 class EC2InstanceCompleter(Completer):
     def complete(self, ctx: CompletionContext) -> list[Completion]:
-        account = ctx.args[0] if ctx.args else ctx.shell_context.get_variable("account")
-        region = ctx.args[1] if len(ctx.args) > 1 else ctx.shell_context.get_variable("region")
+        account = ctx.args[0] if ctx.args else ctx.shell_context.get_var("account")
+        region = ctx.args[1] if len(ctx.args) > 1 else ctx.shell_context.get_var("region")
         ...
 ```
 
@@ -578,7 +582,7 @@ The single place that touches OS-specific terminal APIs. `lineedit.py`, `tui.py`
 
 **Path separators.** The shell uses `/` as the canonical separator on every platform (like Git Bash / MSYS) — Windows file APIs and executables accept it natively. This keeps `\` free for its POSIX meaning (escaping, `\`-line-continuation), so a path can never be mistaken for a continuation (`cd C:/Users/` not `cd C:\Users\`). `os.path` helpers emit native `\` on Windows, so completer output is normalized with `completion._to_slash` and the prompt renders `/` too. Users type `/` for paths; `\` still escapes as usual.
 
-**Platform support.** The full interactive shell — line editing, completion, all TUI pickers, history, pipelines, redirects, built-ins, and `Ctrl+]` context switching at the prompt — runs natively on both POSIX and Windows. The one POSIX-only piece is **PTY-backed multiplexing of a live external process** (`process.py`'s `ProcessSlot`, the `passthrough_run` PTY, and the `_enter_forwarding_mode` loops): backgrounding a *running* native program via `Ctrl+]` and resuming it. On Windows, external commands run on the real console with inherited stdio (`_execute_external_windows`, with a `cmd /c` fallback for `cmd` builtins like `dir`/`echo`), and Python `@registry.command`s run synchronously on the main thread. Reviving that subsystem on Windows would mean a ConPTY (`CreatePseudoConsole`) backend for `ProcessSlot`.
+**Platform support.** The full interactive shell — line editing, completion, all TUI pickers, history, pipelines, redirects, built-ins, and `Ctrl+]` context switching at the prompt — runs natively on both POSIX and Windows. The one POSIX-only piece is **PTY-backed multiplexing of a live external process** (`process.py`'s `ProcessSlot`, the `ctx.run_interactive` PTY, and the `_enter_forwarding_mode` loops): backgrounding a *running* native program via `Ctrl+]` and resuming it. On Windows, external commands run on the real console with inherited stdio (`_execute_external_windows`, with a `cmd /c` fallback for `cmd` builtins like `dir`/`echo`), and Python `@registry.command`s run synchronously on the main thread. Reviving that subsystem on Windows would mean a ConPTY (`CreatePseudoConsole`) backend for `ProcessSlot`.
 
 **Setting up a Windows dev environment** (Python, `make`, POSIX tools, and the `Makefile`'s `2>nul` vs. `2>/dev/null` gotcha) is covered in [doc/windows-setup.md](doc/windows-setup.md).
 
@@ -601,37 +605,67 @@ No alternate screen; all rendering anchored with DECSC/DECRC (`ESC 7` / `ESC 8`)
 - `suspend_terminal_modes() / restore_terminal_modes()` — generate escape sequences to undo/redo DEC private modes (alt screen, mouse, app cursor keys) tracked across switches
 - `kill()` — send SIGTERM
 
-### Spawning interactive subprocesses from Python commands
+### command_context.py — What user code sees of the shell
 
-A Python `@registry.command` runs in a background thread inside a `PythonCommandSlot` — unless it was registered with `sync=True`, which the built-ins (`cd`, `var`, `context`, `exit`, `source-bash`, `alias`, `help`, …) are: they finish at once or change the shell's own state, so they run on the main thread (no slot, no output proxy, not backgroundable with Ctrl+]), as every Python command does on Windows. While a slot runs, the main thread holds stdin in raw mode and forwards bytes to the slot via `write_stdin`. If the command body calls `subprocess.run([...])` directly, the child inherits the real terminal stdin — and now the main thread *and* the subprocess are both calling `read()` on fd 0. Whoever wins each keystroke gets it; the other sees nothing. Symptoms: dropped keys, garbled input, Ctrl+] sometimes reaches the subprocess.
+Two objects, so user code never holds a live internal (`Context`, a slot, the
+`Shell`):
+
+- **`ShellView`** — read-only: `context_name`, `cwd`, `get_var(name)` (resolved
+  like `$name`: registered `Var` first, then the environment). Completers get
+  one as `CompletionContext.shell_context`.
+- **`CommandContext(ShellView)`** — what a Python command declared with
+  `pass_context=True` receives as its **first argument** (ahead of a
+  decorator's `Pipeline`; `Command.invoke(args, *lead, ctx=...)` prepends it
+  only for a node that opted in). Adds `input(prompt)`, `input_block(prompt)`,
+  `confirm(prompt, default=False)`, `choose(items, title="")`,
+  `run_interactive(argv, **popen_kwargs)`, `set_var(name, value)`,
+  `unset_var(name)`.
+
+```python
+@registry.command("deploy", params=[arg("env")], pass_context=True)
+def deploy(ctx, env):
+    target = ctx.choose(list_targets(env), title="Deploy which target?")
+    if target is None or not ctx.confirm(f"Deploy {target} to {env}?"):
+        return 1
+    return ctx.run_interactive(["make", "deploy", f"TARGET={target}"])
+```
+
+There are no free functions for this: `passthrough_run` / `passthrough_input`
+/ `passthrough_input_block` were replaced by the methods (discussion #30). The
+implementations stay private in `shell.py` (`_run_interactive`,
+`_read_from_user`, `_choose`), which built-ins such as `source-bash` and
+`config edit` call directly.
+
+**Bound to the context the command started in.** The shell builds the
+`CommandContext` at dispatch (`Shell._command_context`), on the main thread,
+so a command sent to the background with Ctrl+] keeps reading and writing
+*its own* context: `cwd` is that context's saved directory once it isn't
+current, `get_var` reads its saved values (`ContextManager.env_value_in`,
+`Context.py_values`), and `set_var` writes them there — taking effect when the
+context is entered again — instead of touching whatever context is current
+now. A `GlobalVar` is one value everywhere. Reads and writes hold
+`ContextManager.lock`, which `switch` / `remove` / `set_variable` also take,
+since they happen on the command's thread while the main thread may be
+switching.
+
+#### Why the user-facing methods exist: one reader for real stdin
+
+A Python `@registry.command` runs in a background thread inside a `PythonCommandSlot` — unless it was registered with `sync=True`, which the built-ins (`cd`, `var`, `context`, `exit`, `source-bash`, `alias`, `help`, …) are: they finish at once or change the shell's own state, so they run on the main thread (no slot, no output proxy, not backgroundable with Ctrl+]), as every Python command does on Windows. While a slot runs, the main thread holds stdin in raw mode and forwards bytes to the slot via `write_stdin`. If the command body calls `subprocess.run([...])` or `input()` directly, it reads the real terminal stdin — and now the main thread *and* the command are both calling `read()` on fd 0. Whoever wins each keystroke gets it; the other sees nothing. Symptoms: dropped keys, garbled input, Ctrl+] sometimes reaches the subprocess.
 
 External commands typed at the prompt (e.g. plain `aws ssm start-session`) don't have this problem because they're routed through `ProcessSlot`, which gives them a dedicated PTY pair. The main thread is the *only* reader of real stdin; it copies bytes into the PTY master.
 
-The fix for Python commands is the same shape: spawn the subprocess against a slot-owned PTY and let the existing forwarding loop do its job. Use `eosh.passthrough_run`:
+- **`ctx.run_interactive(argv)`** is the same shape for a Python command: it allocates a PTY on the enclosing `PythonCommandSlot`, starts the subprocess against the slave, and spawns a reader thread that copies output to stdout (or buffers it while the context is backgrounded). The main thread keeps reading real stdin in raw mode, intercepts Ctrl+] for context switching, and forwards every other byte to `slot.write_stdin` — which now writes to the PTY master. Ctrl+C is delivered to the subprocess (not the Python thread) while it is active. Window resizes propagate via `slot.resize()` → `TIOCSWINSZ` + `SIGWINCH` on the child's process group. On the main thread (a `sync` command) there is no slot and no competing reader, so it is plain `subprocess.run`.
+- **`ctx.input` / `ctx.input_block`** read the **raw key stream**: on a slot, the keys the forwarding loop already feeds it (`slot.poll_key`); on the main thread, the terminal itself in raw-input / cooked-output mode. `shell._read_typed` does the echo, Backspace / Ctrl+U / Ctrl+W editing, CRLF folding and blank-line detection for both. Ctrl+C raises `KeyboardInterrupt` in the command (the forwarding loop sees `slot._reading_input` and hands Ctrl+C to the reader instead of interrupting), and Ctrl+D on an empty line `EOFError`. Nothing goes through cooked mode, whose canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. A single-line read drops keys typed before the question was asked, so a stray `y` can't answer a delete prompt; a block keeps a paste that landed before its first poll. Without a terminal (and on Windows) both fall back to `input()`.
+- **`ctx.choose`** runs an `InlinePicker`. On a slot it passes `key_source=slot.poll_key`; the picker then also leaves the terminal mode alone, because the forwarding loop owns it, and a save/restore from the command's thread would race the loop's own save/restore and could leave the terminal raw. Ctrl+C sets `picker.interrupted` and becomes `KeyboardInterrupt`. Esc returns `None`. Without a terminal it falls back to a numbered list.
+- All of them raise `RuntimeError` in a pipeline stage, whose stdin/stdout are pipes.
 
-```python
-from eosh import passthrough_run
-
-@registry.command(name="my_ssm", ...)
-def my_ssm():
-    passthrough_run(["aws", "ssm", "start-session", "--target", target])
-```
-
-`passthrough_run` allocates a PTY on the enclosing `PythonCommandSlot`, starts the subprocess against the slave, and spawns a reader thread that copies output to stdout (or buffers it while the context is backgrounded). The main thread keeps reading real stdin in raw mode, intercepts Ctrl+] for context switching, and forwards every other byte to `slot.write_stdin` — which now writes to the PTY master. Ctrl+C is delivered to the subprocess (not the Python thread) while a passthrough subprocess is active. Window resizes propagate via `slot.resize()` → `TIOCSWINSZ` + `SIGWINCH` on the child's process group.
-
-Outside a Python command thread (e.g. inside a synchronous handler that doesn't run on a slot), `passthrough_run` falls through to plain `subprocess.run`.
-
-**Reading input from the user.** `input()` from a Python command body has the same race as `subprocess.run` — the main thread is also reading stdin in raw mode, so most keystrokes are lost and Enter arrives as `\r` with no echo. Use `eosh.passthrough_input(prompt)` for one line (the "Delete? [y/N]" answers, `exit`'s confirmation) and `eosh.passthrough_input_block(prompt)` for a pasted block — lines until a blank line or Ctrl+D, joined by `\n` (`awsut credentials set` takes `export AWS_ACCESS_KEY_ID=…` lines this way).
-
-Both read the **raw key stream**: on a slot, the keys the forwarding loop already feeds it (`slot.poll_key`); on the main thread (a `sync` command), the terminal itself in raw-input / cooked-output mode. `shell._read_typed` does the echo, Backspace / Ctrl+U / Ctrl+W editing, CRLF folding and blank-line detection for both. Ctrl+C raises `KeyboardInterrupt` in the command (the forwarding loop sees `slot._reading_input` and hands Ctrl+C to the reader instead of interrupting), and Ctrl+D on an empty line `EOFError`. Nothing goes through cooked mode, whose canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. A single-line read drops keys typed before the question was asked, so a stray `y` can't answer a delete prompt; a block keeps a paste that landed before its first poll. Without a terminal (and on Windows) both fall back to `input()`.
-
-**When you don't need it.** Three cases that look like subprocesses but don't race for stdin:
+**When you don't need `run_interactive`.** Three cases that look like subprocesses but don't race for stdin:
 
 1. **Non-interactive subprocesses** (`subprocess.run(..., capture_output=True)`, `$()` substitution, completer queries that shell out to `git`/`docker`/`aws`). The child doesn't read fd 0, so there's no race. Plain `subprocess.run` is fine.
 2. **`subprocess.Popen` with explicit pipes/redirections** in pipeline stages. The shell already wires stdin/stdout to file descriptors that aren't the terminal, so the child never touches real stdin.
 3. **`pexpect.popen_spawn.PopenSpawn`** (and any other library that drives the child via its own pipe). PopenSpawn passes `stdin=subprocess.PIPE` and writes via `sendline()`, so the child's stdin is owned entirely by the parent process — the user's keystrokes never reach it.
 
-Rule of thumb: if a subprocess spawned from a Python command would, when run standalone in a terminal, read keystrokes from the user (SSH-like sessions, TUIs, MFA prompts, anything that calls `getpass`), wrap it with `passthrough_run`. Otherwise leave it as `subprocess.run`.
+Rule of thumb: if a subprocess spawned from a Python command would, when run standalone in a terminal, read keystrokes from the user (SSH-like sessions, TUIs, MFA prompts, anything that calls `getpass`), run it with `ctx.run_interactive`. Otherwise leave it as `subprocess.run`.
 
 ### prompt.py — Prompt Function
 
@@ -894,7 +928,7 @@ The decorator function receives a `Pipeline` (the parsed AST of the wrapped body
 
 **Loading:** `Shell._register_builtins` calls `eosh.decorators.register_builtins()` inside `defining_builtins()`, so the built-ins survive `reload` and a config needs `override=True` to replace one. There is no decorator search path; your own are defined in `config.py` (or a module it imports), like a recipe.
 
-**Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `passthrough_run`/`passthrough_input` raise `RuntimeError` from a piped decorator.
+**Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `ctx.run_interactive` / `ctx.input` / `ctx.choose` raise `RuntimeError` from a piped decorator.
 
 See [doc/decorators.md](doc/decorators.md) for the full design rationale, IPython-magic precedent, parser/executor walkthrough, and resolved UX questions; remaining follow-ups (stacking, more built-ins, …) are in [doc/enhancements.md](doc/enhancements.md).
 
@@ -913,7 +947,7 @@ enable("make", "git")
 
 class MyInstanceCompleter(Completer):
     def complete(self, ctx):
-        account = ctx.args[0] if ctx.args else ctx.shell_context.get_variable("account")
+        account = ctx.args[0] if ctx.args else ctx.shell_context.get_var("account")
         # ... fetch and return completions
         return [Completion(value="i-abc123", description="web-server-1")]
 
@@ -1014,6 +1048,7 @@ eosh/
 │       ├── completion_cache.py # TTL store for completer fetches; invalidated after every command
 │       ├── context.py          # Context, ContextManager, ContextState
 │       ├── lineedit.py         # DIY raw-mode line editor, History (+ directory side table), TAB completion glue
+│       ├── command_context.py  # CommandContext / ShellView: what user code sees
 │       ├── hooks.py            # event hooks: @hooks.on_directory_changed, …
 │       ├── notify.py           # OS notification when a slow command finishes;
 │       │                       # native backends, skip list, `notify` +
@@ -1056,6 +1091,8 @@ eosh/
     ├── addons/
     │   ├── test_boundary.py    # add-ons use the public API only
     │   └── awsut/
+    ├── test_command_context.py
+    ├── test_command_input.py
     ├── test_commands.py
     ├── test_completion.py
     ├── test_completion_cache.py
@@ -1174,7 +1211,7 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 8. **Python-backed variables mirror the command registry pattern, with one writer for the environment** — an `EnvVar` only *declares* which `os.environ` keys a logical name stands for (e.g. `aws_region` → `AWS_REGION` + `AWS_DEFAULT_REGION`); the shell writes them, always through the `ContextManager`, so per-context save/restore can never be bypassed. A value that must stay out of child processes is a `PyVar` (still per-context — the context manager saves and restores it like cwd) or, if it belongs to the whole shell, a `GlobalVar`. The `var` command and bare `NAME=VALUE` assignment dispatch through `VarRegistry` before falling back to plain env writes, and `$NAME` / `${NAME}` expansion does the same lookup in reverse — so registered Vars are read- and write-symmetric with `os.environ` and a Python-backed variable behaves transparently like an OS variable on the command line. `VarCompleter` handles `=`-split completion locally without touching the global tokenizer.
 
-9. **One reader for real stdin** — when a Python command spawns an interactive subprocess, the child must not inherit fd 0 directly. The main forwarding thread is already reading stdin in raw mode; a second reader (the subprocess) splits keystrokes unpredictably between them. `passthrough_run` enforces the rule by allocating a slot-owned PTY for the child, so the chain stays `stdin → main → master → subprocess`. This is the same architecture `ProcessSlot` uses for external commands; `passthrough_run` extends it to subprocesses launched from inside a `PythonCommandSlot`.
+9. **One reader for real stdin** — when a Python command spawns an interactive subprocess, the child must not inherit fd 0 directly. The main forwarding thread is already reading stdin in raw mode; a second reader (the subprocess) splits keystrokes unpredictably between them. `ctx.run_interactive` enforces the rule by allocating a slot-owned PTY for the child, so the chain stays `stdin → main → master → subprocess`. This is the same architecture `ProcessSlot` uses for external commands; `ctx.run_interactive` extends it to subprocesses launched from inside a `PythonCommandSlot`, and `ctx.input` / `ctx.choose` read the key stream the main thread already forwards.
 
 10. **Decorators as a sigil-prefixed grammar, not a built-in command** — `@name [flags] body` is parsed *before* the normal pipeline grammar runs (`pipeline.py::_extract_decorator_prefix`), so the syntax is unambiguous to the parser and can never collide with a POSIX command name. Borrowed from IPython's magics (`%name args`); see [doc/decorators.md](doc/decorators.md). The `{...}` body delimiter is required when the wrapped pipeline contains operators, which makes the decorator's scope visible at a glance and side-steps the `watch -n 5 ls | grep abc` ambiguity that POSIX `watch` is famous for. `Pipeline.run()` lets a decorator body re-enter `Shell._execute_pipeline` so redirects/pipes/Python-stage routing all work the same as at the top level.
 

@@ -7,10 +7,13 @@ import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .completion_cache import get_or_fetch
-from .context import Context
 from .parsing import raw_token_start
+
+if TYPE_CHECKING:
+    from .command_context import ShellView
 
 
 def _to_slash(path: str) -> str:
@@ -31,7 +34,8 @@ class CompletionContext:
     arg_index: int
     prefix: str
     line: str
-    shell_context: Context | None = None
+    # The current context, read-only: context_name, cwd, get_var().
+    shell_context: ShellView | None = None
 
 
 @dataclass

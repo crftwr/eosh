@@ -47,6 +47,7 @@ from .completion import (
     get_argcomplete_fallback,
 )
 from .variables import EnvVar, registry as var_registry, VarCompleter
+from .command_context import CommandContext, ShellView
 from .context import ContextManager, ContextState
 from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor
 from .parsing import expand_vars, split_for_completion, tokenize
@@ -344,8 +345,8 @@ def run_handler(
 _current_slot = threading.local()
 
 # Set on threads spawned by _execute_pipeline for Python-command stages.
-# passthrough_run / passthrough_input check this and refuse, since stdin
-# and stdout are wired to pipe ends, not the terminal.
+# The CommandContext methods that talk to the user check this and refuse,
+# since stdin and stdout are wired to pipe ends, not the terminal.
 _in_pipeline = threading.local()
 
 
@@ -382,58 +383,28 @@ def _dup_threadlocal_override_fd(stream) -> int | None:
         return None
 
 
-def passthrough_run(argv: list[str], **popen_kwargs) -> int:
-    """Run an interactive subprocess from inside a Python command thread.
-
-    A Python @registry.command runs in a background thread while the main
-    thread holds stdin in raw mode and forwards bytes to the slot.  Calling
-    ``subprocess.run`` directly inside such a command makes the child
-    inherit the real stdin — which the main thread is also reading — and
-    keystrokes are split unpredictably between the two.
-
-    ``passthrough_run`` runs the subprocess against a PTY owned by the
-    enclosing :class:`PythonCommandSlot` so the main thread keeps a single
-    consistent view of stdin: it forwards bytes to the slot's PTY master,
-    intercepts ``Ctrl+]`` for context switching, and the subprocess sees a
-    full TTY on its fd 0/1/2.
-
-    Outside a Python command thread (e.g. from a synchronous handler) the
-    function falls back to ``subprocess.run(argv, **popen_kwargs)``.
-
-    Returns the subprocess's exit code.
-    """
+def _refuse_in_pipeline(what: str) -> None:
     if getattr(_in_pipeline, "flag", False):
         raise RuntimeError(
-            "passthrough_run cannot be used inside a piped Python command "
-            "(stdin/stdout are wired to pipes, not the terminal)"
+            f"{what} cannot be used inside a piped Python command "
+            f"(stdin/stdout are wired to pipes, not the terminal)"
         )
+
+
+def _run_interactive(argv: list[str], **popen_kwargs) -> int:
+    """``CommandContext.run_interactive``: run *argv* on a PTY the enclosing
+    :class:`PythonCommandSlot` owns, so the main thread stays the only reader
+    of the terminal — it forwards keys to the PTY master, still intercepts
+    ``Ctrl+]``, and the child sees a full TTY on fd 0/1/2.
+
+    On the main thread (a ``sync`` command, or Windows) there is no slot and
+    nobody else is reading: plain ``subprocess.run``.
+    """
+    _refuse_in_pipeline("ctx.run_interactive")
     slot = getattr(_current_slot, "slot", None)
     if slot is None:
         return subprocess.run(argv, **popen_kwargs).returncode
-
     return slot._run_in_pty(argv, popen_kwargs)
-
-
-def passthrough_input(prompt: str = "") -> str:
-    """Read one line of user input from a Python command.
-
-    Built-in ``input()`` would race the main forwarding loop for stdin (the
-    loop holds the terminal in raw mode and reads every key).  This reads
-    the line off that same key stream instead — see :func:`_read_typed` —
-    with echo and Backspace / Ctrl+U / Ctrl+W editing.  Ctrl+C raises
-    ``KeyboardInterrupt`` and Ctrl+D on an empty line ``EOFError``, as
-    ``input()`` would.
-
-    On the main thread (a synchronous command) the terminal is read
-    directly, in the same raw mode.  With stdin not a terminal — or on
-    Windows — it is plain ``input(prompt)``.
-    """
-    if getattr(_in_pipeline, "flag", False):
-        raise RuntimeError(
-            "passthrough_input cannot be used inside a piped Python command "
-            "(stdin/stdout are wired to pipes, not the terminal)"
-        )
-    return _read_from_user(prompt, block=False)
 
 
 def _stdin_is_tty() -> bool:
@@ -444,30 +415,16 @@ def _stdin_is_tty() -> bool:
         return False
 
 
-def passthrough_input_block(prompt: str = "") -> str:
-    """Read a *block* of lines from the user, ending at a blank line or EOF.
+def _read_from_user(prompt: str, *, block: bool, what: str = "input") -> str:
+    """``CommandContext.input`` / ``input_block``: read a line (or a pasted
+    block, up to a blank line or Ctrl+D) off the raw key stream — the keys
+    the forwarding loop feeds the slot, or the terminal itself on the main
+    thread — never through cooked mode, whose line buffer is capped at
+    ``MAX_CANON``.  See :func:`_read_typed` for the editing keys.
 
-    The multi-line sibling of :func:`passthrough_input`, for input that is
-    pasted rather than typed (a set of ``export KEY=…`` lines, a policy
-    document, …).  It reads the same raw key stream, so there is no
-    ``MAX_CANON`` limit: cooked mode caps a line at 1024 bytes on macOS and
-    discards an over-long one whole, which a pasted session token exceeds.
-
-    Returns the lines joined by ``\\n``, without the terminating blank line
-    (so an immediate blank line or Ctrl+D yields ``""``).  With stdin not a
-    terminal — or on Windows — falls back to reading :data:`sys.stdin` line
-    by line.
+    Without a terminal (or on Windows) falls back to :func:`input`.
     """
-    if getattr(_in_pipeline, "flag", False):
-        raise RuntimeError(
-            "passthrough_input_block cannot be used inside a piped Python command "
-            "(stdin/stdout are wired to pipes, not the terminal)"
-        )
-    return _read_from_user(prompt, block=True)
-
-
-def _read_from_user(prompt: str, *, block: bool) -> str:
-    """Route a :func:`passthrough_input` / ``_block`` call to a key source."""
+    _refuse_in_pipeline(what)
     if _stdin_is_tty():
         slot = getattr(_current_slot, "slot", None)
         if slot is not None:
@@ -490,6 +447,56 @@ def _read_from_user(prompt: str, *, block: bool) -> str:
             break
         lines.append(line)
     return "\n".join(lines)
+
+
+def _choose(items: list[str], title: str) -> str | None:
+    """``CommandContext.choose``: an :class:`~eosh.tui.InlinePicker` over
+    *items*, reading keys from the slot (a backgrounded-able command) or the
+    terminal (the main thread)."""
+    _refuse_in_pipeline("ctx.choose")
+    if not items:
+        return None
+    if not _stdin_is_tty():
+        return _choose_by_number(items, title)
+    from .tui import InlinePicker
+
+    slot = getattr(_current_slot, "slot", None)
+    key_source = None                    # main thread: the picker reads the terminal
+    if slot is not None:
+        with slot._keybuf_lock:          # typed before the question: not an answer
+            slot._keybuf.clear()
+            slot._keybuf_event.clear()
+        key_source = slot.poll_key
+
+    if title:
+        print(title)
+    picker = InlinePicker(items, key_source=key_source)
+    if slot is not None:
+        slot._reading_input = True       # Ctrl+C is the picker's, not a kill
+    try:
+        choice = picker.run()
+    finally:
+        if slot is not None:
+            slot._reading_input = False
+    if picker.interrupted:
+        raise KeyboardInterrupt
+    if choice is not None and title:
+        # Replace the title line with a record of the answer.
+        sys.stdout.write(f"\x1b[1A\r\x1b[K{title} {choice}\n")
+        sys.stdout.flush()
+    return choice
+
+
+def _choose_by_number(items: list[str], title: str) -> str | None:
+    """:func:`_choose` without a terminal: a numbered list and a number."""
+    if title:
+        print(title)
+    for i, item in enumerate(items, 1):
+        print(f"  {i}) {item}")
+    answer = input("? ").strip()
+    if answer.isdigit() and 1 <= int(answer) <= len(items):
+        return items[int(answer) - 1]
+    return None
 
 
 @contextlib.contextmanager
@@ -625,10 +632,11 @@ class PythonCommandSlot(ExitCallbackMixin):
     run() loop and context machinery can treat both uniformly.
     """
 
-    def __init__(self, cmd, raw_args: list[str], on_exit=None) -> None:
+    def __init__(self, cmd, raw_args: list[str], on_exit=None, ctx=None) -> None:
         self._init_exit_callback(on_exit)
         self._cmd = cmd
         self._raw_args = raw_args
+        self._ctx = ctx   # the CommandContext a pass_context handler gets
         self.argv: list[str] = [cmd.name] + raw_args
         self._thread: threading.Thread | None = None
         self._proxy: _StdoutProxy | None = None
@@ -637,7 +645,7 @@ class PythonCommandSlot(ExitCallbackMixin):
         # Stub attributes expected by the run() loop
         self.buffer = _NullBuffer()
         self.exit_code: int | None = None
-        # PTY state — created on demand by passthrough_run().  When a
+        # PTY state — created on demand by ctx.run_interactive().  When a
         # subprocess is running here, the main thread reads stdin and writes
         # to master_fd; a reader thread copies master_fd output to stdout.
         self._pty_master_fd: int = -1
@@ -648,12 +656,12 @@ class PythonCommandSlot(ExitCallbackMixin):
         self._pty_active = False
         self._pty_lock = threading.Lock()
         # True while the command is reading a line or block from the user
-        # (passthrough_input / _block): the forwarding loop then hands
+        # (ctx.input / input_block): the forwarding loop then hands
         # Ctrl+C to the reader instead of interrupting the command.
         self._reading_input = False
         # Raw stdin bytes the main forwarding loop received while no PTY
         # subprocess was active.  :meth:`poll_key` drains them — that is
-        # how ``passthrough_input`` / ``_block`` read the user's keys.
+        # how ``ctx.input`` / ``input_block`` read the user's keys.
         self._keybuf: bytearray = bytearray()
         self._keybuf_lock = threading.Lock()
         self._keybuf_event = threading.Event()
@@ -684,7 +692,7 @@ class PythonCommandSlot(ExitCallbackMixin):
             # Errors are reported here, on the slot's own stderr proxy, so
             # they land with the command's output — live or replayed later.
             self.exit_code = run_handler(
-                lambda: self._cmd.invoke(self._raw_args), self._cmd.name)
+                lambda: self._cmd.invoke(self._raw_args, ctx=self._ctx), self._cmd.name)
         finally:
             _current_slot.slot = None
             if hasattr(sys.stdout, "clear_override"):
@@ -785,11 +793,11 @@ class PythonCommandSlot(ExitCallbackMixin):
 
         Two destinations:
 
-        * If a ``passthrough_run`` subprocess is active, the bytes go to
+        * If a ``ctx.run_interactive`` subprocess is active, the bytes go to
           its PTY master so the child sees the user's typing.
         * Otherwise the bytes are buffered in ``_keybuf`` so a Python
           command body running on this slot can read them via
-          :meth:`poll_key` (``passthrough_input_block`` does).
+          :meth:`poll_key` (``ctx.input_block`` does).
         """
         with self._pty_lock:
             fd = self._pty_master_fd
@@ -813,7 +821,7 @@ class PythonCommandSlot(ExitCallbackMixin):
 
         Intended for Python command bodies that want to react to user
         keystrokes while the main forwarding loop holds stdin.  Bytes
-        consumed here will not later reach a ``passthrough_run``
+        consumed here will not later reach a ``ctx.run_interactive``
         subprocess (none is active by the time this returns data).
         """
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -831,7 +839,7 @@ class PythonCommandSlot(ExitCallbackMixin):
                 return b""
 
     def resize(self, rows: int, cols: int) -> None:
-        """Propagate a SIGWINCH-driven resize to a passthrough_run() subprocess."""
+        """Propagate a SIGWINCH-driven resize to a ctx.run_interactive() subprocess."""
         with self._pty_lock:
             fd = self._pty_master_fd
             pid = self._pty_subproc.pid if self._pty_subproc else -1
@@ -860,7 +868,7 @@ class PythonCommandSlot(ExitCallbackMixin):
         pty_data = self._pty_buffer.peek()
         return _tail_lines_from_bytes(text_data + pty_data, n)
 
-    # --- passthrough_run() implementation -----------------------------------
+    # --- ctx.run_interactive() implementation -----------------------------------
 
     def _run_in_pty(self, argv: list[str], popen_kwargs: dict) -> int:
         """Run *argv* on a slot-owned PTY; main thread forwards stdin via write_stdin."""
@@ -981,7 +989,7 @@ class PythonCommandSlot(ExitCallbackMixin):
                 except OSError:
                     pass
 
-    # --- passthrough_input() / _block() -------------------------------------
+    # --- ctx.input() / input_block() -------------------------------------
 
     def _read_typed(self, prompt: str, *, block: bool) -> str:
         """Read a line (or a pasted block) off the keys the forwarding loop
@@ -1386,7 +1394,7 @@ class Shell:
                     arg_index=len(slot.args),
                     prefix=prefix,
                     line=line_before_cursor,
-                    shell_context=self.context_manager.current(),
+                    shell_context=self._shell_view(),
                 )
                 flags = deco.options_completer()
                 if slot.kind == "flag":
@@ -1470,7 +1478,7 @@ class Shell:
             arg_index=0,
             prefix=prefix,
             line=line_before_cursor,
-            shell_context=self.context_manager.current(),
+            shell_context=self._shell_view(),
         ))
         history = _drop_history_duplicates(history, completions)
         if not history:
@@ -1516,7 +1524,7 @@ class Shell:
                     arg_index=0,
                     prefix=prefix,
                     line=line_before_cursor,
-                    shell_context=self.context_manager.current(),
+                    shell_context=self._shell_view(),
                 )
                 return self._var_completer.complete(ctx), prefix, "variable"
 
@@ -1526,7 +1534,7 @@ class Shell:
                 arg_index=0,
                 prefix=prefix,
                 line=line_before_cursor,
-                shell_context=self.context_manager.current(),
+                shell_context=self._shell_view(),
             )
             return self._command_completer.complete(ctx), prefix, "command"
 
@@ -1540,7 +1548,7 @@ class Shell:
             arg_index=arg_index,
             prefix=prefix,
             line=line_before_cursor,
-            shell_context=self.context_manager.current(),
+            shell_context=self._shell_view(),
         )
 
         slot = _resolve_slot(self.registry.get(command_name), args, prefix)
@@ -1553,7 +1561,7 @@ class Shell:
             arg_index=len(slot.args),
             prefix=prefix,
             line=line_before_cursor,
-            shell_context=self.context_manager.current(),
+            shell_context=self._shell_view(),
         )
 
         # A registered completer that returns [] means "nothing here"; only a
@@ -1821,8 +1829,9 @@ class Shell:
                     return 1
                 body = " ".join(shlex.quote(a) for a in ["source", path, *script[1:]])
             else:
-                body = passthrough_input_block(
-                    "Paste bash lines; end with a blank line or Ctrl+D:\n"
+                body = _read_from_user(
+                    "Paste bash lines; end with a blank line or Ctrl+D:\n",
+                    block=True, what="source-bash",
                 )
                 if not body.strip():
                     print("source-bash: nothing to run")
@@ -2095,7 +2104,7 @@ class Shell:
                   or ("notepad" if IS_WINDOWS else "vi"))
         argv = shlex.split(editor) + [str(path)]
         try:
-            code = passthrough_run(argv)
+            code = _run_interactive(argv)
         except FileNotFoundError:
             print(f"config edit: editor not found: {argv[0]}", file=sys.stderr)
             return 127
@@ -2238,7 +2247,7 @@ class Shell:
         when the child never reached the dump — the caller reports that rather
         than importing an empty environment over the live one.
 
-        The child runs through :func:`passthrough_run` so a script that prompts
+        The child runs through :func:`_run_interactive` so a script that prompts
         (``sudo``, an MFA code, ``read -p``) still owns the terminal, and the
         dump goes to a temp *file* rather than an extra fd so nothing has to be
         multiplexed alongside the script's own stdout.
@@ -2254,7 +2263,7 @@ class Shell:
             script = _BASH_ENV_DUMP_WRAPPER.format(
                 dump=shlex.quote(dump_path), body=body
             )
-            code = passthrough_run([bash, "-c", script])
+            code = _run_interactive([bash, "-c", script])
             try:
                 data = Path(dump_path).read_text(errors="replace")
             except OSError:
@@ -2374,6 +2383,17 @@ class Shell:
                             context=owner if out_of_sight else None)
         hooks.fire("on_command_finished", slot.line or " ".join(slot.argv),
                    slot.exit_code or 0, slot.elapsed())
+
+    # --- what user code sees ---------------------------------------------------
+
+    def _shell_view(self) -> ShellView:
+        """The current context, read-only — ``CompletionContext.shell_context``."""
+        return ShellView(self.context_manager, self.context_manager.current())
+
+    def _command_context(self) -> CommandContext:
+        """For a ``pass_context`` handler: bound to the context the command
+        starts in, which it keeps if it is sent to the background."""
+        return CommandContext(self.context_manager, self.context_manager.current(), self)
 
     # --- hooks ----------------------------------------------------------------
 
@@ -2596,7 +2616,8 @@ class Shell:
                     # work, so its pipe ends close and its status is 2.
                     fn = lambda name=cmd.name, env=env_prefix: self._env_prefix_refused(name, env)
                 else:
-                    fn = lambda cmd=cmd, args=tokens[1:]: cmd.invoke(args)
+                    fn = (lambda cmd=cmd, args=tokens[1:], ctx=self._command_context():
+                          cmd.invoke(args, ctx=ctx))
                 worker = self._start_stage_thread(
                     label=cmd.name,
                     fn=fn,
@@ -2810,7 +2831,8 @@ class Shell:
         if deco is None:
             print(f"eosh: unknown decorator: @{decorator_call.name}", file=sys.stderr)
             return 127
-        return deco.invoke(decorator_call.flag_tokens, decorator_call.body)
+        return deco.invoke(decorator_call.flag_tokens, decorator_call.body,
+                           ctx=self._command_context())
 
     def _execute_decorator_stage(self, stage: Stage) -> int:
         """Run a lone ``@name`` stage on the main thread."""
@@ -2860,15 +2882,17 @@ class Shell:
                 # On the main thread: a `sync` command (the built-ins — they
                 # finish at once or change the shell's own state), and every
                 # command on Windows, which lacks the PTY-backed slot used for
-                # thread-based context switching.  passthrough_run falls back
-                # to subprocess.run and passthrough_input reads the terminal
+                # thread-based context switching.  ctx.run_interactive falls
+                # back to subprocess.run and ctx.input reads the terminal
                 # directly, since no slot is registered.
-                return run_handler(lambda: cmd.invoke(args), command_name,
+                return run_handler(lambda: cmd.invoke(args, ctx=self._command_context()),
+                                   command_name,
                                    announce_interrupt=True)
             else:
                 # Interactive Python command — run in a thread so Ctrl+] works.
                 ctx = self.context_manager.current()
-                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished)
+                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished,
+                                         ctx=self._command_context())
                 slot.start()
                 result = self._enter_python_forwarding_mode(slot)
                 if result == "switched":
@@ -3013,13 +3037,13 @@ class Shell:
         Sets the terminal to raw mode, activates the slot's stdout proxy
         (replaying any buffered output), then loops:
           • Ctrl+] (\\x1d) — return 'switched' so caller can store the slot
-          • Ctrl+C (\\x03) — forwarded to a passthrough_run() subprocess if
+          • Ctrl+C (\\x03) — forwarded to a ctx.run_interactive() subprocess if
             one is active (so e.g. SSH/SSM see the interrupt); otherwise
             inject KeyboardInterrupt into the command thread.
           • other keys    — forwarded to slot.write_stdin, which writes to
-            a passthrough_run() PTY master if active (no-op otherwise).
+            a ctx.run_interactive() PTY master if active (no-op otherwise).
 
-        A command reading input (passthrough_input / _block) gets the keys
+        A command reading input (ctx.input / input_block) gets the keys
         through ``slot.write_stdin`` like everything else; the loop keeps
         raw mode throughout.
 
@@ -3069,7 +3093,7 @@ class Shell:
                         slot.kill()
                         result = "interrupted"
                         break
-                    # Forward to slot.  When a passthrough_run() subprocess
+                    # Forward to slot.  When a ctx.run_interactive() subprocess
                     # is active, this writes to its PTY master.  Otherwise
                     # write_stdin() is a no-op (the command isn't reading).
                     slot.write_stdin(data)
@@ -3501,7 +3525,7 @@ class Shell:
         for name, argv in running:
             print(f"  {name}: {' '.join(argv)}")
         try:
-            answer = passthrough_input("Exit anyway? [y/N] ").strip().lower()
+            answer = _read_from_user("Exit anyway? [y/N] ", block=False).strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             return False

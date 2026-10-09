@@ -52,8 +52,8 @@ I/O won't notice — Python doesn't support cancelling a thread. If a
 command wants to be interruptible without I/O, it needs to check for
 some flag or use `signal.set_wakeup_fd`-style coordination itself.
 
-**`passthrough_run` / `passthrough_input` / `passthrough_input_block` are not
-usable in piped Python commands** — stdin/stdout are wired to pipes, not the terminal, so
+**`ctx.run_interactive` / `ctx.input` / `ctx.input_block` / `ctx.choose` are
+not usable in piped Python commands** — stdin/stdout are wired to pipes, not the terminal, so
 those helpers can't do their job. They raise `RuntimeError` if called
 from inside a pipeline thread. Use plain `subprocess.run` (with the
 `stdout=sys.stdout` workaround above) for non-interactive children.
@@ -207,6 +207,16 @@ The reported duration correctly covers the whole run, but part of it was
 spent in front of the user. Distinguishing "resumed and then finished" from
 "finished unobserved" needs the slot to record when it was last activated,
 which is more bookkeeping than the noise warrants today.
+
+## A question left open by Ctrl+] is not redrawn on return
+
+If you press Ctrl+] while a command is waiting in `ctx.input` or `ctx.choose`,
+the command keeps waiting in the background. When you switch back, its
+buffered output is replayed, but the picker or the half-typed line is not
+redrawn until the next key arrives. That key is still delivered to it, so
+pressing an arrow key or typing continues the answer. Redrawing on resume
+would need the slot to tell the forwarding loop "I'm showing a prompt" and to
+re-render it on `activate()`.
 
 ## Event hooks — what they don't see
 

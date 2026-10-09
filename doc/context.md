@@ -163,14 +163,14 @@ This means you can `cd` around within a context, switch away, and return to find
 
 ## Integration with Completion
 
-Completers receive the active context via `CompletionContext.shell_context`. This enables context-aware completions:
+Completers receive a read-only view of the active context (`ShellView`: `get_var`, `context_name`, `cwd`) via `CompletionContext.shell_context`. This enables context-aware completions:
 
 ```python
 class InstanceCompleter(Completer):
     def complete(self, ctx: CompletionContext) -> list[Completion]:
         # Use explicit arg if given, otherwise inherit from context
         account = ctx.args[0] if ctx.args else (
-            ctx.shell_context.get_variable("ACCOUNT") if ctx.shell_context else None
+            ctx.shell_context.get_var("ACCOUNT") if ctx.shell_context else None
         )
         # ... fetch completions for account
 ```

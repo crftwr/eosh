@@ -459,7 +459,7 @@ verbatim to decorator bodies, because they *are* Python commands:
   is part of a pipeline. `@watch`'s `time.sleep(interval)` is fine
   (sleep is interruptible), but a decorator doing tight CPU work with
   no I/O won't unwind on `KeyboardInterrupt` until it next blocks.
-- **`passthrough_run` / `passthrough_input` are off-limits** when the
+- **`ctx.run_interactive` / `ctx.input` / `ctx.choose` are off-limits** when the
   decorator is in a pipeline — its stdio is wired to pipe fds, not
   the terminal. They raise `RuntimeError`. A decorator that wants to
   launch an interactive subprocess has to refuse, or fall back to

@@ -43,7 +43,6 @@ from eosh.completion import (
     FileCompleter,
 )
 from eosh.completion_cache import aws_env_key, get_or_fetch
-from eosh import passthrough_input, passthrough_run
 from .. import cli as awsut
 from .render import (
     INSTANCE_TYPE_CHOICES,
@@ -903,9 +902,10 @@ def register_hyperpod(sagemaker) -> None:
             arg("instance_group_name", completer=_HyperpodInstanceGroupNameCompleter()),
             arg("-y", "--yes", action="store_true", help="Skip confirmation"),
         ],
+        pass_context=True,
     )
     @guard
-    def _delete_instance_group(cluster_name, instance_group_name, yes):
+    def _delete_instance_group(ctx, cluster_name, instance_group_name, yes):
         sm = awsut._get_sagemaker_client()
         cluster = _describe_or_fail(sm, cluster_name)
 
@@ -919,7 +919,7 @@ def register_hyperpod(sagemaker) -> None:
                           f"{cluster_name!r}")
 
         if not yes:
-            answer = passthrough_input(
+            answer = ctx.input(
                 f"Delete instance group {instance_group_name!r} from cluster "
                 f"{cluster_name!r}? Its instances are terminated. [y/N] : "
             )
@@ -1063,11 +1063,12 @@ def register_hyperpod(sagemaker) -> None:
             arg("-y", "--yes", action="store_true",
                 help="Skip confirmation"),
         ],
+        pass_context=True,
     )
     @guard
-    def _delete(cluster_name, yes):
+    def _delete(ctx, cluster_name, yes):
         if not yes:
-            answer = passthrough_input(
+            answer = ctx.input(
                 f"Delete cluster {cluster_name!r} in region {region_label()}? "
                 "Every node in it is terminated. [y/N] : ")
             if answer.strip().lower() not in ("y", "yes"):
@@ -1489,9 +1490,10 @@ def register_hyperpod(sagemaker) -> None:
             arg("cluster_name", completer=_HyperpodClusterNameCompleter()),
             arg("node_id", completer=_HyperpodNodeIdCompleter(with_cwlog=False)),
         ],
+        pass_context=True,
     )
     @guard
-    def _ssm(cluster_name, node_id):
+    def _ssm(ctx, cluster_name, node_id):
         sm = awsut._get_sagemaker_client()
         cluster = _describe_or_fail(sm, cluster_name)
 
@@ -1508,7 +1510,7 @@ def register_hyperpod(sagemaker) -> None:
             raise SmError(f"no node {node_id!r} in cluster {cluster_name!r}")
 
         ssm_target = f"sagemaker-cluster:{cluster_id}_{ig_name}-{node_id}"
-        passthrough_run(["aws", "ssm", "start-session", "--target", ssm_target])
+        ctx.run_interactive(["aws", "ssm", "start-session", "--target", ssm_target])
 
     @hyperpod.command(
         "ssh",
@@ -1834,9 +1836,10 @@ def register_hyperpod(sagemaker) -> None:
     @hyperpod.command(
         "kubeconfig", help="Update kubeconfig with the EKS cluster",
         params=[arg("cluster_name", completer=_HyperpodClusterNameCompleter())],
+        pass_context=True,
     )
     @guard
-    def _kubeconfig(cluster_name):
+    def _kubeconfig(ctx, cluster_name):
         sm = awsut._get_sagemaker_client()
         cluster = _describe_or_fail(sm, cluster_name)
 
@@ -1848,7 +1851,7 @@ def register_hyperpod(sagemaker) -> None:
                           f"reached with `ssm` or `ssh`)") from None
 
         eks_name = eks_arn.split("/")[-1]
-        passthrough_run(["aws", "eks", "update-kubeconfig", "--name", eks_name])
+        ctx.run_interactive(["aws", "eks", "update-kubeconfig", "--name", eks_name])
 
     @hyperpod.command(
         "events", help="Print historical events",

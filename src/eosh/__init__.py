@@ -4,11 +4,7 @@ from . import hooks, notify
 from .colors import ColorScheme, set_color_scheme
 from .commands import arg, CmdParser, registry as command_registry
 from .prompt import set_prompt
-from .shell import (
-    passthrough_input,
-    passthrough_input_block,
-    passthrough_run,
-)
+from .command_context import CommandContext, ShellView
 from .variables import Var, EnvVar, PyVar, GlobalVar, registry as var_registry
 
 #: Single source of truth for the version string -- the ONLY place the literal
@@ -29,7 +25,6 @@ __all__ = [
     "GlobalVar",
     "var_registry",
     "command_registry",
-    "passthrough_run",
-    "passthrough_input",
-    "passthrough_input_block",
+    "CommandContext",
+    "ShellView",
 ]

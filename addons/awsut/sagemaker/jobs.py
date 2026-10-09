@@ -56,7 +56,6 @@ import botocore.exceptions
 from eosh.completion import ChoiceCompleter, Completer, Completion, CompletionContext
 from eosh.commands import arg
 from eosh.completion_cache import aws_env_key, get_or_fetch
-from eosh import passthrough_input
 from .. import cli as awsut
 from .render import (
     DOT_INTERVAL,
@@ -718,9 +717,10 @@ def register_jobs(sagemaker) -> None:
                 completer=_JobNameCompleter()),
             arg("-y", "--yes", action="store_true", help="Skip confirmation"),
         ],
+        pass_context=True,
     )
     @guard
-    def _jobs_stop(job_name, category, yes):
+    def _jobs_stop(ctx, job_name, category, yes):
         cli = sm_client()
         require_operation(cli, "stop_job", "StopJob")
         desc, resolved = resolve_job(cli, job_name, category)
@@ -730,7 +730,7 @@ def register_jobs(sagemaker) -> None:
             return
         if not yes:
             try:
-                answer = passthrough_input(
+                answer = ctx.input(
                     f"Stop job [{desc.get('JobName')}] "
                     f"({resolved}, currently {status})? [y/N] : ")
             except RuntimeError:

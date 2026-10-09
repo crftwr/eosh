@@ -11,7 +11,7 @@
 │  ├── Line parsing / pipeline execution              │
 │  ├── Command dispatch                              │
 │  ├── PTY process multiplexing (process.py)         │
-│  ├── Python-command slots & passthrough_run        │
+│  ├── Python-command slots & ctx.run_interactive    │
 │  └── Context switch TUI (tui.py)                   │
 ├─────────────────────────────────────────────────────┤
 │  Command Registry (commands.py)                     │
@@ -339,7 +339,7 @@ eosh/
 These are not bugs and they are not blocking work. They are the architectural rough edges that have accumulated as features (Python pipelines, decorators, passthrough subprocesses) layered on top of the original PTY-multiplexing core. Each is described in more detail in [enhancements.md](enhancements.md) under "Architectural follow-ups."
 
 - **`shell.py` is ~3300 lines** and hosts at least four concerns that are conceptually separate: thread-local stdio routing + `_StdoutProxy` + `PythonCommandSlot` (peer to `process.py`); the per-stage pipeline executor (`_execute_pipeline`, `_execute_stage`, redirect plumbing); the two raw-mode forwarding loops; and the actual REPL + built-ins + completion glue. Everything else in the package is right-sized.
-- **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_current_slot` / `_in_pipeline` thread-locals consumed by free `passthrough_*` functions are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
+- **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_current_slot` / `_in_pipeline` thread-locals consumed by `CommandContext`'s methods (via `shell._run_interactive` / `_read_from_user` / `_choose`) are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
 - **`shell.py` imports private names from `pipeline.py`** — `_split_on_operators` is used both for completion-stage isolation and for decorator-prefix remainder validation. It is part of `pipeline.py`'s effective public surface; the leading underscore is a leftover.
 - **Two near-identical raw-mode forwarding loops** (`_enter_forwarding_mode` for PTY-backed `ProcessSlot`, `_enter_python_forwarding_mode` for `PythonCommandSlot`) duplicate ~80% of their logic — termios snapshot/restore, SIGWINCH/SIGINT install, `\x1d` interception, byte forwarding. Any fix has to be applied twice today.
 - **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.

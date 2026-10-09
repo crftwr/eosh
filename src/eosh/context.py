@@ -15,6 +15,7 @@ Each context stores:
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
@@ -58,6 +59,11 @@ class ContextManager:
         self._display_order: list[str] = []
         self._env_backup: dict[str, str | None] = {}
         self._initial_cwd: str = os.getcwd()
+        #: Held while the current context changes and while a context's
+        #: variables are read or written — a Python command running in the
+        #: background reads and writes its own context's variables from its
+        #: thread (``CommandContext``) while the main thread may be switching.
+        self.lock = threading.RLock()
 
     def create(
         self,
@@ -97,9 +103,10 @@ class ContextManager:
     def switch(self, name: str) -> None:
         if name not in self.contexts:
             raise KeyError(f"No context named '{name}'")
-        self._save_current()
-        self._unapply_env()
-        self._activate(name)
+        with self.lock:
+            self._save_current()
+            self._unapply_env()
+            self._activate(name)
 
     def current(self) -> Context | None:
         if self.current_name is None:
@@ -114,16 +121,17 @@ class ContextManager:
         recently used remaining one current."""
         if name not in self.contexts:
             raise KeyError(f"No context named '{name}'")
-        was_current = self.current_name == name
-        del self.contexts[name]
-        self._display_order = [n for n in self._display_order if n != name]
-        if was_current:
-            self._unapply_env()
-            self.current_name = None
-            if self._display_order:
-                self._activate(self._display_order[0])
-            else:
-                os.chdir(self._initial_cwd)
+        with self.lock:
+            was_current = self.current_name == name
+            del self.contexts[name]
+            self._display_order = [n for n in self._display_order if n != name]
+            if was_current:
+                self._unapply_env()
+                self.current_name = None
+                if self._display_order:
+                    self._activate(self._display_order[0])
+                else:
+                    os.chdir(self._initial_cwd)
 
     def rename(self, old: str, new: str) -> None:
         """Rename a context. Raises KeyError if *old* is missing or ValueError if *new* exists."""
@@ -141,19 +149,36 @@ class ContextManager:
             self.current_name = new
 
     def set_variable(self, key: str, value: str) -> None:
-        ctx = self.current()
-        if ctx is None:
-            raise RuntimeError("No active context")
-        if key not in self._env_backup:
-            self._env_backup[key] = os.environ.get(key)
-        ctx.variables[key] = value
-        os.environ[key] = value
+        with self.lock:
+            ctx = self.current()
+            if ctx is None:
+                raise RuntimeError("No active context")
+            if key not in self._env_backup:
+                self._env_backup[key] = os.environ.get(key)
+            ctx.variables[key] = value
+            os.environ[key] = value
 
     def unset_variable(self, key: str) -> None:
-        ctx = self.current()
-        if ctx is not None:
-            ctx.variables.pop(key, None)
-        os.environ.pop(key, None)
+        with self.lock:
+            ctx = self.current()
+            if ctx is not None:
+                ctx.variables.pop(key, None)
+            os.environ.pop(key, None)
+
+    # A context other than the current one keeps its environment in
+    # ``Context.variables`` only; ``os.environ`` holds the current one's.
+    # Callers hold :attr:`lock` and check :meth:`current` themselves.
+
+    def env_value_in(self, ctx: Context, key: str) -> str | None:
+        """Environment variable *key* as *ctx* sees it, current or not."""
+        if ctx is self.current():
+            return os.environ.get(key)
+        if key in ctx.variables:
+            return ctx.variables[key]
+        # Not set in ctx: the value from before any context set it.
+        if key in self._env_backup:
+            return self._env_backup[key]
+        return os.environ.get(key)
 
     def get_variable(self, key: str) -> str | None:
         ctx = self.current()

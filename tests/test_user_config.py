@@ -137,7 +137,7 @@ def _edit(monkeypatch, tmp_path, status=0, error=None):
         return status
 
     monkeypatch.setattr(shell_mod, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(shell_mod, "passthrough_run", fake_run)
+    monkeypatch.setattr(shell_mod, "_run_interactive", fake_run)
     monkeypatch.delenv("VISUAL", raising=False)
     monkeypatch.setenv("EDITOR", "myed -w")
     reloads = []

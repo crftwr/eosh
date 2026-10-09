@@ -54,7 +54,6 @@ import botocore.exceptions
 from eosh.commands import arg
 from eosh.completion import ChoiceCompleter, Completer, Completion, CompletionContext
 from eosh.completion_cache import get_or_fetch
-from eosh import passthrough_input
 from .. import cli as awsut
 from .render import (
     CONTROL_SERVICE,
@@ -626,9 +625,10 @@ def _register_resource(memory) -> None:
             arg("-n", "--interval", type=float, default=10.0, metavar="SEC",
                 help="--wait poll seconds (default 10)"),
         ],
+        pass_context=True,
     )
     @guard
-    def _memory_delete(memory, yes, wait, interval):
+    def _memory_delete(ctx, memory, yes, wait, interval):
         cli = control_client()
         require_operation(cli, "delete_memory", "DeleteMemory")
         memory_id = resolve_memory_id(cli, memory)
@@ -639,7 +639,7 @@ def _register_resource(memory) -> None:
             return
 
         if not yes:
-            if not _confirm_delete(memory_id, found, status):
+            if not _confirm_delete(ctx, memory_id, found, status):
                 print("not deleted")
                 return
 
@@ -1079,7 +1079,7 @@ def _print_records(rows, limit, brief, scored=False) -> None:
 
 # ─── delete confirmation ────────────────────────────────────────────────────
 
-def _confirm_delete(memory_id, found, status) -> bool:
+def _confirm_delete(ctx, memory_id, found, status) -> bool:
     """Ask before a DeleteMemory, having said what goes with it.
 
     The counts are what decide whether this is safe, so they are fetched rather
@@ -1103,7 +1103,7 @@ def _confirm_delete(memory_id, found, status) -> bool:
             "break that resource." if owner else "")
 
     try:
-        answer = passthrough_input(
+        answer = ctx.input(
             f"{warn}\nDelete memory {memory_label(memory_id)} — currently "
             f"{status}, holding {', '.join(scale)}.  Everything stored in it "
             "(sessions, events, extracted records) goes too and cannot be "

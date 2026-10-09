@@ -1,4 +1,4 @@
-"""Tests for reading user input from a command — passthrough_input / _block.
+"""Tests for reading user input from a command — ctx.input / ctx.input_block.
 
 Both read the raw key stream (discussion #38): off the slot's key buffer,
 which the forwarding loop feeds, or — on the main thread — the terminal
@@ -14,7 +14,7 @@ import types
 import pytest
 
 from eosh.shell import (
-    PythonCommandSlot, _read_typed, passthrough_input, passthrough_input_block,
+    PythonCommandSlot, _read_from_user, _read_typed,
 )
 
 
@@ -172,13 +172,13 @@ def test_a_slot_marks_itself_reading_so_ctrl_c_reaches_the_reader():
 
 def test_line_falls_back_to_input_without_a_terminal(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": "typed")
-    assert passthrough_input("? ") == "typed"
+    assert _read_from_user("? ", block=False) == "typed"
 
 
 def test_block_falls_back_to_input_without_a_terminal(monkeypatch):
     lines = iter(["export A=1", "export B=2", "", "later"])
     monkeypatch.setattr("builtins.input", lambda *a: next(lines))
-    assert passthrough_input_block() == "export A=1\nexport B=2"
+    assert _read_from_user("", block=True) == "export A=1\nexport B=2"
 
 
 def test_block_falls_back_to_input_in_a_slot_when_stdin_is_not_a_terminal(monkeypatch):
@@ -188,4 +188,4 @@ def test_block_falls_back_to_input_in_a_slot_when_stdin_is_not_a_terminal(monkey
     monkeypatch.setattr("eosh.shell._stdin_is_tty", lambda: False)
     lines = iter(["export A=1", ""])
     monkeypatch.setattr("builtins.input", lambda *a: next(lines))
-    assert passthrough_input_block() == "export A=1"
+    assert _read_from_user("", block=True) == "export A=1"
