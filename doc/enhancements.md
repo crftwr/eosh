@@ -192,14 +192,6 @@ of [architecture.md](architecture.md).
   prefix remainder validation. Drop the underscore or move to
   `parsing.py`. *Risk:* trivial (rename).
 
-- **Move `lineedit.History` into its own `history.py`.** The
-  class owns the on-disk `~/.eosh/history` file and the
-  `history.dirs` directory side table — storage, which doesn't
-  belong in the key-dispatch module. (An unused duplicate
-  `history.py` was deleted in the #43 sweep.) *Risk:* trivial;
-  re-export `History` from `lineedit` for the tests that import it
-  from there.
-
 These are sequenced from highest payoff (shrinks `shell.py` the
 most, exposes the cleanest public interface) to lowest. Doing the
 first two together — `slots.py` + `dispatch.py` — collapses

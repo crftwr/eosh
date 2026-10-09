@@ -1,7 +1,7 @@
 """Where eosh keeps per-user state.
 
 Every file the shell reads or writes under the user's home — ``config.py``,
-``history``, ``history.dirs``, ``recipes/``, ``decorators/`` — lives in one
+``history.db`` and the modules ``config.py`` imports — lives in one
 directory, and this module is the only place that names it.  It imports
 nothing from the package so any module can use it without an import cycle.
 """

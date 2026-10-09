@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .completion_cache import get_or_fetch
-from .parsing import raw_token_start
 
 if TYPE_CHECKING:
     from .command_context import ShellView
@@ -46,7 +45,6 @@ class Completion:
     fields: tuple[str, ...] = ()   # description split into picker columns (aligned across rows)
     arg_hint: str = ""        # non-empty for a flag that takes a value ("N"): applying it
                               # moves straight on to completing that value
-    verbatim: bool = False    # True → value may span several tokens; inserted as-is at the anchor
 
     def __post_init__(self):
         if not self.display:
@@ -286,82 +284,6 @@ class CallbackCompleter(Completer):
             for c in self.func()
             if c.startswith(ctx.prefix)
         ]
-
-
-class HistoryCompleter(Completer):
-    """Completes the typed line from past command lines.
-
-    Unlike every other completer this one *matches* in line space: an entry is a
-    candidate when it starts with ``ctx.line`` (everything before the cursor),
-    not merely with ``ctx.prefix``.  So ``git commit <TAB>`` can offer the tail
-    of a past ``git commit -m "fix typo"`` — a candidate no per-argument
-    completer could produce, because it spans several arguments.
-
-    What it *returns* lives in the same space as every other candidate: the
-    value starts at the completion anchor (:func:`parsing.raw_token_start`), so
-    the picker shows ``-m "fix typo"`` under the caret rather than repeating the
-    ``git commit `` the user can already see.  Because the tail can span tokens
-    and is already shell syntax, candidates are flagged ``verbatim=True`` and the
-    editor inserts them without quoting.
-
-    Candidates are the most recent matches first, deduplicated, capped at
-    *limit* so they can never flood the picker.  ``history_fn`` is called on
-    every keystroke while the picker is open, so it must be cheap — the shell
-    passes the current context's in-memory Up/Down list.
-
-    Candidates are also **scoped to the current directory** when
-    ``ran_here_fn`` is supplied: it is asked, per entry, whether that line was
-    recorded as run in the cwd (the shell passes :meth:`history.History.ran_here`).
-    Only those entries are offered, with no fallback — ``make deploy`` from
-    another checkout is rarely what you want here, so a directory you have never
-    run a matching line in contributes no history rows at all.  Up/Down and
-    ``Ctrl+R`` are still unscoped when you do want to reach across directories.
-    """
-
-    def __init__(self, history_fn, limit: int = 10, ran_here_fn=None):
-        self._history_fn = history_fn
-        self.limit = limit
-        self._ran_here_fn = ran_here_fn
-
-    def should_activate(self, ctx: CompletionContext) -> bool:
-        # A bare TAB on an empty prompt should list the commands available, not
-        # push the last 10 command lines above them.  Up/Down and Ctrl+R already
-        # cover "show me what I ran" with nothing typed.
-        return bool(ctx.line.strip())
-
-    def complete(self, ctx: CompletionContext) -> list[Completion]:
-        if not self.should_activate(ctx):
-            return []
-        line = ctx.line
-        anchor = raw_token_start(line)
-        results: list[Completion] = []
-        seen: set[str] = set()
-        for entry in reversed(self._history_fn()):
-            if len(results) >= self.limit:
-                break
-            if entry in seen:
-                continue
-            seen.add(entry)
-            if not entry.startswith(line):
-                continue
-            # Nothing left to add (exact match, or the entry only differs by
-            # trailing whitespace) — the row would look identical to the line
-            # the user is already looking at.
-            if not entry[len(line):].strip():
-                continue
-            # The value is inserted verbatim, so an embedded newline would
-            # submit the line on insert.  Can't happen today (continuation
-            # lines are joined before being stored), but the guard keeps
-            # "inserted verbatim" safe by construction.
-            if "\n" in entry or "\r" in entry:
-                continue
-            # Ran somewhere else — out of scope, and no fallback re-admits it.
-            if self._ran_here_fn is not None and not self._ran_here_fn(entry):
-                continue
-            results.append(
-                Completion(value=entry[anchor:], description="history", verbatim=True)
-            )
-        return results
 
 
 class OptionsCompleter(Completer):

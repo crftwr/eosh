@@ -218,6 +218,18 @@ pressing an arrow key or typing continues the answer. Redrawing on resume
 would need the slot to tell the forwarding loop "I'm showing a prompt" and to
 re-render it on `activate()`.
 
+## History
+
+- **A network-mounted `~/.eosh` may not lock reliably.** The history is a
+  SQLite database. Its locking depends on the filesystem, and NFS / SMB
+  locking can be unreliable. A failed write loses that one history row, never
+  the command.
+- **The ghost suggestion is cut at the end of the row.** Only as much as fits
+  after the buffer on its row is drawn (a wrapping ghost would complicate
+  every redraw's row bookkeeping). Accepting it still inserts the whole line.
+- **Ctrl+R starts empty when the line is too long to fit on the prompt row**
+  next to the prompt.
+
 ## Event hooks — what they don't see
 
 - **A backgrounded line's `on_command_finished` runs on a background

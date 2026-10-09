@@ -180,14 +180,14 @@ def test_a_missing_external_command_goes_through_the_hook(sh):
 
 
 def test_a_backgrounded_line_is_reported_when_its_slot_ends(sh, events):
-    slot = SimpleNamespace(parked=True, line="make -j8", argv=["make", "-j8"],
+    slot = SimpleNamespace(parked=True, line="make -j8", history_id=None, argv=["make", "-j8"],
                            exit_code=2, elapsed=lambda: 1.5)
     sh._slot_finished(slot)
     assert events == [("finished", "make -j8", 2)]
 
 
 def test_a_foreground_slot_is_left_to_the_line(sh, events):
-    slot = SimpleNamespace(parked=False, line=None, argv=["ls"],
+    slot = SimpleNamespace(parked=False, line=None, history_id=None, argv=["ls"],
                            exit_code=0, elapsed=lambda: 0.1)
     sh._slot_finished(slot)
     assert events == []

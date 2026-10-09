@@ -46,6 +46,14 @@ def _no_user_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_user_history(monkeypatch):
+    """Keep ``Shell()`` off the developer's ``~/.eosh/history.db``: every
+    shell a test builds gets a fresh in-memory history instead."""
+    from eosh.history import HistoryStore
+    monkeypatch.setattr("eosh.shell.HistoryStore", lambda path: HistoryStore(None))
+
+
+@pytest.fixture(autouse=True)
 def _clear_completion_cache():
     """The completion cache is process-global; tests that exercise
     cached completers must start from a clean slate."""

@@ -26,7 +26,7 @@
 - **Protocol fallbacks** — automatic completion for cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …) and argcomplete-based Python CLIs (`pipx`, `conda`, `pre-commit`, `tox`, …) — no recipe needed
 - **System command fallback** — anything not a registered command runs through the system shell
 - **Cross-platform** — interactive shell, completion, pipelines, redirects, contexts, and history all work on POSIX and Windows; PTY-backed multiplexing of running native processes is POSIX-only
-- **History** — persistent history with up/down navigation, `Ctrl+R` search, and past command lines offered as multi-argument TAB candidates, scoped to the context and directory you're in
+- **History** — shared by every eosh window (SQLite): fish-style suggestions of lines you ran in this directory, `Ctrl+R` search that starts from what you've typed, per-context up/down navigation, and a `history` command
 - **Desktop notifications** — an OS notification when a command that took more than 10 seconds finishes, including ones running in a backgrounded context; native backends only, no extra dependencies
 
 ## Installation
@@ -77,6 +77,7 @@ eosh
 | `alias [NAME[=EXPANSION] ...]` | List aliases, show one, or define a shorthand for a command |
 | `unalias NAME [NAME ...]` | Remove aliases |
 | `source-bash [FILE [ARG ...]]` | Run a bash script (or a pasted block) and import its variables and cwd |
+| `history [-n N] [--here] [KEYWORD ...]` | List past command lines (every window, every context), filtered by keywords or this directory |
 | `reload` | Reload `~/.eosh/config.py` without restarting |
 | `config edit` | Open `~/.eosh/config.py` in `$VISUAL` / `$EDITOR`, then reload it |
 | `exit` | Exit the shell |
@@ -152,35 +153,21 @@ Press TAB to complete:
 - Command names (registered commands + system PATH executables)
 - File/directory paths (default fallback)
 - Custom per-argument completions defined by commands
-- Past command lines from history (see below)
 
-**History completion** — TAB also offers past command lines that start with
-what you've typed so far. Only the part that would be *added* is listed, like
-any other candidate, tagged `history` and shown first:
+### History
+
+As you type, the most recent line you ran **in this directory** that starts with what you've typed appears dimmed after the cursor. **→** (or Ctrl+E / End) accepts it, and **Alt+F** accepts one word. Otherwise keep typing:
 
 ```
-eosh> git commit <TAB>
-┌────────────────────────────────────────────────┐
-│ -m "fix typo"                      history     │
-│ --amend --no-edit                  history     │
-│ doc/                                           │
-│ src/                                           │
-└────────────────────────────────────────────────┘
+~/proj> git commit -m "fix typo"
+              ^^^^^^^^^^^^^^^^^^ typed "git co"; the rest is the suggestion
 ```
 
-Accepting one inserts it at the cursor verbatim, so a single suggestion can fill
-in several arguments at once. Matching is against the entire typed line —
-including pipelines (`ls | grep fo<TAB>`) — and draws on the current context's
-history, the same list `↑`/`↓` walks (`Ctrl+R` searches every context). A
-history candidate is never inserted without being shown in the picker first, and
-a unique ordinary completion still applies on the first TAB as before.
+- **Ctrl+R** searches every line you've run, anywhere. It starts filtered by what's already typed, and shows where and when each line last ran.
+- **`history`** lists past lines: `history docker run`, `history -n 100 --here`.
+- **↑ / ↓** walk the current context's own list.
 
-Candidates are also scoped to the **directory** you're in: eosh records where
-each command was run (`~/.eosh/history.dirs`) and offers only the lines you ran
-here, so another checkout's `make deploy` stays out of the way. Nothing matching
-run here means no history rows — the picker just shows the ordinary candidates.
-`↑`/`↓` and `Ctrl+R` are not directory-scoped, so lines from elsewhere are still
-one key away.
+History is shared by every eosh window you have open (`~/.eosh/history.db`, SQLite). A line run in one window is suggested in another at once, and shells running side by side never overwrite each other's history. See [doc/history.md](doc/history.md).
 
 **Flag completion** — TAB on `-` lists the command's flags as ordinary picker
 rows, each with its description:
@@ -481,7 +468,6 @@ The function is called each time the prompt is displayed, so it reflects dynamic
 | `FileCompleter()` | Complete filesystem paths (files and directories) |
 | `DirCompleter()` | Complete directory paths only |
 | `OptionsCompleter(options, args)` | Complete flags, one picker row each; `args` declares value-taking flags |
-| `HistoryCompleter(history_fn, limit, ran_here_fn)` | Continue the typed line from past command lines (may span several arguments), scoped to the ones run in the cwd |
 
 ### Completion Recipes
 
@@ -573,12 +559,12 @@ registry.command(
 | Key | Action |
 |-----|--------|
 | `Tab` | Open completion picker |
-| `Ctrl+R` | Search history |
+| `Ctrl+R` | Search history, starting from what's typed |
 | `Ctrl+]` | Open context switcher |
 | `↑` / `↓` or `Ctrl+P/N` | Navigate history |
-| `Ctrl+A` / `Ctrl+E` | Move to start / end of line |
-| `Ctrl+B` / `Ctrl+F` | Move one character left / right |
-| `Alt+B` / `Alt+F` | Move one word left / right |
+| `Ctrl+A` / `Ctrl+E` | Move to start / end of line (`Ctrl+E` at the end accepts the suggestion) |
+| `Ctrl+B` / `Ctrl+F`, `←` / `→` | Move one character left / right (at the end, accept the suggestion) |
+| `Alt+B` / `Alt+F` | Move one word left / right (`Alt+F` at the end accepts one word of the suggestion) |
 | `Ctrl+W` | Delete word before cursor |
 | `Ctrl+K` | Delete to end of line |
 | `Ctrl+U` | Delete to beginning of line |
@@ -590,8 +576,7 @@ registry.command(
 | Path | Purpose |
 |------|---------|
 | `~/.eosh/config.py` | User configuration |
-| `~/.eosh/history` | Command history |
-| `~/.eosh/history.dirs` | Directories each history line was run in (scopes history TAB candidates) |
+| `~/.eosh/history.db` | Command history, shared by every eosh process (SQLite) |
 | `~/.eosh/*.py` | Your own modules (recipes, commands, decorators) — on `sys.path` while `config.py` runs |
 
 ## Platform Support

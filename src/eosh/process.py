@@ -72,6 +72,9 @@ class ExitCallbackMixin:
         #: The command line that started the slot, set with :attr:`parked`
         #: so the handler can report the line rather than just argv.
         self.line: str | None = None
+        #: Its row in the shared history, so the handler can record the
+        #: exit status there.
+        self.history_id: int | None = None
         #: ``time.monotonic()`` at :meth:`start`, so the handler can report
         #: how long the work took.
         self.start_time: float | None = None

@@ -204,7 +204,6 @@ class InlinePicker(Generic[T]):
         refresh_fn: Callable[[str], tuple[list[T], int]] | None = None,
         value_fn: Callable[[T], str | None] | None = None,
         completion_prefix: str = "",
-        extend_fn: Callable[[list[T], str], str] | None = None,
         min_width: int = 0,
         hide_cursor: bool = False,
         status_label: str = "",
@@ -216,6 +215,7 @@ class InlinePicker(Generic[T]):
         select_first: bool = True,
         empty_placeholder: str = "",
         key_source: Callable[[float], bytes] | None = None,
+        typed: str = "",
     ):
         self._items = items
         self._key_source = key_source
@@ -228,7 +228,6 @@ class InlinePicker(Generic[T]):
         self._refresh_fn = refresh_fn
         self._value_fn = value_fn
         self._completion_prefix = completion_prefix
-        self._extend_fn = extend_fn
         self._min_width = min_width
         self._hide_cursor = hide_cursor
         self._status_label = status_label
@@ -241,7 +240,9 @@ class InlinePicker(Generic[T]):
         # -1 means "no row highlighted"; it is also the state the selection
         # resets to whenever the list is re-filtered by typing.
         self._no_selection = 0 if select_first else -1
-        self._typed = ""
+        # Text already typed when the picker opens (Ctrl+R starts from the
+        # buffer); the caller has drawn it, and *items* is already filtered by it.
+        self._typed = typed
         self.reopen = False          # set True when tab-complete typed chars; caller should reopen
         self.apply_backspace = False  # set True when backspace pressed with no typed chars
         self.closed_empty = False     # set True when narrowing left no candidates
@@ -586,13 +587,7 @@ class InlinePicker(Generic[T]):
         """Type the common prefix extension. Returns True (sets reopen) if chars were typed."""
         if not self._items:
             return False
-        if self._extend_fn is not None:
-            # The caller owns the arithmetic: it sees the *current* items and
-            # typed text, so it can re-decide which value space the remaining
-            # rows live in and where the text already typed starts (narrowing
-            # can change both — see ``lineedit._complete``).
-            extension = self._extend_fn(self._items, self._typed)
-        elif self._value_fn is not None:
+        if self._value_fn is not None:
             # Simple case: every item's value extends ``completion_prefix``,
             # which grows by exactly the characters typed since the picker
             # opened.  ``value_fn`` may return None to exclude an item from the

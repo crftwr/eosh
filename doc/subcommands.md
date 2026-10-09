@@ -143,7 +143,7 @@ binary instead.
 
 ## Completion and the status bar
 
-TAB completion (`Shell._get_base_completions`) and the status bar
+TAB completion (`Shell._get_completions`) and the status bar
 (`Shell._get_arg_info`) share one classifier, `shell._resolve_slot`. It
 resolves the node, then decides what the token being typed (or under the
 caret) is:

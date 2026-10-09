@@ -133,7 +133,8 @@ DIY raw-mode line editor. No prompt_toolkit or readline.
 - `LineEditor.prompt()` — reads one line in raw terminal mode
 - Full key binding suite: `Ctrl+A/E/B/F/W/K/U/L`, `Alt+B/F`, arrows, `Ctrl+P/N`, `Ctrl+R`, `Ctrl+]`
 - TAB opens `InlinePicker` (flags included, one row each) with **no candidate pre-selected** — Enter dismisses, only Down/Up select (TAB extends the common prefix, never selects); supports narrowing by typing, TAB-extend, backspace-to-close, and self-closes when narrowing leaves zero candidates
-- `Ctrl+R` opens a filterable history picker
+- `Ctrl+R` opens a filterable picker over the shared history, starting from what is typed
+- A fish-style ghost suggestion (the latest line run in the cwd that extends the buffer) is drawn dim after the caret; `→` / `Ctrl+E` accept it, `Alt+F` one word — see [history.md](history.md)
 - Multi-line wrap tracking for correct cursor repositioning
 - VSCode integrated terminal detection for resize handling (see `doc/terminal-resize.md`)
 
@@ -222,18 +223,14 @@ User input → expand_vars() → parse_line() → Sequence of Pipelines
 User presses TAB
   → LineEditor._complete()
     → _get_completions(line_before_cursor)
-      → _get_base_completions(line_before_cursor)
-          → _split_on_operators() → isolate current pipeline stage
-          → split_for_completion(stage) → (tokens, prefix)
-          → No tokens? → CommandNameCompleter
-          → Has tokens?
-              → Look up command; Command.resolve() to the deepest sub-command
-              → _resolve_slot(): delegate | flag | value | subcommand | positional
-                (one classifier, shared with the status bar's _get_arg_info)
-              → No completer for the slot? → argcomplete, then FileCompleter
-      → HistoryCompleter (current context's history, cwd-scoped, tail from the anchor)
-          → prepended, unless the line is empty
-          → minus the tails the base result already offers as a single token
+        → _split_on_operators() → isolate current pipeline stage
+        → split_for_completion(stage) → (tokens, prefix)
+        → No tokens? → CommandNameCompleter
+        → Has tokens?
+            → Look up command; Command.resolve() to the deepest sub-command
+            → _resolve_slot(): delegate | flag | value | subcommand | positional
+              (one classifier, shared with the status bar's _get_arg_info)
+            → No completer for the slot? → argcomplete, then FileCompleter
     → Single token completion → _apply() directly (a value-taking flag
       loops on to complete its value)
     → Otherwise → InlinePicker (narrows as user types)
@@ -281,7 +278,8 @@ eosh/
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
 │       ├── completion.py       # Completer ABC, CompletionContext, built-in completers, cobra/argcomplete fallbacks
 │       ├── context.py          # Context, ContextManager, ContextState
-│       ├── lineedit.py         # DIY raw-mode line editor, History (+ history.dirs side table), TAB completion glue
+│       ├── history.py          # HistoryStore: shared SQLite history (~/.eosh/history.db)
+│       ├── lineedit.py         # DIY raw-mode line editor, ghost suggestion, TAB completion glue
 │       ├── parsing.py          # line tokenization, quote handling, var expansion
 │       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run()
 │       ├── process.py          # PTY subprocess slots, output buffering, terminal-mode tracking

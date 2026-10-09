@@ -48,7 +48,6 @@ change.
 │  ├── Command name completion                       │
 │  ├── Argument completion (per-command completers)  │
 │  ├── Options completion (flags as picker rows)     │
-│  ├── HistoryCompleter — past lines, cwd-scoped     │
 │  ├── CobraCompleter — <cmd> __complete (opt-in)    │
 │  ├── ArgcompleteCompleter — drives argcomplete IPC │
 │  └── Filesystem completion (fallback)              │
@@ -59,7 +58,7 @@ change.
 ├─────────────────────────────────────────────────────┤
 │  Line Editor (lineedit.py)                          │
 │  ├── Raw-mode key dispatch                         │
-│  ├── History (up/down, Ctrl+R search)              │
+│  ├── History (up/down, Ctrl+R, ghost suggestion)   │
 │  ├── TAB completion via InlinePicker               │
 │  └── Ctrl+] context switch (inline picker)         │
 ├─────────────────────────────────────────────────────┤
@@ -105,23 +104,22 @@ change.
 Entry point. Reads input, parses lines, dispatches commands.
 
 - Uses a DIY raw-mode line editor (`lineedit.py`) — no external dependencies
-- Supports `Ctrl+R` history search (via inline picker) — searches the
-  **global** history (every command from every context)
 - Supports `Ctrl+]` to open an inline context-switch picker
-- Maintains a global command history in `~/.eosh/history` (every executed
-  command, across all contexts). **Up/Down navigation is scoped per context**
-  (each `Context` carries an in-memory `history` list); the global file backs
-  `Ctrl+R` and seeds the `default` context's Up/Down list at startup. A newly
-  created context snapshots its parent's Up/Down list, then they diverge.
-  Per-context lists are in-memory only — not persisted across restarts. The
-  per-context list also feeds **history TAB completion** (`HistoryCompleter`),
-  so TAB recall and Up/Down recall share one scope — with one extra filter on
-  the TAB side: candidates are narrowed to the lines that were run in the
-  current directory (`~/.eosh/history.dirs`; see `HistoryCompleter`).
+- Records every command line in the **shared history** (`history.py`,
+  `~/.eosh/history.db`, SQLite — one store for every eosh process; see
+  **history.py** below). `Shell._record_history` inserts the row when the line
+  starts, and `HistoryStore.finish` adds the exit status and duration when it
+  ends (from `_execute`, or from `_slot_finished` for a line parked with Ctrl+],
+  via `slot.history_id`). The store feeds the ghost suggestion
+  (`Shell._suggest`: the latest line run in the cwd that extends the buffer),
+  `Ctrl+R` (every distinct line, starting filtered by the buffer) and the
+  `history` built-in. **Up/Down is scoped per context** (each `Context`
+  carries an in-memory `history` list): `default`'s is seeded from the store's
+  recent lines at startup, and a new context snapshots its parent's.
 - Runs external commands in PTY-backed subprocess slots (`process.py`)
 - Executes pipelines (`|`), sequences (`;`, `&&`, `||`), and redirections (`>`, `>>`, `<`, `2>`, `2>&1`)
 
-**Built-in commands:** `cd`, `exit`, `reload`, `config` (`config edit`), `var`, `alias`, `unalias`, `source-bash`, `help`, `context`
+**Built-in commands:** `cd`, `exit`, `reload`, `config` (`config edit`), `var`, `alias`, `unalias`, `source-bash`, `help`, `context`, `history`
 (`var NAME=` unsets; there is no separate `unset`.)
 
 **`reload` is one sweep.** `Shell._clear_user_config` puts every registry a
@@ -333,7 +331,6 @@ class Completion:
     fields: tuple[str, ...] = ()  # description split into picker columns (aligned across rows)
     arg_hint: str = ""           # non-empty for a flag that takes a value ("N"): applying it
                                  # moves straight on to completing that value
-    verbatim: bool = False       # True → value may span several tokens; inserted as-is (history)
 ```
 
 **Metadata columns.** A completer with several facts to show per candidate
@@ -355,9 +352,6 @@ class ChoiceCompleter(Completer):          # static list of choices
     def __init__(self, choices: list[str]): ...
 class CallbackCompleter(Completer):        # dynamic list from a function
     def __init__(self, func: Callable[[], list[str]]): ...
-class HistoryCompleter(Completer):         # tails of past command lines (verbatim=True)
-    def __init__(self, history_fn: Callable[[], list[str]], limit: int = 10,
-                 ran_here_fn: Callable[[str], bool] | None = None): ...
 class OptionsCompleter(Completer):         # flags, one picker row each; value-taking ones carry arg_hint
     def __init__(self, options: dict[str, str],
                  args: dict[str, str | tuple[str, Completer]] | None = None): ...
@@ -412,69 +406,6 @@ dict / `completer=` on the `arg`), otherwise nothing. With nothing to offer,
 the status bar already reads `-d <N>: …` (`Shell._get_arg_info`), which
 is all a separate hint line used to repeat. Combining short flags (`-al`) is
 typed by hand; there is no checkbox picker (discussion #36).
-
-#### `HistoryCompleter` — Multi-Argument Candidates from History
-
-Past command lines are offered as TAB candidates at every position, so a
-suggestion can span several arguments (`git commit <TAB>` → `-m "fix typo"`).
-This is the one completer that *matches* in **line** space instead of token
-space: an entry qualifies when it starts with `ctx.line` (everything before the
-caret), not merely with `ctx.prefix`. What it returns is anchored like any other
-candidate — the entry from `parsing.raw_token_start(ctx.line)` onwards. The values
-carry `verbatim=True` because they can run past the current token, and
-`lineedit._apply` splices them in at the anchor as-is: no shell-quoting, no
-trailing space, text after the caret preserved. On the way to the picker,
-`lineedit._align_verbatim_rows` trims each row's *display* (never its value) to
-start at the column the picker opens in, so a history row never re-shows text the
-user is already looking at — for `cat ~/.aws/<TAB>` a past
-`cat ~/.aws/config ~/.aws/credentials` reads `config ~/.aws/credentials` beside
-the directory entries, not the whole line over again.
-
-`Shell._get_completions` is a thin wrapper that prepends these to the
-completer-driven candidates from `Shell._get_base_completions` (history first —
-"what I ran before" is the most likely intent). It draws on the **current
-context's** Up/Down history list, so TAB recall matches arrow recall in scope
-while `Ctrl+R` stays global.
-
-A history row that would insert exactly what a completer already offers is
-dropped in that merge (`shell._drop_history_duplicates`): two rows doing the same
-thing is noise, and the completer's is the one carrying a description, so
-`awsut sagemaker studio <TAB>` lists `spaces` once (with `List the spaces in a
-domain`) instead of twice. The comparison unquotes, so `'My Documents/'` and
-`My Documents/` count as the same single token; a tail spanning more than the
-token (`spaces --max 5`) is never a duplicate, since spanning arguments is the
-whole reason history is in the list.
-
-Candidates are scoped to the **current directory** as well as the current
-context. `ran_here_fn(entry)` — wired to `History.ran_here` — answers "was this
-line run in the cwd?", and only entries that answer yes are offered, so another
-checkout's `make deploy prod` stays out of the way. The scope is strict — there is
-no fallback to entries from elsewhere, so a directory you've never run a matching
-line in simply contributes no history rows; Up/Down and `Ctrl+R` stay unscoped for
-when you do want to reach across directories. The directories come from a JSON
-side table (`~/.eosh/history.dirs`, line → recent dirs, capped at
-`lineedit.MAX_DIRS_PER_LINE`) that `History.add` maintains next to the plain
-`~/.eosh/history` file; a re-run of the same line after a `cd` records the new
-directory even though the line itself is a duplicate, and every write prunes
-lines the history file no longer holds. Missing or corrupt side table → no
-directory is known for any line, so history contributes no TAB candidates at all
-(likewise for entries recorded before the side table existed, until they are run
-again). See [doc/completion.md](doc/completion.md#historycompleter).
-
-History is deliberately suppressed on an empty line, where bare TAB lists
-commands. Flag rows and flag values are ordinary pickers, so history rows join
-them (`du -d <TAB>` offers values run here before). And every "exactly one candidate" shortcut in
-`lineedit._complete` counts single-token candidates only, so a unique token
-completion still auto-applies on the first TAB and a lone history candidate is
-always shown in a picker before it inserts several arguments.
-
-TAB *inside* an open picker types the candidates' longest shared prefix. Because
-history rows are measured from the raw anchor while token rows are measured from
-the shlex-stripped prefix — and because narrowing can drop one kind entirely or
-move the anchor across a space — `_complete` recomputes which space to measure in
-on every press, via the `extend_fn(items, typed)` callback it hands the picker.
-See [doc/completion.md](doc/completion.md) for the full rule table and the
-picker-alignment rules.
 
 #### Example: Context-Aware EC2 Completer
 
@@ -564,8 +495,8 @@ DIY raw-mode line editor. No prompt_toolkit or readline.
 - `LineEditor.prompt()` — read one line; returns the line string (not added to history — the shell joins continuation lines and records the result), `CONTEXT_CHANGED_SENTINEL` when a `Ctrl+]` switch needs the new context's process resumed, raises `EOFError` (Ctrl+D on empty) or `KeyboardInterrupt` (Ctrl+C)
 - Key bindings: `Ctrl+A/E`, `Ctrl+B/F`, `Alt+B/F`, `Ctrl+W`, `Ctrl+K`, `Ctrl+U`, `Ctrl+L`, arrow keys, `Ctrl+P/N`, `Ctrl+R`
 - TAB opens an `InlinePicker` (flags included — one row each) with **no candidate pre-selected**, so Enter dismisses the list instead of inserting the first item; only Down/Up make a selection; typing narrows the list; TAB inside the picker extends the common prefix and never moves the selection; Backspace can close the picker; narrowing to zero candidates closes it (a zero-row picker would be invisible but still eat keys). Characters typed inside a picker are committed to the buffer on every exit path.
-- TAB candidates include **past command lines** matching everything typed so far (from the current context's history, scoped to the lines run in the cwd — see `HistoryCompleter`), listed first and tagged `history`. Only the tail from the completion anchor is offered, and applying one splices it in verbatim (`Completion.verbatim`); they are never auto-applied without being shown
-- History search (`Ctrl+R`) opens a filterable picker over all history entries
+- **Ghost suggestion** (fish-style): with the caret at the end of a non-empty line, `suggest_fn(buffer)` (the shell's `_suggest`) names a past line that extends it, and `_redraw` draws the rest dimmed after the caret — cut to what fits on the buffer's last row, so it never wraps and the row bookkeeping stays about the buffer. `→` / `Ctrl+F` / `Ctrl+E` / End at the end of the line accept the whole line, `Alt+F` one word. It is off on continuation (`> `) prompts and on the final redraw of a submitted line, and `_erase_ghost` wipes it before a picker opens or on Ctrl+C. TAB never offers past lines.
+- History search (`Ctrl+R`) opens a filterable picker over every distinct line in the shared store (`HistoryStore.distinct`), with where / how long ago / failed-status columns. It starts filtered by the buffer (`InlinePicker(typed=...)`) when that fits on the prompt row.
 - Multi-line wrapping is tracked so `_redraw()` correctly repositions the cursor after wraps
 - VSCode integrated terminal detection: skips reflow-based repositioning, falls back to explicit clear+redraw on resize (`TERM_PROGRAM=vscode`)
 - All raw-mode entry and key reading goes through `terminal.py` (not `termios`/`tty`/`select` directly), so the editor runs unchanged on POSIX and native Windows.
@@ -590,7 +521,7 @@ The single place that touches OS-specific terminal APIs. `lineedit.py`, `tui.py`
 
 No alternate screen; all rendering anchored with DECSC/DECRC (`ESC 7` / `ESC 8`). On POSIX a resize arrives via SIGWINCH; on Windows it is detected by polling `terminal.terminal_size()` between key reads. Either way the picker cancels (redrawing without an alt-screen is unreliable — the user presses TAB again).
 
-- **`InlinePicker`** — single-select list rendered inline below the current line. Supports narrowing by typing, TAB-extend common prefix (via `value_fn` + `completion_prefix`, or an `extend_fn(items, typed)` callback when the caller must recompute the value space per press), scrollbar, optional `meta_fn` for the labels beside each row (returning either one string or a sequence of cells, which the picker lays out as columns aligned across rows). `select_first=False` (used by the completion pickers) opens with no row highlighted, so Enter returns `None`; `closed_empty` signals "narrowing left zero candidates, I closed myself"; `typed` exposes the characters the picker echoed so the caller can commit them to its buffer.
+- **`InlinePicker`** — single-select list rendered inline below the current line. Supports narrowing by typing, TAB-extend common prefix (via `value_fn` + `completion_prefix`), an initial `typed` query (Ctrl+R starts from the buffer), a `key_source` replacing terminal reads (a command's slot), scrollbar, optional `meta_fn` for the labels beside each row (returning either one string or a sequence of cells, which the picker lays out as columns aligned across rows). `select_first=False` (used by the completion pickers) opens with no row highlighted, so Enter returns `None`; `closed_empty` signals "narrowing left zero candidates, I closed myself"; `typed` exposes the characters the picker echoed so the caller can commit them to its buffer.
 - **`InlineArgPrompt`** — single-line text prompt (used by the context-switch picker to name or rename a context). Shows an optional description line above.
 
 ### process.py — PTY Process Slots (POSIX only)
@@ -666,6 +597,32 @@ External commands typed at the prompt (e.g. plain `aws ssm start-session`) don't
 3. **`pexpect.popen_spawn.PopenSpawn`** (and any other library that drives the child via its own pipe). PopenSpawn passes `stdin=subprocess.PIPE` and writes via `sendline()`, so the child's stdin is owned entirely by the parent process — the user's keystrokes never reach it.
 
 Rule of thumb: if a subprocess spawned from a Python command would, when run standalone in a terminal, read keystrokes from the user (SSH-like sessions, TUIs, MFA prompts, anything that calls `getpass`), run it with `ctx.run_interactive`. Otherwise leave it as `subprocess.run`.
+
+### history.py — Shared Command History
+
+`HistoryStore` over `~/.eosh/history.db` (SQLite, stdlib `sqlite3`): one row per
+line run — `cmd`, `cwd` (normcase'd), `ctx`, `ts`, and `status` / `duration`
+filled in when it finishes. Every eosh process shares it. Each command is one
+`INSERT` plus one `UPDATE`, so concurrent shells never overwrite each other (the
+old `history` + rewritten-whole `history.dirs` JSON did), and a line run in one
+window is suggested in another at once (discussion #37).
+
+- `add(cmd, cwd, ctx) -> id` / `finish(id, status, duration)` — written by the
+  shell (`_record_history`, `_execute`, `_slot_finished`); thread-safe, since a
+  parked slot finishes on its own thread.
+- `suggest(prefix, cwd)` — the ghost: the most recent single-line entry run in
+  *cwd* that strictly extends *prefix*, as an index range on `(cwd, cmd)`
+  (`cmd > p AND cmd < p || U+10FFFF`), so `%` / `_` are literal. Not filtered by
+  context: names aren't unique across processes (`default` is everywhere).
+  Failed lines stay candidates — fixing and re-running is the common case.
+- `distinct()` — Ctrl+R's list; `recent_commands()` — seeds `default`'s
+  Up/Down; `entries(limit, keywords, cwd)` — the `history` built-in.
+- Rollback journal, not WAL (WAL needs shared memory a network home dir may
+  lack); 2 s busy timeout; every `sqlite3.Error` swallowed, and an unopenable
+  file degrades to `:memory:` — a history must never fail a command. Tests get
+  an in-memory store from an autouse fixture in `tests/conftest.py`.
+
+See [doc/history.md](doc/history.md).
 
 ### prompt.py — Prompt Function
 
@@ -1047,7 +1004,8 @@ eosh/
 │       ├── completion.py       # Completer ABC, CompletionContext, built-in completers
 │       ├── completion_cache.py # TTL store for completer fetches; invalidated after every command
 │       ├── context.py          # Context, ContextManager, ContextState
-│       ├── lineedit.py         # DIY raw-mode line editor, History (+ directory side table), TAB completion glue
+│       ├── history.py          # HistoryStore: shared SQLite history (~/.eosh/history.db)
+│       ├── lineedit.py         # DIY raw-mode line editor, ghost suggestion, TAB completion glue
 │       ├── command_context.py  # CommandContext / ShellView: what user code sees
 │       ├── hooks.py            # event hooks: @hooks.on_directory_changed, …
 │       ├── notify.py           # OS notification when a slow command finishes;
@@ -1098,6 +1056,7 @@ eosh/
     ├── test_completion_cache.py
     ├── test_context.py
     ├── test_decorators.py
+    ├── test_history.py
     ├── test_hooks.py
     ├── test_notify.py
     ├── test_parsing.py
@@ -1111,8 +1070,7 @@ eosh/
 
 ~/.eosh/
 ├── config.py           # user configuration (commands, recipes, decorators, vars)
-├── history             # persistent command history
-└── history.dirs        # JSON: which directories each history line was run in
+└── history.db          # SQLite: the history every eosh process shares (history.py)
 ```
 
 ## Shell Operator Support
