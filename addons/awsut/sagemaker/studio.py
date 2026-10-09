@@ -85,7 +85,6 @@ import botocore.exceptions
 from eosh.commands import arg
 from eosh.completion import ChoiceCompleter, Completer, Completion, CompletionContext
 from eosh.completion_cache import aws_env_key, get_or_fetch
-from eosh import passthrough_input
 from .. import cli as awsut
 from .render import (
     DOT_INTERVAL,
@@ -1050,9 +1049,10 @@ def register_studio(sagemaker) -> None:
                 help="stop every live app in the domain (the end-of-day command)"),
             arg("-y", "--yes", action="store_true", help="skip confirmation"),
         ] + _app_flags() + _wait_flags("gone"),
+        pass_context=True,
     )
     @guard
-    def _stop(space, domain, stop_all, yes, app_type, app_name, wait, timeout):
+    def _stop(ctx, space, domain, stop_all, yes, app_type, app_name, wait, timeout):
         """Deleting the app *is* how Studio stops one.
 
         The space's EBS volume and its contents survive, so relaunching returns
@@ -1093,7 +1093,7 @@ def register_studio(sagemaker) -> None:
         listing = ", ".join(f"{s}/{t}/{n}" for s, t, n in targets)
         if not yes:
             try:
-                answer = passthrough_input(
+                answer = ctx.input(
                     f"Stop {len(targets)} app(s) in {domain_label(resolved)} "
                     f"[{listing}]? Files on the spaces' EBS volumes survive. "
                     "[y/N] : ")

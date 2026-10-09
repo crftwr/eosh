@@ -212,8 +212,8 @@ def test_command_reads_a_pasted_block(sh, monkeypatch, capfd):
     import eosh.shell as shell_mod
 
     monkeypatch.setattr(
-        shell_mod, "passthrough_input_block",
-        lambda prompt="": 'export EOSH_TEST_PASTE_A="s3"\n'
+        shell_mod, "_read_from_user",
+        lambda prompt="", **kw: 'export EOSH_TEST_PASTE_A="s3"\n'
                           'export EOSH_TEST_PASTE_B="us-east-1"\n',
     )
     sh.registry.get("source-bash").invoke([])
@@ -225,6 +225,6 @@ def test_command_reads_a_pasted_block(sh, monkeypatch, capfd):
 def test_command_reports_empty_paste(sh, monkeypatch, capfd):
     import eosh.shell as shell_mod
 
-    monkeypatch.setattr(shell_mod, "passthrough_input_block", lambda prompt="": "  \n")
+    monkeypatch.setattr(shell_mod, "_read_from_user", lambda prompt="", **kw: "  \n")
     sh.registry.get("source-bash").invoke([])
     assert "nothing to run" in capfd.readouterr().out

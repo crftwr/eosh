@@ -256,7 +256,7 @@ enable("make", "git", "ssh")
 
 class InstanceCompleter(Completer):
     def complete(self, ctx):
-        account = ctx.args[0] if ctx.args else ctx.shell_context.get_variable("ACCOUNT")
+        account = ctx.args[0] if ctx.args else ctx.shell_context.get_var("ACCOUNT")
         # fetch instances for account...
         return [Completion(value="i-abc123", description="web-server-1")]
 
@@ -345,29 +345,31 @@ eosh> @repeat -n 3 {make && ./run-tests}
 
 To share decorators across machines or teammates, put them in a module and import it from `config.py` — see [Your Own Recipes](#your-own-recipes).
 
-### Spawning Interactive Subprocesses
+### Talking to the User: `ctx`
 
-If a custom command needs to spawn a subprocess that reads from the user (SSH-like sessions, TUIs, MFA prompts, anything that calls `getpass`), wrap the call with `passthrough_run` — *not* `subprocess.run`:
-
-```python
-from eosh import passthrough_run
-
-@registry.command(name="my_ssm", ...)
-def my_ssm():
-    passthrough_run(["aws", "ssm", "start-session", "--target", "i-abc123"])
-```
-
-Plain `subprocess.run` would have the main shell thread and the subprocess both reading from the real terminal, splitting keystrokes between them; `passthrough_run` allocates a slot-owned PTY for the child so input flows cleanly.
-
-For reading a single line of input back from the user, use `passthrough_input(prompt)` instead of plain `input()`:
+A command that asks questions, offers a choice, or launches an interactive program declares `pass_context=True`. Its handler then receives a `CommandContext` as its first argument:
 
 ```python
-from eosh import passthrough_input
-
-answer = passthrough_input("Continue? [y/N] ")
+@registry.command("deploy", params=[arg("env")], pass_context=True)
+def deploy(ctx, env):
+    target = ctx.choose(["web", "worker", "scheduler"], title="Deploy which target?")
+    if target is None or not ctx.confirm(f"Deploy {target} to {env}?"):
+        return 1
+    return ctx.run_interactive(["make", "deploy", f"TARGET={target}"])
 ```
 
-Outside a Python command thread, both helpers fall back to the obvious thing (`subprocess.run` and `input`), so the same code is safe in either context. Non-interactive subprocesses (`capture_output=True`, pipeline stages with explicit pipes, `pexpect.popen_spawn`, …) don't need wrapping.
+| Method | Does |
+|---|---|
+| `ctx.input(prompt)` / `ctx.input_block(prompt)` | read a line / a pasted block (up to a blank line) |
+| `ctx.confirm(prompt, default=False)` | yes/no question; `[y/N]` is appended |
+| `ctx.choose(items, title="")` | inline picker; returns the item, or `None` on Esc |
+| `ctx.run_interactive(argv)` | run `ssh`, an MFA prompt, a TUI… on a terminal of its own |
+| `ctx.get_var(name)` / `ctx.set_var(name, value)` / `ctx.unset_var(name)` | the context's variables, as `$name` / `var name=value` |
+| `ctx.context_name`, `ctx.cwd` | where the command is running |
+
+Use these instead of `input()` and `subprocess.run` for anything that reads the keyboard. A Python command runs on a background thread while the shell reads every key (that is what lets Ctrl+] switch away from it), so `input()` or an interactive `subprocess.run` would split keystrokes with the shell. Non-interactive subprocesses (`capture_output=True`, `pexpect.popen_spawn`, …) are fine as they are.
+
+`ctx` belongs to the context the command **started in**. A command you send to the background with Ctrl+] still reads and sets that context's variables, so a script started in `prod` can't change `staging`.
 
 ### Desktop Notifications
 
@@ -547,7 +549,7 @@ Subclass `Completer` and implement `complete()`. The `CompletionContext` gives y
 - `args` — previously completed arguments
 - `arg_index` — which argument position is being completed
 - `prefix` — partial text typed so far
-- `shell_context` — the active context (access variables with `.get_variable()`)
+- `shell_context` — the active context, read-only: `.get_var(name)`, `.context_name`, `.cwd`
 
 To add completion to a system command without wrapping it, register a handler-less command — execution falls through to the real binary:
 

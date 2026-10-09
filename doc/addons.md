@@ -68,7 +68,7 @@ An add-on may import from these modules only:
 
 | Module | For |
 |---|---|
-| `eosh` | `arg`, `Var`, `EnvVar`, `var_registry`, `command_registry`, `passthrough_run` / `passthrough_input` / `passthrough_input_block`, … |
+| `eosh` | `arg`, `Var`, `EnvVar`, `var_registry`, `command_registry`, `CommandContext` (what a `pass_context=True` handler gets: `ctx.input` / `ctx.confirm` / `ctx.choose` / `ctx.run_interactive` …), `ShellView`, … |
 | `eosh.commands` | `registry`, `arg`, the command-tree API |
 | `eosh.completion` | `Completer`, `Completion`, `CompletionContext`, the built-in completers |
 | `eosh.completion_cache` | `get_or_fetch`, `aws_env_key` |

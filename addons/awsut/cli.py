@@ -73,7 +73,6 @@ import botocore.exceptions
 from eosh.commands import registry as command_registry, arg
 from eosh.completion import Completer, Completion, CompletionContext, FileCompleter
 from eosh.completion_cache import aws_env_key, get_or_fetch
-from eosh import passthrough_input_block
 from eosh.variables import PyVar, registry as var_registry
 from .common import (
     RED,
@@ -1046,14 +1045,15 @@ def _register_credentials(awsut) -> None:
             arg("-n", "--dry-run", action="store_true",
                 help="Show what would be written, don't touch the file"),
         ],
+        pass_context=True,
     )
     @guard
-    def _credentials_set(profile=None, file=CREDENTIALS_PATH, dry_run=False):
+    def _credentials_set(ctx, profile=None, file=CREDENTIALS_PATH, dry_run=False):
         profile = profile or _get_profile()
         print(f"Paste the credentials for profile [{profile}], "
               f"then press Enter on an empty line (Ctrl+C to cancel):")
         try:
-            text = passthrough_input_block()
+            text = ctx.input_block()
         except (EOFError, KeyboardInterrupt):
             print()
             raise SmError("cancelled — nothing written")

@@ -290,6 +290,7 @@ class Command:
     help_text: str = ""
     delegate: Completer | None = None  # answers every completion slot (see registry.command)
     sync: bool = False        # run on the main thread, not a backgroundable slot
+    pass_context: bool = False  # handler takes a CommandContext as its first argument
     parent: "Command | None" = None
     children: dict[str, "Command"] = field(default_factory=dict)
 
@@ -327,6 +328,7 @@ class Command:
         name: str,
         params: list[Arg] | None = None,
         help: str | None = None,
+        pass_context: bool = False,
     ) -> "Command":
         """Create (or re-declare) a child node and return it.
 
@@ -356,6 +358,8 @@ class Command:
             if help is not None:
                 child.help = help
                 child.description = help
+            if pass_context:
+                child.pass_context = True
             child.help_text = _build_help_text(child.help, child.func,
                                                child._full_name(), child.params)
             return child
@@ -369,6 +373,7 @@ class Command:
             help=help,
             description=help or "",
             parent=self,
+            pass_context=pass_context,
         )
         child.help_text = _build_help_text(help, None, child._full_name(), child.params)
         self.children[name] = child
@@ -417,17 +422,21 @@ class Command:
         remaining = [t for k, t in enumerate(tokens) if k not in consumed_indices]
         return node, remaining
 
-    def invoke(self, args: list[str] | tuple[str, ...], *lead):
+    def invoke(self, args: list[str] | tuple[str, ...], *lead, ctx=None):
         """Run this command (or the sub-command *args* resolve to).
 
         *lead* are positional values passed ahead of the parsed arguments —
-        a decorator's handler gets the wrapped ``Pipeline`` this way.
+        a decorator's handler gets the wrapped ``Pipeline`` this way.  *ctx*
+        (a :class:`~eosh.command_context.CommandContext`) goes ahead of
+        those when the resolved node was declared with ``pass_context=True``.
 
         Returns what the handler returned — the shell takes an ``int`` as
         the exit status — or ``2`` when argparse rejected the arguments
         (its own convention; the error is already printed).
         """
         node, remaining = self.resolve(list(args)) if self.children else (self, list(args))
+        if node.pass_context:
+            lead = (ctx, *lead)
         return node._invoke_self(remaining, lead)
 
     def _invoke_self(self, args: list[str], lead: tuple = ()):
@@ -490,6 +499,7 @@ class CommandRegistry:
         delegate: Completer | None = None,
         sync: bool = False,
         override: bool = False,
+        pass_context: bool = False,
     ) -> Command:
         """Register a top-level command, group, or external recipe; return it.
 
@@ -515,6 +525,11 @@ class CommandRegistry:
         that owns it.  The cost is that Ctrl+] can't background it while it
         runs.  On Windows every Python command runs this way.
 
+        ``pass_context`` — call the handler with a
+        :class:`~eosh.command_context.CommandContext` as its first argument
+        (ahead of a decorator's pipeline): ``ctx.input()``, ``ctx.choose()``,
+        ``ctx.run_interactive()``, the command's own context's variables, ….
+
         ``override`` — replace a built-in (``cd``, ``help``, ``@watch``, …).
         Without it, a built-in name is refused with a ``config warning:``
         line and the built-in stays; the returned node is detached, so the
@@ -533,6 +548,7 @@ class CommandRegistry:
             help_text=_build_help_text(help, None, name, params),
             delegate=delegate,
             sync=sync,
+            pass_context=pass_context,
         )
         if self._defining_builtins:
             self._builtins[name] = cmd

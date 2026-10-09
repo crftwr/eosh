@@ -50,7 +50,6 @@ import botocore.exceptions
 from eosh.commands import arg
 from eosh.completion import ChoiceCompleter, Completer, Completion, CompletionContext
 from eosh.completion_cache import get_or_fetch
-from eosh import passthrough_input
 from .. import cli as awsut
 from .render import (
     DOT_INTERVAL,
@@ -530,9 +529,10 @@ def register_harness(agentcore) -> None:
             arg("-n", "--interval", type=float, default=10.0, metavar="SEC",
                 help="--wait poll seconds (default 10)"),
         ],
+        pass_context=True,
     )
     @guard
-    def _harness_delete(harness, yes, delete_memory, wait, interval):
+    def _harness_delete(ctx, harness, yes, delete_memory, wait, interval):
         cli = control_client()
         require_operation(cli, "delete_harness", "DeleteHarness")
         if delete_memory:
@@ -552,7 +552,7 @@ def register_harness(agentcore) -> None:
             extra = (", AND the managed memory with everything it has stored"
                      if delete_memory else "")
             try:
-                answer = passthrough_input(
+                answer = ctx.input(
                     f"Delete harness {label_of(summary)} — currently {status}, "
                     f"with {len(endpoints)} endpoint(s){extra}? "
                     "This cannot be undone. [y/N] : ")

@@ -183,6 +183,13 @@ class InlinePicker(Generic[T]):
     ``empty_placeholder`` opts out of that: the picker stays open and renders
     the placeholder text in place of the rows, so the text typed so far
     survives and Backspace can widen the filter again (Ctrl+R history search).
+
+    ``key_source(timeout)`` replaces reading the terminal: it returns one
+    key, or ``b""`` when none arrived within *timeout*.  A Python command on
+    a background thread passes its slot's key queue — the main thread is the
+    terminal's only reader (``CommandContext.choose``).  The picker then
+    leaves the terminal mode alone too: whoever feeds it keys owns the mode,
+    and a save/restore from this thread would race the forwarding loop's.
     """
 
     def __init__(
@@ -208,8 +215,10 @@ class InlinePicker(Generic[T]):
         key_actions: dict[bytes, str] | None = None,
         select_first: bool = True,
         empty_placeholder: str = "",
+        key_source: Callable[[float], bytes] | None = None,
     ):
         self._items = items
+        self._key_source = key_source
         self._display_fn = display_fn
         self._meta_fn = meta_fn
         self._max_height = max_height
@@ -236,6 +245,7 @@ class InlinePicker(Generic[T]):
         self.reopen = False          # set True when tab-complete typed chars; caller should reopen
         self.apply_backspace = False  # set True when backspace pressed with no typed chars
         self.closed_empty = False     # set True when narrowing left no candidates
+        self.interrupted = False      # set True when Ctrl+C (not Esc) cancelled it
         self.action: str | None = None  # set when run() exits via a key in key_actions
 
         self._selected = self._no_selection
@@ -265,7 +275,8 @@ class InlinePicker(Generic[T]):
             return None
 
         self._fd = sys.stdin.fileno()
-        old_attrs = terminal.get_mode(self._fd)
+        owns_mode = self._key_source is None
+        old_attrs = terminal.get_mode(self._fd) if owns_mode else None
 
         result: T | None = None
         if self._hide_cursor:
@@ -275,7 +286,8 @@ class InlinePicker(Generic[T]):
             self._update_size()
             self._last_size = terminal.terminal_size()
             self._reserve()
-            terminal.set_raw(self._fd)
+            if owns_mode:
+                terminal.set_raw(self._fd)
             self._render()
 
             while True:
@@ -297,6 +309,7 @@ class InlinePicker(Generic[T]):
                     result = self._current()
                     break
                 if action == "cancel":
+                    self.interrupted = key_bytes == b"\x03"
                     break
                 if action == "up":
                     self._move(-1)
@@ -329,7 +342,8 @@ class InlinePicker(Generic[T]):
                     if self._handle_char(action):
                         break
         finally:
-            terminal.restore_mode(self._fd, old_attrs)
+            if owns_mode:
+                terminal.restore_mode(self._fd, old_attrs)
             self._cleanup()
             if self._hide_cursor:
                 sys.stdout.write("\x1b[?25h")
@@ -657,7 +671,11 @@ class InlinePicker(Generic[T]):
         while True:
             if self._cancelled:
                 return b"\x1b"  # triggers "cancel" in _dispatch
-            if terminal.wait_readable(self._fd, 0.1):
+            if self._key_source is not None:
+                key = self._key_source(0.1)
+                if key:
+                    return key
+            elif terminal.wait_readable(self._fd, 0.1):
                 return terminal.read_key(self._fd)
             # No key within the poll window — check for a resize so the picker
             # can cancel. Redrawing after a resize without an alt-screen is

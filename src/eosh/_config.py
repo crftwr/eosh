@@ -21,6 +21,20 @@ def hello(name):
     print(f"Hello, {name}!")
 
 
+# ── Talking to the user: pass_context=True ────────────────────────────────────
+#
+# The handler's first argument is then a CommandContext: ctx.input(),
+# ctx.confirm(), ctx.choose(), ctx.run_interactive([...]), ctx.get_var(),
+# ctx.set_var().  Use these instead of input() / subprocess.run for anything
+# that reads the keyboard — the shell is reading it too.
+#
+# @command_registry.command("pick-env", pass_context=True)
+# def pick_env(ctx):
+#     env = ctx.choose(["dev", "staging", "prod"], title="Environment:")
+#     if env and ctx.confirm(f"Switch AWS_PROFILE to {env}?"):
+#         ctx.set_var("AWS_PROFILE", env)
+
+
 # ── Multi-level sub-command example ───────────────────────────────────────────
 #
 # Build a command tree by:

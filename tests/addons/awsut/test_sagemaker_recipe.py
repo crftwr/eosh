@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import botocore.exceptions
 import pytest
@@ -1428,8 +1429,8 @@ def test_sharing_type_reads_either_api_shape():
 # studio — start / url / stop send what the space says
 # ---------------------------------------------------------------------------
 
-def run_studio(tree, *args):
-    tree.children["studio"].invoke(list(args))
+def run_studio(tree, *args, ctx=None):
+    tree.children["studio"].invoke(list(args), ctx=ctx)
 
 
 def test_start_sends_the_spaces_own_resource_spec(sagemaker_tree, studio_sm, capsys):
@@ -1660,8 +1661,8 @@ def test_stop_confirms_before_deleting(sagemaker_tree, studio_sm, monkeypatch,
                                        capsys):
     cli = studio_sm(studio_client(
         describe_app=lambda **p: {"Status": "InService"}, delete_app={}))
-    monkeypatch.setattr(studio, "passthrough_input", lambda prompt: "n")
-    run_studio(sagemaker_tree, "stop")
+    run_studio(sagemaker_tree, "stop",
+               ctx=SimpleNamespace(input=lambda prompt: "n"))
     assert calls_of(cli, "delete_app") == []
     assert "not stopped" in capsys.readouterr().out
 
@@ -1669,9 +1670,8 @@ def test_stop_confirms_before_deleting(sagemaker_tree, studio_sm, monkeypatch,
 def test_stop_with_yes_deletes_the_app(sagemaker_tree, studio_sm, monkeypatch):
     cli = studio_sm(studio_client(
         describe_app=lambda **p: {"Status": "InService"}, delete_app={}))
-    monkeypatch.setattr(studio, "passthrough_input",
-                        lambda prompt: pytest.fail("-y must not prompt"))
-    run_studio(sagemaker_tree, "stop", "-y")
+    run_studio(sagemaker_tree, "stop", "-y", ctx=SimpleNamespace(
+        input=lambda prompt: pytest.fail("-y must not prompt")))
     assert calls_of(cli, "delete_app") == [
         {"DomainId": "d-aaa", "SpaceName": "data-prep-space",
          "AppType": "JupyterLab", "AppName": "default"}]

@@ -18,10 +18,10 @@ class CompletionContext:
     arg_index: int             # which argument position is being completed
     prefix: str               # partial text of current argument being completed
     line: str                 # full raw line
-    shell_context: Context | None  # current shell context
+    shell_context: ShellView | None  # current context, read-only
 ```
 
-The `shell_context` field gives completers access to the active context's variables (e.g., account, region), enabling completions that adapt to the current environment without explicit arguments.
+The `shell_context` field is a read-only `ShellView` of the active context — `get_var(name)` (resolved like `$name`), `context_name`, `cwd` — so completions can adapt to the current environment (account, region) without explicit arguments.
 
 ### Completion
 
@@ -466,8 +466,8 @@ class MyCompleter(Completer):
 class EC2InstanceCompleter(Completer):
     def complete(self, ctx: CompletionContext) -> list[Completion]:
         # Use preceding args or fall back to shell context
-        account = ctx.args[0] if ctx.args else ctx.shell_context.get_variable("account")
-        region = ctx.args[1] if len(ctx.args) > 1 else ctx.shell_context.get_variable("region")
+        account = ctx.args[0] if ctx.args else ctx.shell_context.get_var("account")
+        region = ctx.args[1] if len(ctx.args) > 1 else ctx.shell_context.get_var("region")
         instances = fetch_instances(account, region)
         return [
             Completion(value=i["id"], description=i["name"])

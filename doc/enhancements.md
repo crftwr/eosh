@@ -128,11 +128,10 @@ of [architecture.md](architecture.md).
   `PythonCommandSlot`, the three `_ThreadLocal*`
   stdio routers, `_dup_threadlocal_override_fd`, the
   `_current_slot` / `_in_pipeline` thread-locals, and the
-  `passthrough_run` / `passthrough_input` /
-  `passthrough_input_block` free functions out of `shell.py` into one
-  module. Roughly halves `shell.py`. The free functions become
-  natural top-level exports of the slot module rather than
-  reaching into module-private thread-locals from `shell.py`.
+  `_run_interactive` / `_read_from_user` / `_choose` implementations
+  behind `CommandContext` out of `shell.py` into one module. Roughly
+  halves `shell.py`, and `command_context.py` would import them from
+  there instead of lazily from `shell.py`.
   *Risk:* moderate — the slot needs a callback into the shell to
   re-execute a pipeline (for `Pipeline.run` re-entry); a
   small `slots.set_pipeline_runner(callable)` hook (or
@@ -158,7 +157,7 @@ of [architecture.md](architecture.md).
   calls parallel registration hooks:
   `pipeline.set_pipeline_executor`, plus the implicit
   `_current_slot` / `_in_pipeline` thread-locals consumed by the
-  free `passthrough_*` functions. Replace with a small Protocol
+  `CommandContext` methods. Replace with a small Protocol
   carrying `run_pipeline(pipeline)`,
   `current_slot()`,
   `in_pipeline()`. Carry it
@@ -173,7 +172,7 @@ of [architecture.md](architecture.md).
   install, `\x1d` interception, byte forwarding. Factor into one
   `ForwardingLoop` taking a slot interface
   (`is_alive` / `write_stdin` / `kill` / `resize`); input reads no
-  longer need a hook — `passthrough_input` reads the same key stream
+  longer need a hook — `ctx.input` reads the same key stream
   the loop forwards (#38). *Risk:* low — surface
   is small; cuts ~100 lines and removes a bug class (any fix
   today must be applied twice).
