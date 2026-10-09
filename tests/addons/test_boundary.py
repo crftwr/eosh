@@ -31,6 +31,7 @@ PUBLIC_MODULES = {
     "eosh.commands",
     "eosh.completion",
     "eosh.completion_cache",
+    "eosh.hooks",
     "eosh.variables",
     "eosh.recipes",
     "eosh.recipes.aws",

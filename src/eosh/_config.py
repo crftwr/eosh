@@ -260,6 +260,28 @@ notify.SKIP_COMMANDS.update({"psql", "mysql", "sqlite3", "ipython"})
 # notify.set_notifier(my_notifier)
 
 
+# ── Event hooks ──────────────────────────────────────────────────────────────
+#
+# Run your own function when something happens: on_startup, on_exit,
+# on_directory_changed(old, new), on_context_switched(old, new),
+# on_command_starting(line), on_command_finished(line, status, elapsed),
+# on_command_not_found(argv) -> bool.
+#
+# import os
+# from eosh import hooks
+#
+# @hooks.on_context_switched
+# def terminal_title(old, new):
+#     print(f"\x1b]2;[{new}] eosh\x07", end="", flush=True)
+#
+# @hooks.on_command_not_found
+# def auto_cd(argv):
+#     if len(argv) == 1 and os.path.isdir(argv[0]):
+#         os.chdir(argv[0])
+#         return True
+#     return False
+
+
 # ── Customize the prompt ──────────────────────────────────────────────────────
 
 import os

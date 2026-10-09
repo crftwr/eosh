@@ -62,7 +62,7 @@ from .pipeline import (
     set_pipeline_executor,
     _split_on_operators,
 )
-from . import notify
+from . import hooks, notify
 from .process import ExitCallbackMixin, OutputBuffer, ProcessSlot
 from .prompt import get_prompt_func, set_prompt
 
@@ -490,6 +490,22 @@ def _read_from_user(prompt: str, *, block: bool) -> str:
             break
         lines.append(line)
     return "\n".join(lines)
+
+
+@contextlib.contextmanager
+def _cooked_output():
+    """Keep ``\n`` → ``\r\n`` on output for the duration, whatever mode the
+    terminal is in (the line editor holds it raw while a picker runs)."""
+    if not sys.stdin.isatty():
+        yield
+        return
+    fd = sys.stdin.fileno()
+    saved = terminal.get_mode(fd)
+    terminal.set_raw_input_cooked_output(fd)
+    try:
+        yield
+    finally:
+        terminal.restore_mode(fd, saved)
 
 
 @contextlib.contextmanager
@@ -1255,6 +1271,10 @@ class Shell:
         with self.registry.defining_builtins(), var_registry.defining_builtins():
             self._register_builtins()
         self._load_user_config()
+        # (context, cwd) as the hooks last saw it — see _notice_state_change.
+        self._seen_state = self._observed_state()
+        # The line _execute is running, for _park to hand to the slot.
+        self._current_line: str | None = None
         # Install thread-local stdio routers so Python command threads can
         # rebind their own stdin/stdout/stderr (for buffering proxies or pipe
         # ends) without disturbing the main thread.
@@ -2066,6 +2086,7 @@ class Shell:
         recipes.skipped_recipes.clear()
         set_prompt(None)
         notify.reset_config()
+        hooks.clear()
 
     def _edit_config(self) -> int:
         """``config edit``: run the user's editor on config.py, then reload."""
@@ -2297,6 +2318,8 @@ class Shell:
         # background context, so the notification comes from the slot's own
         # exit callback instead of from this (premature) return.
         self._backgrounded = False
+        self._current_line = line
+        hooks.fire("on_command_starting", line)
         try:
             for op, pipeline in seq.items:
                 if op == "&&" and last_exit != 0:
@@ -2304,9 +2327,14 @@ class Shell:
                 if op == "||" and last_exit == 0:
                     continue
                 last_exit = self._execute_pipeline(pipeline)
+                # `cd proj && make`: the move is reported before make runs.
+                self._notice_state_change()
         finally:
+            self._current_line = None
             if not self._backgrounded:
-                notify.command_done(line, time.monotonic() - started, last_exit)
+                elapsed = time.monotonic() - started
+                notify.command_done(line, elapsed, last_exit)
+                hooks.fire("on_command_finished", line, last_exit, elapsed)
             # User-run commands may have mutated remote state (e.g.
             # ``awsut sagemaker hyperpod scale``); drop cached completer
             # fetches so the next TAB session re-queries.
@@ -2320,6 +2348,7 @@ class Shell:
         line that started it doesn't (see :meth:`_execute`)."""
         ctx.process_slot = slot
         slot.parked = True
+        slot.line = self._current_line
         self._backgrounded = True
 
     def _slot_finished(self, slot) -> None:
@@ -2343,6 +2372,34 @@ class Shell:
         out_of_sight = owner is not None and owner != self.context_manager.current_name
         notify.command_done(" ".join(slot.argv), slot.elapsed(), slot.exit_code or 0,
                             context=owner if out_of_sight else None)
+        hooks.fire("on_command_finished", slot.line or " ".join(slot.argv),
+                   slot.exit_code or 0, slot.elapsed())
+
+    # --- hooks ----------------------------------------------------------------
+
+    def _observed_state(self) -> tuple[str | None, str | None]:
+        try:
+            cwd = os.getcwd()
+        except OSError:          # the directory was removed under us
+            cwd = None
+        return self.context_manager.current_name, cwd
+
+    def _notice_state_change(self) -> None:
+        """Fire on_context_switched / on_directory_changed for whatever
+        changed since the last look.
+
+        Comparing state rather than hooking each mutation catches every way
+        it can change — ``cd``, a context switch restoring its cwd,
+        ``source-bash``, ``os.chdir`` in a Python command — from a handful of
+        call sites: after each command of a line, after a context switch,
+        and before each prompt.
+        """
+        old_name, old_cwd = self._seen_state
+        name, cwd = self._seen_state = self._observed_state()
+        if name != old_name:
+            hooks.fire("on_context_switched", old_name, name)
+        if cwd != old_cwd and cwd is not None:
+            hooks.fire("on_directory_changed", old_cwd, cwd)
 
     def _tokenize_stage(self, stage: Stage) -> list[str]:
         """Expand variables, tokenize, alias-expand, and glob-expand a stage's text."""
@@ -2846,14 +2903,21 @@ class Shell:
             try:
                 return subprocess.run(["cmd", "/c", *argv], env=env, cwd=cwd).returncode
             except FileNotFoundError:
-                print(f"eosh: command not found: {command_name}")
-                return 127
+                return self._command_not_found(argv)
             except OSError as e:
                 print(f"eosh: {e}")
                 return 1
         except OSError as e:
             print(f"eosh: {e}")
             return 1
+
+    def _command_not_found(self, argv: list[str]) -> int:
+        """Offer *argv* to the on_command_not_found hooks; report it if none
+        claims it."""
+        if hooks.fire_until_claimed("on_command_not_found", argv):
+            return 0
+        print(f"eosh: command not found: {argv[0]}")
+        return 127
 
     def _execute_external(
         self, command_name: str, args: list[str], env_prefix: dict[str, str] | None = None
@@ -2871,8 +2935,7 @@ class Shell:
                 cwd=os.getcwd(),
             )
         except FileNotFoundError:
-            print(f"eosh: command not found: {command_name}")
-            return 127
+            return self._command_not_found([command_name] + args)
         except OSError as e:
             print(f"eosh: {e}")
             return 1
@@ -3283,6 +3346,10 @@ class Shell:
             if new_name != original_name:
                 if new_name is not None:
                     self._emit_context_separator(new_name)
+                # Between the separator and the new prompt.  The line editor
+                # may hold the terminal raw here; a hook prints normally.
+                with _cooked_output():
+                    self._notice_state_change()
                 return (needs_forward, new_name)
             return (needs_forward, None)
 
@@ -3331,6 +3398,13 @@ class Shell:
     def run(self) -> None:
         self._install_sigwinch_handler()
         print("Eolith Shell — type 'help' for available commands, 'exit' to quit.")
+        hooks.fire("on_startup")
+        try:
+            self._run_loop()
+        finally:
+            hooks.fire("on_exit")
+
+    def _run_loop(self) -> None:
         while True:
             try:
                 ctx = self.context_manager.current()
@@ -3377,6 +3451,9 @@ class Shell:
                         print(f"{slot.argv[0]}: killed")
                     elif exit_code and exit_code != 0:
                         print(f"\n[Process exited with code {exit_code}]")
+
+                # Anything a resumed or finished slot changed.
+                self._notice_state_change()
 
                 # Collect the primary line (history managed here, not inside the editor).
                 text = self._line_editor.prompt()

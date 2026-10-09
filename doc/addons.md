@@ -72,6 +72,7 @@ An add-on may import from these modules only:
 | `eosh.commands` | `registry`, `arg`, the command-tree API |
 | `eosh.completion` | `Completer`, `Completion`, `CompletionContext`, the built-in completers |
 | `eosh.completion_cache` | `get_or_fetch`, `aws_env_key` |
+| `eosh.hooks` | `on_context_switched`, `on_command_finished`, … (see [hooks.md](hooks.md)) |
 | `eosh.variables` | `Var`, `registry` |
 | `eosh.recipes` | `enable`, `enable_cobra` |
 | `eosh.recipes.aws` | the region list and profile completer awsut builds on |

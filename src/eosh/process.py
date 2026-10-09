@@ -69,6 +69,9 @@ class ExitCallbackMixin:
         self.on_exit = on_exit
         #: Set by the shell when the slot is parked on a context.
         self.parked = False
+        #: The command line that started the slot, set with :attr:`parked`
+        #: so the handler can report the line rather than just argv.
+        self.line: str | None = None
         #: ``time.monotonic()`` at :meth:`start`, so the handler can report
         #: how long the work took.
         self.start_time: float | None = None
