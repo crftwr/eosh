@@ -405,3 +405,27 @@ class TestRegistryAcceptsOnlyTheThreeKinds:
 
         with pytest.raises(TypeError, match="EnvVar .* PyVar .* GlobalVar"):
             VarRegistry().register(Bare())
+
+
+class TestBuiltinOverride:
+    def _registry(self):
+        reg = VarRegistry()
+        with reg.defining_builtins():
+            reg.register(EnvVar("notify", "EOSH_T_NOTIFY"))
+        return reg
+
+    def test_a_builtin_is_not_replaced_without_override(self, capsys):
+        reg = self._registry()
+        builtin = reg.get("notify")
+        reg.register(EnvVar("notify", "OTHER"))
+        assert reg.get("notify") is builtin
+        assert "config warning: 'notify' is a built-in variable" in capsys.readouterr().err
+
+    def test_override_replaces_it_and_clear_puts_it_back(self):
+        reg = self._registry()
+        builtin = reg.get("notify")
+        mine = EnvVar("notify", "OTHER")
+        reg.register(mine, override=True)
+        assert reg.get("notify") is mine
+        reg.clear_user_vars()
+        assert reg.get("notify") is builtin

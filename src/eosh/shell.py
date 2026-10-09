@@ -1250,9 +1250,10 @@ class Shell:
         self._backgrounded = False
         # Set by the `exit` built-in; run() ends after the current line.
         self._exit_requested = False
-        self._register_builtins()
-        self.registry.mark_builtins()
-        var_registry.mark_builtins()
+        # Everything registered here is built-in: `reload` keeps it, and a
+        # config needs override=True to replace it.
+        with self.registry.defining_builtins(), var_registry.defining_builtins():
+            self._register_builtins()
         self._load_user_config()
         # Install thread-local stdio routers so Python command threads can
         # rebind their own stdin/stdout/stderr (for buffering proxies or pipe
@@ -1703,13 +1704,15 @@ class Shell:
 
         @self.registry.command(name="reload", help="Reload ~/.eosh/config.py.", sync=True)
         def reload_config():
-            from . import recipes
-            self.registry.clear_user_commands()
-            recipes.skipped_recipes.clear()
-            var_registry.clear_user_vars()
-            set_prompt(None)
-            self._load_user_config()
-            print("Config reloaded.")
+            self._reload_config()
+
+        config = self.registry.command(
+            "config", help="Work with ~/.eosh/config.py.", sync=True)
+
+        @config.command("edit", help="Open config.py in $VISUAL / $EDITOR, "
+                                     "then reload it when the editor exits.")
+        def config_edit():
+            return self._edit_config()
 
         @self.registry.command(
             name="var",
@@ -1900,9 +1903,13 @@ class Shell:
                     print(f"Unknown command: {command_name}")
             else:
                 names = sorted(self.registry.list_commands())
+                builtin = [n for n in names if self.registry.is_builtin(n)]
+                user = [n for n in names if not self.registry.is_builtin(n)]
                 for title, group in (
-                    ("Available commands:", [n for n in names if not n.startswith("@")]),
-                    ("Decorators (@name [flags] {pipeline}):", [n for n in names if n.startswith("@")]),
+                    ("Built-in commands:", [n for n in builtin if not n.startswith("@")]),
+                    ("Commands from your config:", [n for n in user if not n.startswith("@")]),
+                    ("Decorators (@name [flags] {pipeline}):", [n for n in builtin if n.startswith("@")]),
+                    ("Decorators from your config:", [n for n in user if n.startswith("@")]),
                 ):
                     if not group:
                         continue
@@ -2039,6 +2046,44 @@ class Shell:
 
         # `var notify=off` / `var notify_threshold=30`.
         notify.register_vars()
+
+    def _reload_config(self) -> None:
+        """``reload``: undo everything the config registered, then run it again."""
+        self._clear_user_config()
+        self._load_user_config()
+        print("Config reloaded.")
+
+    def _clear_user_config(self) -> None:
+        """Put every registry a config writes to back to its built-in state.
+
+        The one sweep ``reload`` runs, so nothing a config registered
+        survives once the config stops registering it — including a
+        built-in it replaced with ``override=True``, which comes back.
+        """
+        from . import recipes
+        self.registry.clear_user_commands()   # commands, decorators, aliases
+        var_registry.clear_user_vars()
+        recipes.skipped_recipes.clear()
+        set_prompt(None)
+        notify.reset_config()
+
+    def _edit_config(self) -> int:
+        """``config edit``: run the user's editor on config.py, then reload."""
+        path = config_dir() / "config.py"
+        editor = (os.environ.get("VISUAL") or os.environ.get("EDITOR")
+                  or ("notepad" if IS_WINDOWS else "vi"))
+        argv = shlex.split(editor) + [str(path)]
+        try:
+            code = passthrough_run(argv)
+        except FileNotFoundError:
+            print(f"config edit: editor not found: {argv[0]}", file=sys.stderr)
+            return 127
+        if code != 0:
+            print(f"config edit: {argv[0]} exited with status {code}; "
+                  f"not reloading", file=sys.stderr)
+            return code
+        self._reload_config()
+        return 0
 
     def _load_user_config(self) -> None:
         config_path = config_dir() / "config.py"

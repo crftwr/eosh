@@ -80,7 +80,7 @@
 Entry point and orchestrator. Owns the REPL cycle: read input, parse, dispatch, repeat.
 
 - Uses a DIY raw-mode line editor (`lineedit.py`) — no external dependencies
-- Registers built-in commands: `cd`, `exit`, `reload`, `var`, `alias`, `unalias`, `source-bash`, `help`, `context`
+- Registers built-in commands: `cd`, `exit`, `reload`, `config`, `var`, `alias`, `unalias`, `source-bash`, `help`, `context`
 - Loads user configuration at startup; `reload` re-loads without restarting the shell
 - Falls back to PTY subprocess (`process.py`) for unrecognized commands
 - Executes pipelines (`|`), sequences (`;`, `&&`, `||`), and redirections (`>`, `>>`, `<`, `2>`, `2>&1`)
@@ -94,7 +94,7 @@ Provides the `CommandRegistry` class and a global `registry` singleton.
 - `arg(*names, completer=None, **argparse_kwargs)` builder used inside `params=`. `metavar=` becomes the inline hint for value-taking flags; `choices=` auto-populates a `ChoiceCompleter` when `completer=` is omitted.
 - Sub-command tree: `Command.command(name, ...)` registers a child sub-command. Used by `git`, `awsut`, and any nested CLI; see [subcommands.md](subcommands.md). A node's flags are its own (no inheritance), and a node has either a handler or children, never both.
 - Aliases: `registry.alias(name, value)`, `registry.unalias(name)`, `get_alias`, `list_aliases`.
-- `registry.mark_builtins()` / `registry.clear_user_commands()` for hot-reload support.
+- Built-ins: `with registry.defining_builtins():` marks what the shell registers as built-in; a config replacing one needs `override=True` (otherwise a `config warning:` and the built-in stays), and `registry.clear_user_commands()` — part of `Shell._clear_user_config`, the one sweep `reload` runs — puts back exactly the built-in set. `registry.is_builtin(name)` splits `help`'s listing.
 - Each `Command` holds: name, optional callable, `params: list[Arg] | None`, `help`, optional `delegate`, help text, description, parent and children.
 - Description comes from the explicit `help=` kwarg, falling back to the function's docstring.
 

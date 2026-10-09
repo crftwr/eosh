@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import inspect
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable
 
 from .completion import Completer, ChoiceCompleter, OptionsCompleter
+from .user_errors import config_warning
 
 
 class _HelpOrError(Exception):
@@ -472,9 +474,13 @@ def _print_group_help(node: Command) -> None:
 class CommandRegistry:
     def __init__(self):
         self._commands: dict[str, Command] = {}
-        self._builtin_names: set[str] = set()
         self._aliases: dict[str, str] = {}
-        self._builtin_aliases: set[str] = set()
+        # What `reload` restores: the built-in entries themselves, not just
+        # their names, so a built-in a config replaced (override=True) comes
+        # back once the config stops replacing it.
+        self._builtins: dict[str, Command] = {}
+        self._builtin_aliases: dict[str, str] = {}
+        self._defining_builtins = False
 
     def command(
         self,
@@ -483,6 +489,7 @@ class CommandRegistry:
         help: str | None = None,
         delegate: Completer | None = None,
         sync: bool = False,
+        override: bool = False,
     ) -> Command:
         """Register a top-level command, group, or external recipe; return it.
 
@@ -507,6 +514,11 @@ class CommandRegistry:
         forwarding, no output proxy, and the state changes on the thread
         that owns it.  The cost is that Ctrl+] can't background it while it
         runs.  On Windows every Python command runs this way.
+
+        ``override`` — replace a built-in (``cd``, ``help``, ``@watch``, …).
+        Without it, a built-in name is refused with a ``config warning:``
+        line and the built-in stays; the returned node is detached, so the
+        rest of the config still runs.  ``reload`` restores the built-in.
         """
         if not isinstance(name, str):
             raise TypeError("registry.command() needs a name: "
@@ -522,6 +534,12 @@ class CommandRegistry:
             delegate=delegate,
             sync=sync,
         )
+        if self._defining_builtins:
+            self._builtins[name] = cmd
+        elif name in self._builtins and not override:
+            config_warning(f"{name!r} is a built-in command — not replaced "
+                           f"(pass override=True to replace it)")
+            return cmd
         self._commands[name] = cmd
         return cmd
 
@@ -538,19 +556,37 @@ class CommandRegistry:
         """Forget command *name* (no-op if it isn't registered)."""
         self._commands.pop(name, None)
 
+    @contextmanager
+    def defining_builtins(self):
+        """Register the shell's own commands: what is registered inside the
+        block — and only that — becomes the built-in set, which ``reload``
+        keeps and a config needs ``override=True`` to replace."""
+        self._builtins = {}
+        self._builtin_aliases = {}
+        self._defining_builtins = True
+        try:
+            yield self
+        finally:
+            self._defining_builtins = False
+
     def mark_builtins(self) -> None:
-        """Snapshot current commands as builtins (won't be removed on reload)."""
-        self._builtin_names = set(self._commands.keys())
-        self._builtin_aliases = set(self._aliases.keys())
+        """Snapshot every current command and alias as built-in (for tests
+        that build a registry by hand; the shell uses
+        :meth:`defining_builtins`)."""
+        self._builtins = dict(self._commands)
+        self._builtin_aliases = dict(self._aliases)
+
+    def is_builtin(self, name: str) -> bool:
+        """True if *name* is registered and is the built-in entry itself
+        (not a config's override of it)."""
+        cmd = self._commands.get(name)
+        return cmd is not None and self._builtins.get(name) is cmd
 
     def clear_user_commands(self) -> None:
-        """Remove all non-builtin commands and aliases."""
-        self._commands = {
-            k: v for k, v in self._commands.items() if k in self._builtin_names
-        }
-        self._aliases = {
-            k: v for k, v in self._aliases.items() if k in self._builtin_aliases
-        }
+        """Back to the built-ins: drop every command and alias a config
+        added, and put back any built-in it replaced."""
+        self._commands = dict(self._builtins)
+        self._aliases = dict(self._builtin_aliases)
 
     # ── Aliases ──────────────────────────────────────────────────────────────
 
@@ -566,6 +602,8 @@ class CommandRegistry:
         re-expanded as an alias, which prevents infinite loops.
         """
         self._aliases[name] = expansion
+        if self._defining_builtins:
+            self._builtin_aliases[name] = expansion
 
     def unalias(self, name: str) -> bool:
         """Remove an alias.  Returns True if it existed."""

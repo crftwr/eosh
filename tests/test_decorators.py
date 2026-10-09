@@ -29,10 +29,10 @@ from eosh.shell import Shell
 def _isolate_test_decorators():
     """Snapshot the command registry (decorators live there as ``@name``)."""
     cmd_before = dict(command_registry._commands)
-    builtins_before = set(command_registry._builtin_names)
+    builtins_before = dict(command_registry._builtins)
     yield
     command_registry._commands = cmd_before
-    command_registry._builtin_names = builtins_before
+    command_registry._builtins = builtins_before
 
 
 @pytest.fixture

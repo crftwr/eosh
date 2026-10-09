@@ -1,5 +1,10 @@
 # eosh user configuration
 # Define custom commands and completers here.
+#
+# `config edit` opens this file in $VISUAL / $EDITOR and reloads it when you
+# quit; `reload` re-runs it from a clean slate.  Built-in names (cd, help,
+# @watch, …) need `override=True` to be replaced:
+#     @command_registry.command("cd", override=True)
 
 # ── Simple example: one positional argument ───────────────────────────────────
 

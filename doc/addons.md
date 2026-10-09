@@ -55,7 +55,8 @@ placeholder there and lists nothing. Re-run `make install` (or
 `awsut: needs the Python module 'boto3' — install eosh[awsut]`. No table in
 the core has to know about the add-on. Under `enable("*")` the add-on is then
 skipped quietly and a placeholder command explains the gap. Naming it
-explicitly raises with the same message.
+explicitly does the same and also prints the message as a `config warning:`
+line; the rest of the config still loads.
 
 Lookup order in `enable(name)`: built-in recipe → add-on. There is no user
 search path; your own recipes are defined in `config.py` or a module it

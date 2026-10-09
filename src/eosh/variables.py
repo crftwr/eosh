@@ -44,9 +44,11 @@ from __future__ import annotations
 import dataclasses
 import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Sequence
 
 from .completion import Completer, Completion, CompletionContext
+from .user_errors import config_warning
 
 
 class Var(ABC):
@@ -169,16 +171,30 @@ class VarRegistry:
 
     def __init__(self) -> None:
         self._vars: dict[str, Var] = {}
-        self._builtin_names: set[str] = set()
+        # The built-in Vars themselves, so `reload` can put back one a
+        # config replaced (override=True).
+        self._builtins: dict[str, Var] = {}
+        self._defining_builtins = False
 
-    def register(self, var: Var) -> None:
-        """Register an :class:`EnvVar`, :class:`PyVar` or :class:`GlobalVar`."""
+    def register(self, var: Var, *, override: bool = False) -> None:
+        """Register an :class:`EnvVar`, :class:`PyVar` or :class:`GlobalVar`.
+
+        Replacing a built-in (``notify``, ``notify_threshold``) needs
+        ``override=True``; without it the registration is refused with a
+        ``config warning:`` line and the built-in stays.
+        """
         if not isinstance(var, (EnvVar, PyVar, GlobalVar)):
             raise TypeError(
                 f"{type(var).__name__}: register an EnvVar (os.environ keys), "
                 f"a PyVar subclass (a per-context Python value) or a GlobalVar "
                 f"subclass (a process-global Python value)"
             )
+        if self._defining_builtins:
+            self._builtins[var.name] = var
+        elif var.name in self._builtins and not override:
+            config_warning(f"{var.name!r} is a built-in variable — not replaced "
+                           f"(pass override=True to replace it)")
+            return
         self._vars[var.name] = var
 
     def get(self, name: str) -> Var | None:
@@ -189,13 +205,27 @@ class VarRegistry:
         """Return all registered :class:`Var` instances in registration order."""
         return list(self._vars.values())
 
+    @contextmanager
+    def defining_builtins(self):
+        """Register the shell's own Vars: what is registered inside the
+        block — and only that — becomes the built-in set, which ``reload``
+        keeps and a config needs ``override=True`` to replace."""
+        self._builtins = {}
+        self._defining_builtins = True
+        try:
+            yield self
+        finally:
+            self._defining_builtins = False
+
     def mark_builtins(self) -> None:
-        """Snapshot current vars as built-ins (preserved across ``reload``)."""
-        self._builtin_names = set(self._vars.keys())
+        """Snapshot every current Var as built-in (for tests that build a
+        registry by hand; the shell uses :meth:`defining_builtins`)."""
+        self._builtins = dict(self._vars)
 
     def clear_user_vars(self) -> None:
-        """Remove all non-builtin vars (called by ``reload``)."""
-        self._vars = {k: v for k, v in self._vars.items() if k in self._builtin_names}
+        """Back to the built-ins (called by ``reload``): drop every Var a
+        config added and put back any built-in it replaced."""
+        self._vars = dict(self._builtins)
 
 
 #: Module-level singleton — import and use this in config.py / recipes.
