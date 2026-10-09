@@ -208,6 +208,23 @@ spent in front of the user. Distinguishing "resumed and then finished" from
 "finished unobserved" needs the slot to record when it was last activated,
 which is more bookkeeping than the noise warrants today.
 
+## Event hooks — what they don't see
+
+- **A backgrounded line's `on_command_finished` runs on a background
+  thread.** It is called from the slot's exit handler when the work ends,
+  which may be while you are typing at the prompt. Output from the hook
+  lands in the middle of the line editor's display. Post a notification or
+  write a file there, but don't print. Handing the call to the main thread
+  would need a way to wake the line editor, which it doesn't have.
+- **`on_command_not_found` is asked only for a command run on its own.** A
+  missing command inside a pipeline or with a redirect (`nope | cat`,
+  `nope > out`) is reported by the pipeline path as before.
+- **`on_exit` runs on `exit` and Ctrl+D only.** A shell killed by a signal
+  (the terminal window closed, `SIGHUP`) ends without it.
+- **A directory change made by a still-running Python command** (a
+  backgrounded one calling `os.chdir`) is reported at the next check (after a
+  command, a switch, or before a prompt), not at the moment it happens.
+
 ## `source-bash` imports variables and the cwd — nothing else
 
 The dump the child bash writes is `env -0` plus `$PWD`, so what comes

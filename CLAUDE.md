@@ -78,6 +78,9 @@ change.
 │  │   send / PowerShell toast / terminal bell       │
 │  └── var notify, var notify_threshold              │
 ├─────────────────────────────────────────────────────┤
+│  Event Hooks (hooks.py)                             │
+│  └── @hooks.on_directory_changed, … from config    │
+├─────────────────────────────────────────────────────┤
 │  Recipes (recipes/)                                 │
 │  └── Completion recipes for external commands      │
 ├─────────────────────────────────────────────────────┤
@@ -697,6 +700,35 @@ See [doc/notifications.md](doc/notifications.md) for the full design, and
 `doc/limitations.md` for the skip-list heuristic's known misses and the
 best-effort nature of delivery.
 
+### hooks.py — Event Hooks
+
+`config.py` reacts to shell events with one decorator per event:
+`on_startup`, `on_exit`, `on_directory_changed(old, new)`,
+`on_context_switched(old, new)`, `on_command_starting(line)`,
+`on_command_finished(line, status, elapsed)`, `on_command_not_found(argv) -> bool`.
+Plain-English names with a single `on_` prefix; `-ing` / `-ed` mean
+before / after. A misspelt event is an `AttributeError` at load time.
+
+- **Rules:** registration order; a raising hook is reported
+  (`format_user_exception`) and the rest still run; hooks only observe,
+  except `on_command_not_found`, where the first `True` claims the command
+  (status 0) and stops the chain; `reload` → `hooks.clear()` (in
+  `Shell._clear_user_config`), and `on_startup` isn't re-fired.
+- **Directory / context are detected, not hooked:**
+  `Shell._notice_state_change` diffs `(current context, cwd)` against the
+  last look and fires context first, then directory. It's called after each
+  command of a line (`cd x && make` reports before `make`), after a Ctrl+]
+  switch in `_handle_switch` (under `_cooked_output()`, since the line editor
+  holds the terminal raw), and before each prompt.
+- **Starting / finished** come from `Shell._execute` for a foreground line.
+  A parked slot is reported by `_slot_finished` when its work ends, on the
+  slot's thread, with the line `_park` stored in `slot.line`. Same split as
+  `notify`, which still has its own reporting sites.
+- **Not found** goes through `Shell._command_not_found`, from the
+  single-external-command paths only (not pipeline stages).
+
+See [doc/hooks.md](doc/hooks.md); gaps are in `doc/limitations.md`.
+
 ### recipes/ — Completion Recipes for External Commands
 
 Opt-in completion recipes for system commands. Enable in `~/.eosh/config.py`:
@@ -794,7 +826,7 @@ addons/awsut/      →  import eosh_addons.awsut      enable("awsut")
   editable install. Its third-party dependencies go in an extra **named after
   the add-on**.
 - **Public API only.** An add-on imports from `eosh`, `eosh.commands`,
-  `eosh.completion`, `eosh.completion_cache`, `eosh.variables`,
+  `eosh.completion`, `eosh.completion_cache`, `eosh.hooks`, `eosh.variables`,
   `eosh.recipes` and `eosh.recipes.aws`, and nothing else from the core.
   `tests/addons/test_boundary.py` parses every add-on source to enforce this.
   It also rejects relative imports that leave the add-on, imports of another
@@ -982,6 +1014,7 @@ eosh/
 │       ├── completion_cache.py # TTL store for completer fetches; invalidated after every command
 │       ├── context.py          # Context, ContextManager, ContextState
 │       ├── lineedit.py         # DIY raw-mode line editor, History (+ directory side table), TAB completion glue
+│       ├── hooks.py            # event hooks: @hooks.on_directory_changed, …
 │       ├── notify.py           # OS notification when a slow command finishes;
 │       │                       # native backends, skip list, `notify` +
 │       │                       # `notify_threshold` Vars
@@ -1028,6 +1061,7 @@ eosh/
     ├── test_completion_cache.py
     ├── test_context.py
     ├── test_decorators.py
+    ├── test_hooks.py
     ├── test_notify.py
     ├── test_parsing.py
     ├── test_pipeline.py

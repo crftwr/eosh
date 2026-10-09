@@ -160,6 +160,10 @@ Provides `set_prompt()` / `get_prompt_func()` for customizable prompt generation
 
 Default prompt: `[context] path/cwd HH:MM:SS [bg:N]>` (ANSI colors). The `[context]` prefix is omitted when the context name is `"default"`. `[bg:N]` appears when N other contexts have live processes.
 
+### hooks.py — Event Hooks
+
+One decorator per event (`on_startup`, `on_exit`, `on_directory_changed`, `on_context_switched`, `on_command_starting`, `on_command_finished`, `on_command_not_found`) for `config.py` to react to the shell. Hooks run in registration order, a failing one is reported and skipped, and `reload` clears them. The shell detects directory and context changes by comparing state (`Shell._notice_state_change`) rather than hooking each mutation. See [hooks.md](hooks.md).
+
 ### colors.py — Color Schemes
 
 `ColorScheme` dataclass holding ANSI colour codes used by the prompt and TUI widgets, with `dark` and `light` schemes shipped. `set_color_scheme(scheme)` swaps the active scheme; users override colours from `~/.eosh/config.py`.
