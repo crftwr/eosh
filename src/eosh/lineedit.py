@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import sys
+import time
 import unicodedata
-from dataclasses import replace
-from pathlib import Path
 from typing import Callable
 
 from . import terminal
 from .completion import Completion
+from .history import HistoryEntry, HistoryStore
 from .parsing import raw_token_start
 
 CONTEXT_CHANGED_SENTINEL = "\x1d__CHANGED__"
@@ -77,58 +76,6 @@ def _display_col_offset(prefix: str, completions: list[Completion]) -> int:
     return 0
 
 
-def _picker_col_offset(prefix: str, completions: list[Completion]) -> int:
-    """Like :func:`_display_col_offset`, tolerating verbatim (history) candidates.
-
-    Verbatim candidates are anchored like any other, so they normally align with
-    the typed token too and are measured with everything else — that is what
-    puts a history-only picker under the token instead of at the caret.
-
-    The exception is a quoted token: a verbatim value starts at the *raw* anchor,
-    so its display begins with the quote character while ``prefix`` is what shlex
-    left after removing it, and nothing is shared.  Rather than un-align the
-    token candidates the user is completing against, fall back to measuring those
-    alone.
-    """
-    offset = _display_col_offset(prefix, completions)
-    if offset:
-        return offset
-    aligned = [c for c in completions if not c.verbatim]
-    if not aligned or len(aligned) == len(completions):
-        return offset
-    return _display_col_offset(prefix, aligned)
-
-
-def _align_verbatim_rows(line: str, completions: list[Completion],
-                         display_offset: int) -> list[Completion]:
-    """Trim verbatim displays so every picker row starts at the same column.
-
-    A verbatim (history) *value* starts at the raw anchor, so its display
-    repeats the whole partial token; a token row's display starts wherever its
-    completer chose to put it — ``FileCompleter`` shows only the last path
-    segment, for instance, so ``cat ~/.aws/<TAB>`` lists ``config``, not
-    ``~/.aws/config``.  The picker opens ``display_offset`` columns left of the
-    caret, which is the column those rows agree on; a verbatim row must
-    therefore show only its last ``display_offset`` columns of already-typed
-    text or it renders shifted right, reading as though it were duplicating
-    what the user has already typed.
-
-    Only the display changes.  The value still starts at the anchor, because
-    that is where :meth:`LineEditor._apply` splices it in.
-    """
-    typed = line[raw_token_start(line):]
-    drop = 0
-    while drop < len(typed) and _wcswidth(typed[drop:]) > display_offset:
-        drop += 1
-    if not drop:
-        return completions
-    return [
-        replace(c, display=c.display[drop:])
-        if c.verbatim and c.display.startswith(typed) else c
-        for c in completions
-    ]
-
-
 def _pending_wrap_row(char_count: int, cols: int) -> int:
     """Row offset below render-top where cursor sits after writing char_count visible chars.
 
@@ -173,128 +120,22 @@ def _resize_debug(msg: str) -> None:
         pass
 
 
-# ── History ──────────────────────────────────────────────────────────────────
-
-
-# Enough to cover the handful of places a given command actually gets run,
-# without letting one much-repeated line grow an unbounded directory list.
-MAX_DIRS_PER_LINE = 8
-
-
-def _norm_dir(path: str) -> str:
-    """Canonical form used to compare directories.
-
-    ``normcase`` matters on Windows, where the shell's cwd and a previously
-    recorded one can differ only by drive-letter or separator case.
-    """
-    return os.path.normcase(os.path.abspath(path))
-
-
-class History:
-    """The global on-disk command history, plus where each line was run.
-
-    Two files, both under ``~/.eosh/``:
-
-    ``history``
-        One command line per entry, in the order they were run — appended to as
-        the shell runs.  This is what ``Ctrl+R`` searches and what seeds the
-        ``default`` context's Up/Down list at startup.
-
-    ``history.dirs``
-        A JSON side table mapping each line to the directories it was run in
-        (most recent last, capped at :data:`MAX_DIRS_PER_LINE`).  It scopes TAB
-        completion's history candidates to the current directory (see
-        :class:`completion.HistoryCompleter`).  A *side* table rather than an
-        extra field in ``history`` so that file's format — and every reader of
-        :attr:`entries` — stays exactly as it was.  A missing, unreadable or
-        stale side table degrades to "no directory is known for this line",
-        which the completer handles as "not from here".
-    """
-
-    def __init__(self, path: Path):
-        self._path = path
-        self._dirs_path = path.with_name(path.name + ".dirs")
-        self._entries: list[str] = []
-        self._dirs: dict[str, list[str]] = {}
-        self._load()
-
-    def _load(self) -> None:
-        try:
-            self._entries = [
-                ln for ln in self._path.read_text().splitlines() if ln.strip()
-            ]
-        except FileNotFoundError:
-            pass
-        self._load_dirs()
-
-    def _load_dirs(self) -> None:
-        try:
-            raw = json.loads(self._dirs_path.read_text())
-        except (OSError, ValueError):
-            return  # absent, unreadable or corrupt — no directories are known
-        if not isinstance(raw, dict):
-            return
-        for line, dirs in raw.items():
-            if isinstance(line, str) and isinstance(dirs, list):
-                self._dirs[line] = [d for d in dirs if isinstance(d, str)]
-
-    def add(self, line: str, cwd: str | None = None) -> None:
-        """Record *line* as run in *cwd* (the process's cwd by default)."""
-        line = line.rstrip()
-        if not line:
-            return
-        dirs_changed = self._note_dir(line, os.getcwd() if cwd is None else cwd)
-        if self._entries and self._entries[-1] == line:
-            # The line itself is already stored, but re-running it after a `cd`
-            # is new information, so the directory still has to be recorded.
-            if dirs_changed:
-                self._save_dirs()
-            return
-        self._entries.append(line)
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a") as f:
-                f.write(line + "\n")
-        except OSError:
-            pass
-        self._save_dirs()
-
-    def _note_dir(self, line: str, cwd: str) -> bool:
-        """Record *cwd* against *line*. Returns True when anything changed."""
-        norm = _norm_dir(cwd)
-        dirs = self._dirs.setdefault(line, [])
-        if dirs and dirs[-1] == norm:
-            return False
-        if norm in dirs:
-            dirs.remove(norm)          # keep it, but as the most recent
-        dirs.append(norm)
-        del dirs[:-MAX_DIRS_PER_LINE]
-        return True
-
-    def _save_dirs(self) -> None:
-        # Drop lines the history file no longer holds, so hand-trimming
-        # ``history`` prunes the side table on the next write as well.
-        known = set(self._entries)
-        self._dirs = {ln: dirs for ln, dirs in self._dirs.items() if ln in known}
-        try:
-            self._dirs_path.parent.mkdir(parents=True, exist_ok=True)
-            self._dirs_path.write_text(json.dumps(self._dirs, ensure_ascii=False))
-        except OSError:
-            pass   # same policy as the history file: never fail a command over it
-
-    def ran_here(self, line: str, cwd: str | None = None) -> bool:
-        """True when *line* was recorded as run in *cwd* (default: the cwd).
-
-        Entries stored before the side table existed have no directory at all,
-        so they answer False everywhere and never become TAB candidates (until
-        they are run again).  Up/Down and Ctrl+R still reach them.
-        """
-        cwd = os.getcwd() if cwd is None else cwd
-        return _norm_dir(cwd) in self._dirs.get(line.rstrip(), ())
-
-    @property
-    def entries(self) -> list[str]:
-        return self._entries
+def _history_meta(entry: HistoryEntry, now: float) -> tuple[str, ...]:
+    """Ctrl+R's columns for *entry*: where it last ran, how long ago, and
+    its exit status when that was a failure."""
+    home = os.path.normcase(os.path.expanduser("~"))
+    where = entry.cwd or ""
+    if where == home or where.startswith(home + os.sep):
+        where = "~" + where[len(home):]
+    age = max(0, now - entry.ts)
+    if age < 3600:
+        when = f"{int(age // 60)}m"
+    elif age < 86400:
+        when = f"{int(age // 3600)}h"
+    else:
+        when = f"{int(age // 86400)}d"
+    failed = f"exit {entry.status}" if entry.status else ""
+    return (where.replace(os.sep, "/"), when, failed)
 
 
 # ── Line editor ───────────────────────────────────────────────────────────────
@@ -315,18 +156,24 @@ class LineEditor:
 
     def __init__(
         self,
-        history: History,
+        history: HistoryStore,
         get_completions: GetCompletionsFn,
         get_prompt: Callable[[], str],
         switch_fn: Callable[[], tuple[bool, str | None]] | None = None,
         get_arg_info: GetArgInfoFn | None = None,
         local_history_fn: Callable[[], list[str]] | None = None,
+        suggest_fn: Callable[[str], str | None] | None = None,
     ):
+        # The shared store: what Ctrl+R searches.
         self._history = history
         # Returns the current context's per-session Up/Down history list
-        # (the actual mutable list). Ctrl-R and the on-disk store stay global
-        # (self._history); only Up/Down navigation is scoped per context.
+        # (the actual mutable list); only Up/Down navigation is scoped per
+        # context.
         self._local_history_fn = local_history_fn
+        # Ghost suggestion: given the buffer, a past line that extends it.
+        self._suggest_fn = suggest_fn
+        self._ghost: str | None = None     # the full suggested line, when one is shown
+        self._ghost_enabled = True         # off for continuation prompts and on submit
         self._get_completions = get_completions
         self._get_prompt = get_prompt
         self._switch_fn = switch_fn
@@ -367,12 +214,8 @@ class LineEditor:
         self._resize_pending: bool = False
 
     def add_to_history(self, line: str) -> None:
-        """Add *line* to history from outside the editor (e.g. after joining continuation lines).
-
-        Appends to the global on-disk store (used by Ctrl-R and to seed the
-        default context) and to the current context's per-session Up/Down list.
-        """
-        self._history.add(line)
+        """Append *line* to the current context's Up/Down list (the caller
+        records it in the shared store, with where and how it ran)."""
         if self._local_history_fn is not None:
             stripped = line.rstrip()
             if stripped:
@@ -427,6 +270,10 @@ class LineEditor:
         self._saved_buf = ""
         self._prompt_str = prompt_str if prompt_str is not None else self._get_prompt()
         self._prompt_len = _visible_len(self._prompt_str)
+        # A continuation line ("> ") is the middle of a command, which no
+        # history entry starts with.
+        self._ghost_enabled = prompt_str is None
+        self._ghost = None
 
         fd = sys.stdin.fileno()
         old_attrs = terminal.get_mode(fd)
@@ -443,6 +290,7 @@ class LineEditor:
                 result = self._handle_key(key, fd)
                 if result is not None:
                     self._cursor = len(self._buf)
+                    self._ghost_enabled = False   # the line as run, no suggestion
                     self._redraw()
                     self._clear_status_bar()
                     sys.stdout.write("\r\n")
@@ -450,6 +298,7 @@ class LineEditor:
                     return result
                 self._redraw()
         except (EOFError, KeyboardInterrupt):
+            self._erase_ghost()
             self._clear_status_bar()
             sys.stdout.write("\r\n")
             sys.stdout.flush()
@@ -592,6 +441,9 @@ class LineEditor:
             sys.stdout.write(f"\033[{self._cursor_row}A")
         sys.stdout.write("\r\033[J")
         sys.stdout.write(self._prompt_str + self._buf)
+        ghost = self._ghost_suffix(total_char)
+        if ghost:
+            sys.stdout.write(f"\033[2m{ghost}\033[22m")
 
         # Decide whether the status bar needs to render. ``_suppress_statusbar``
         # is set by ``_on_resize`` so a drag-resize doesn't repaint the bar
@@ -683,11 +535,13 @@ class LineEditor:
         if key == b"\x1d":
             if self._switch_fn is None:
                 return None
+            self._erase_ghost()
             needs_forward = self._do_inline_switch()
             return CONTEXT_CHANGED_SENTINEL if needs_forward else None
 
         # TAB — completion
         if key == b"\x09":
+            self._erase_ghost()
             self._complete()
             return None
 
@@ -725,9 +579,10 @@ class LineEditor:
             self._cursor = 0
             return None
 
-        # Ctrl+E / End
+        # Ctrl+E / End — at the end of the line, accept the ghost suggestion
         if key in (b"\x05", b"\x1b[F", b"\x1b[4~", b"\x1bOF"):
-            self._cursor = len(self._buf)
+            if not self._accept_ghost():
+                self._cursor = len(self._buf)
             return None
 
         # Ctrl+L — clear screen
@@ -741,10 +596,12 @@ class LineEditor:
                 self._cursor -= 1
             return None
 
-        # Ctrl+F / Right arrow
+        # Ctrl+F / Right arrow — at the end of the line, accept the ghost
         if key in (b"\x06", b"\x1b[C", b"\x1bOC"):
             if self._cursor < len(self._buf):
                 self._cursor += 1
+            else:
+                self._accept_ghost()
             return None
 
         # Alt+B — move word left
@@ -757,8 +614,11 @@ class LineEditor:
             self._cursor = i
             return None
 
-        # Alt+F — move word right
+        # Alt+F — move word right; at the end of the line, accept one word
+        # of the ghost suggestion
         if key == b"\x1bf":
+            if self._cursor == len(self._buf) and self._accept_ghost(word=True):
+                return None
             i = self._cursor
             n = len(self._buf)
             while i < n and self._buf[i] == " ":
@@ -768,8 +628,9 @@ class LineEditor:
             self._cursor = i
             return None
 
-        # Ctrl+R — history search
+        # Ctrl+R — history search, starting from what is typed
         if key == b"\x12":
+            self._erase_ghost()
             self._history_search()
             return None
 
@@ -804,10 +665,64 @@ class LineEditor:
     # ── history ──────────────────────────────────────────────────────────────
 
     def _local_entries(self) -> list[str]:
-        """Per-context Up/Down history (falls back to the global store)."""
+        """Per-context Up/Down history."""
         if self._local_history_fn is not None:
             return self._local_history_fn()
-        return self._history.entries
+        return []
+
+    # ── ghost suggestion ─────────────────────────────────────────────────────
+
+    def _ghost_suffix(self, total_char: int) -> str:
+        """Look up the suggestion for the buffer and return the part to draw
+        after it (dimmed), or ``""``.  Sets :attr:`_ghost` to the full line.
+
+        Shown only with the caret at the end of the line, and only as much of
+        it as fits on the row the buffer ends on: a ghost never wraps, so
+        the row bookkeeping in :meth:`_redraw` stays about the buffer alone.
+        Accepting it inserts the whole line regardless.
+        """
+        self._ghost = None
+        if (not self._ghost_enabled or self._suggest_fn is None
+                or self._cursor != len(self._buf) or not self._buf.strip()):
+            return ""
+        line = self._suggest_fn(self._buf)
+        if not line or not line.startswith(self._buf) or len(line) <= len(self._buf):
+            return ""
+        self._ghost = line
+        used = total_char % self._cols
+        room = self._cols - used - 1 if used or total_char == 0 else 0
+        out, width = "", 0
+        for ch in line[len(self._buf):]:
+            w = _wcswidth(ch)
+            if width + w > room:
+                break
+            out += ch
+            width += w
+        return out
+
+    def _accept_ghost(self, word: bool = False) -> bool:
+        """Insert the ghost suggestion (or its next word); False if none."""
+        if self._ghost is None or self._cursor != len(self._buf):
+            return False
+        rest = self._ghost[len(self._buf):]
+        if word:
+            i = len(rest) - len(rest.lstrip(" "))
+            while i < len(rest) and rest[i] != " ":
+                i += 1
+            rest = rest[:i]
+        self._buf += rest
+        self._cursor = len(self._buf)
+        return True
+
+    def _erase_ghost(self) -> None:
+        """Wipe a ghost suggestion off the screen before something else is
+        drawn below the line (a picker) or the line is left behind (Ctrl+C).
+        The caret sits where the ghost starts, so erasing to end of line
+        is enough."""
+        if self._ghost is not None:
+            sys.stdout.write("\033[K")
+            sys.stdout.flush()
+            self._ghost = None
 
     def _hist_back(self) -> None:
         entries = self._local_entries()
@@ -878,7 +793,7 @@ class LineEditor:
     # ── completion ───────────────────────────────────────────────────────────
 
     def _complete(self) -> None:
-        from .tui import InlinePicker, _common_prefix
+        from .tui import InlinePicker
 
         buf_changed = False
         # True when the current loop iteration is a re-entry triggered by the
@@ -900,19 +815,9 @@ class LineEditor:
             if not completions:
                 return
 
-            # Single-token candidates only.  Verbatim (history) candidates are
-            # excluded from every "there is exactly one candidate" shortcut
-            # below: auto-applying a token is a small, predictable edit, while
-            # silently appending several arguments is not — so a history entry is
-            # only ever inserted from a picker the user can see.  This also
-            # keeps the pre-history behaviour of the shortcuts intact: a unique
-            # token completion still applies on the first TAB even when past
-            # command lines also match.
-            token_completions = [c for c in completions if not c.verbatim]
-
-            if len(token_completions) == 1 and not from_reopen:
-                self._apply(token_completions[0])
-                if token_completions[0].arg_hint:
+            if len(completions) == 1 and not from_reopen:
+                self._apply(completions[0])
+                if completions[0].arg_hint:
                     # A value-taking flag: go straight on to its value.
                     buf_changed = True
                     continue
@@ -925,9 +830,8 @@ class LineEditor:
             caret_row = _pending_wrap_row(caret_char, self._cols)
             end_row = _pending_wrap_row(self._prompt_len + _wcswidth(self._buf), self._cols)
             rows_above = end_row - caret_row + 1
-            display_offset = _picker_col_offset(prefix, completions)
+            display_offset = _display_col_offset(prefix, completions)
             col = caret_col - display_offset
-            rows = _align_verbatim_rows(self._buf[: self._cursor], completions, display_offset)
 
             cols_from_end = _wcswidth(self._buf[self._cursor:])
             if cols_from_end > 0:
@@ -938,56 +842,16 @@ class LineEditor:
             buf_at_tab = self._buf[: self._cursor]
             caret_char_at_tab = caret_char
 
-            # The token prefix of the line as it stands, kept current by
-            # ``refresh`` so ``extend`` measures against the live anchor.
-            live = {"prefix": prefix}
-
             def refresh(typed: str) -> tuple[list[Completion], int]:
-                line = buf_at_tab + typed
-                new_completions, new_prefix, _ = self._get_completions(line)
-                live["prefix"] = new_prefix
+                new_completions, new_prefix, _ = self._get_completions(buf_at_tab + typed)
                 new_caret_col = _pending_wrap_col(
                     caret_char_at_tab + len(typed), self._cols  # typed is always ASCII
                 )
-                new_offset = _picker_col_offset(new_prefix, new_completions)
-                new_rows = _align_verbatim_rows(line, new_completions, new_offset)
-                return new_rows, new_caret_col - new_offset
-
-            def extend(items: list[Completion], typed: str) -> str:
-                """Common prefix of *items*, minus the text already typed.
-
-                TAB-extend measures candidate *values*, so every measured value
-                must live in the same space as the text it is measured against.
-                Both kinds of candidate start at the completion anchor, but a
-                verbatim (history) value starts at the *raw* anchor while a
-                token value starts where the shlex-unquoted ``prefix`` does, so
-                the two spaces differ whenever the token is quoted.
-                Verbatim-only lists therefore measure against the raw token
-                text; mixed lists measure the token candidates and drop the
-                verbatim rows, which keeps TAB-extend behaving exactly as it did
-                before history candidates existed.
-
-                Both the value space and the already-typed length are decided
-                per TAB press rather than when the picker opened, because
-                narrowing moves both: a mixed list can narrow down to history
-                rows only, and typing a space moves the anchor (a history
-                candidate keeps matching across token boundaries, so the picker
-                stays open).  Measuring a fresh common prefix against a stale
-                anchor always over-counts, which silently made TAB inert.
-                """
-                if all(c.verbatim for c in items):
-                    values = [c.value for c in items]
-                    line = buf_at_tab + typed
-                    typed_len = len(line) - raw_token_start(line)
-                else:
-                    values = [c.value for c in items if not c.verbatim]
-                    typed_len = len(live["prefix"])
-                if not values:
-                    return ""
-                return _common_prefix(values)[typed_len:]
+                return new_completions, new_caret_col - _display_col_offset(
+                    new_prefix, new_completions)
 
             picker = InlinePicker(
-                rows,
+                completions,
                 display_fn=lambda c: c.display or c.value,
                 meta_fn=lambda c: c.meta,
                 max_height=10,
@@ -995,7 +859,9 @@ class LineEditor:
                 initial_offset=display_offset,
                 rows_above=rows_above,
                 refresh_fn=refresh,
-                extend_fn=extend,
+                # TAB inside the picker types the candidates' shared prefix.
+                value_fn=lambda c: c.value,
+                completion_prefix=prefix,
                 status_label=status_label,
                 # Open with nothing highlighted: Enter must not insert a
                 # candidate the user never picked. Only Down/Up select.
@@ -1049,43 +915,45 @@ class LineEditor:
             from_reopen = False
 
     def _history_search(self) -> None:
+        """Ctrl+R: every distinct line from the shared history (all
+        contexts, all directories, every eosh process), newest first,
+        filtered by keywords.  What is already typed is the first filter."""
         from .tui import InlinePicker
 
-        entries = self._history.entries
+        entries = self._history.distinct()
         if not entries:
             return
-
-        # Deduplicate, most recent first
-        seen: set[str] = set()
-        unique: list[str] = []
-        for e in reversed(entries):
-            if e not in seen:
-                seen.add(e)
-                unique.append(e)
 
         saved_buf = self._buf
         saved_cursor = self._cursor
 
-        self._buf = ""
-        self._cursor = 0
+        # Start from the buffer when it fits on the prompt row (the picker
+        # echoes the query on that row); a longer one starts empty.
+        seed = self._buf if self._prompt_len + _wcswidth(self._buf) < self._cols - 1 else ""
+        self._buf = seed
+        self._cursor = len(seed)
+        self._ghost_enabled = False
         self._redraw()
+        self._ghost_enabled = True
 
-        # Move below the (now empty) prompt line
+        # Move below the prompt line
         sys.stdout.write("\n")
         sys.stdout.flush()
 
         caret_col = _pending_wrap_col(self._prompt_len, self._cols)
 
-        def refresh(typed: str) -> tuple[list[str], int]:
-            if not typed:
-                return unique, caret_col
+        def matching(typed: str) -> list[HistoryEntry]:
             keywords = typed.lower().split()
-            filtered = [e for e in unique if all(k in e.lower() for k in keywords)]
-            return filtered, caret_col
+            return [e for e in entries if all(k in e.cmd.lower() for k in keywords)]
 
+        def refresh(typed: str) -> tuple[list[HistoryEntry], int]:
+            return matching(typed), caret_col
+
+        now = time.time()
         picker = InlinePicker(
-            unique,
-            display_fn=str,
+            matching(seed),
+            display_fn=lambda e: e.cmd,
+            meta_fn=lambda e: _history_meta(e, now),
             max_height=10,
             col=caret_col,
             initial_offset=0,
@@ -1097,6 +965,7 @@ class LineEditor:
             # the next keystroke is usually a Backspace fixing a typo, and
             # closing here would throw the whole query away.
             empty_placeholder="(no matches)",
+            typed=seed,
         )
         with self._picker_session():
             selected = picker.run()
@@ -1105,7 +974,7 @@ class LineEditor:
         sys.stdout.write("\033[1A")
 
         if selected is not None:
-            self._buf = selected
+            self._buf = selected.cmd
             self._cursor = len(self._buf)
             self._hist_idx = 0
         else:
@@ -1121,18 +990,6 @@ class LineEditor:
         return raw_token_start(self._buf[: self._cursor])
 
     def _apply(self, completion: Completion) -> None:
-        # Verbatim candidate (history): the value may span several tokens and is
-        # already shell syntax, so it replaces the raw token as-is — no shell
-        # quoting and no trailing space.  It starts at the same anchor an
-        # ordinary token candidate would, so what the user saw in the picker is
-        # what lands under the caret.  Text after the caret is kept: applying a
-        # suggestion must not silently discard part of the buffer.
-        if completion.verbatim:
-            raw_start = self._raw_token_start()
-            post = self._buf[self._cursor :]
-            self._buf = self._buf[:raw_start] + completion.value + post
-            self._cursor = raw_start + len(completion.value)
-            return
         # Find where the raw token starts in the buffer.  We cannot use
         # len(prefix) here because shlex.split returns the *unquoted* length,
         # which differs from the raw length when the token is surrounded by

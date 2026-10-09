@@ -245,7 +245,7 @@ def test_unlisted_command_is_never_run_in_completion_mode(tmp_path, monkeypatch)
     shell = Shell()
     with patch("eosh.completion.subprocess.run") as run, \
          patch("eosh.completion.subprocess.Popen") as popen:
-        completions, _, _ = shell._get_base_completions("touch fo")
+        completions, _, _ = shell._get_completions("touch fo")
     run.assert_not_called()
     popen.assert_not_called()
     assert [c.value for c in completions] == ["foo.txt"]
@@ -259,7 +259,7 @@ def test_listed_command_completes_through_cobra():
         "eosh.completion.subprocess.run",
         return_value=_completed("deploy\tship it\nstatus\n:4\n"),
     ) as run:
-        completions, _, _ = shell._get_base_completions("mytool d")
+        completions, _, _ = shell._get_completions("mytool d")
     assert run.call_args[0][0] == ["mytool", "__complete", "d"]
     assert completions == [Completion(value="deploy", description="ship it")]
 
@@ -272,6 +272,6 @@ def test_listed_command_completes_flags_through_cobra():
         "eosh.completion.subprocess.run",
         return_value=_completed("--verbose\tbe loud\n:4\n"),
     ) as run:
-        completions, _, _ = shell._get_base_completions("mytool deploy --v")
+        completions, _, _ = shell._get_completions("mytool deploy --v")
     assert run.call_args[0][0] == ["mytool", "__complete", "deploy", "--v"]
     assert [c.value for c in completions] == ["--verbose"]

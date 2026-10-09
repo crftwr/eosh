@@ -43,13 +43,13 @@ from .completion import (
     CompletionContext,
     FileCompleter,
     Completion,
-    HistoryCompleter,
     get_argcomplete_fallback,
 )
 from .variables import EnvVar, registry as var_registry, VarCompleter
 from .command_context import CommandContext, ShellView
 from .context import ContextManager, ContextState
-from .lineedit import CONTEXT_CHANGED_SENTINEL, History, LineEditor
+from .history import HistoryStore, norm_dir
+from .lineedit import CONTEXT_CHANGED_SENTINEL, LineEditor
 from .parsing import expand_vars, split_for_completion, tokenize
 from .paths import config_dir
 from .pipeline import (
@@ -1156,53 +1156,6 @@ def _positional_label(cmd, pos_idx: int, command_name: str, args: list[str]) -> 
     return f"arg {pos_idx + 1}"
 
 
-def _one_token(value: str) -> str:
-    """*value* as the single token it holds, unquoted — ``""`` if it holds more.
-
-    Used to compare a history candidate with a completer's candidates, which
-    live in the same anchored space but are stored unquoted (``lineedit._apply``
-    quotes them on insert, where a verbatim history value is already shell
-    syntax).  So ``'My Documents/'`` and ``My Documents/`` are recognised as the
-    same one token, while ``spaces --max 5`` is not one token at all.
-    """
-    try:
-        parts = shlex.split(value)
-    except ValueError:          # unbalanced quote — compare the raw text
-        return value.strip()
-    return parts[0] if len(parts) == 1 else ""
-
-
-def _drop_history_duplicates(
-    history: list[Completion], completions: list[Completion]
-) -> list[Completion]:
-    """Drop history rows that only repeat a candidate the completer offers.
-
-    Both lists are anchored at :func:`parsing.raw_token_start`, so a one-token
-    history entry and the command's own candidate for that token insert the very
-    same text — ``awsut sagemaker studio <TAB>`` listed ``spaces`` twice, once
-    tagged ``history``, for two rows that did the same thing.  The history row is
-    the one to lose: it is the derived one, and the completer's carries the
-    description (``List the spaces in a domain``) that makes the row worth
-    reading.
-
-    Only *exact* duplicates go.  ``spaces --max 5`` keeps its row, because no
-    per-argument completer can produce it — spanning several arguments is the
-    whole reason history is in the list.
-    """
-    if not history or not completions:
-        return history
-    offered = {c.value for c in completions if not c.verbatim}
-    if not offered:
-        return history
-    def duplicate(value: str) -> bool:
-        if value in offered:
-            return True
-        token = _one_token(value)
-        return bool(token) and token in offered
-
-    return [h for h in history if not duplicate(h.value)]
-
-
 # ── source-bash: run a bash script, then import its environment ────────────
 #
 # The whole point of `source-bash` is the *import*: a child bash exits and
@@ -1290,39 +1243,46 @@ class Shell:
             if not isinstance(getattr(sys, stream), _ThreadLocalStream):
                 setattr(sys, stream, _ThreadLocalStream(getattr(sys, stream)))
 
-        history_path = config_dir() / "history"
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-
-        history = History(history_path)
-        # Seed the default context's per-session Up/Down list from the global
-        # on-disk history. New contexts snapshot their parent's list at create
-        # time; Ctrl-R always searches the global store (self._history).
+        # The history every eosh process shares (SQLite — see history.py).
+        self._history = HistoryStore(config_dir() / "history.db")
+        # The history row of the line _execute is running, for _park.
+        self._current_history_id: int | None = None
+        # Seed the default context's per-session Up/Down list from it. New
+        # contexts snapshot their parent's list at create time; Ctrl+R and
+        # the ghost suggestion always query the shared store.
         default_ctx = self.context_manager.current()
         if default_ctx is not None:
-            default_ctx.history = list(history.entries)
+            default_ctx.history = self._history.recent_commands()
         self._line_editor = LineEditor(
-            history=history,
+            history=self._history,
             get_completions=self._get_completions,
             get_prompt=lambda: get_prompt_func()(self.context_manager),
             switch_fn=self._handle_switch,
             get_arg_info=self._get_arg_info,
             local_history_fn=self._current_context_history,
+            suggest_fn=self._suggest,
         )
 
         self._command_completer = CommandNameCompleter(self.registry)
         self._file_completer = FileCompleter()
         self._var_completer = VarCompleter()
-        # Whole-line suggestions from the *current context's* history — the same
-        # list Up/Down walks, so TAB recall and arrow recall agree on scope.
-        # (Ctrl+R is the one that searches the global store.)  Scoped further to
-        # the lines recorded as run in the cwd; the directory side table is
-        # global, so it keeps working for a context's inherited entries.
-        self._history_completer = HistoryCompleter(
-            self._current_context_history, ran_here_fn=history.ran_here
-        )
 
         # Wire Pipeline.run() so decorator bodies can re-enter execution.
         set_pipeline_executor(self._run_pipeline_from_decorator)
+
+    def _suggest(self, buf: str) -> str | None:
+        """The ghost suggestion for *buf*: the latest line run in this
+        directory — by any context, in any eosh process — that extends it."""
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            return None
+        return self._history.suggest(buf, cwd)
+
+    def _record_history(self, line: str) -> int | None:
+        """Add *line* to the shared history and the context's Up/Down list."""
+        self._line_editor.add_to_history(line)
+        return self._history.add(line, ctx=self.context_manager.current_name)
 
     def _current_context_history(self) -> list[str]:
         """Return the current context's per-session Up/Down history list.
@@ -1455,39 +1415,6 @@ class Shell:
         return line[i:]
 
     def _get_completions(self, line_before_cursor: str) -> tuple[list[Completion], str, str]:
-        """Return ``(completions, prefix, status_label)`` for the cursor position.
-
-        Wraps the completer-driven candidates from :meth:`_get_base_completions`
-        with history suggestions (see :class:`HistoryCompleter`) — the tails of
-        past command lines that continue what is typed — listed first so "what I
-        ran before" is the top candidate.
-
-        A history row that only repeats a candidate the command's own completer
-        already offers is dropped — see :func:`_drop_history_duplicates`.
-
-        A unique token candidate still auto-applies without showing the picker
-        (that check lives in ``lineedit._complete`` and counts only non-history
-        candidates), so history stays one more TAB away in that case rather
-        than costing a keystroke on every completion.
-        """
-        completions, prefix, label = self._get_base_completions(line_before_cursor)
-
-        history = self._history_completer.complete(CompletionContext(
-            command=None,
-            args=[],
-            arg_index=0,
-            prefix=prefix,
-            line=line_before_cursor,
-            shell_context=self._shell_view(),
-        ))
-        history = _drop_history_duplicates(history, completions)
-        if not history:
-            return completions, prefix, label
-        # With no completer candidates the picker is showing history and nothing
-        # else — say so rather than labelling it with the command name.
-        return history + completions, prefix, (label if completions else "history")
-
-    def _get_base_completions(self, line_before_cursor: str) -> tuple[list[Completion], str, str]:
         # Isolate the current pipeline stage so completions for `ls | grep -`
         # are computed against `grep`, not `ls`.
         stage_line = _split_on_operators(line_before_cursor, [";", "&&", "||", "|"])[-1][1]
@@ -1664,7 +1591,7 @@ class Shell:
         # Expand the leading token if it is an alias, so the status bar for
         # `hp <args>` resolves against the alias's expansion (e.g.
         # `awsut sagemaker hyperpod`).  Mirrors the alias handling in
-        # _get_base_completions.
+        # _get_completions.
         expansion = self.registry.get_alias(command_name)
         if expansion is not None:
             expansion_tokens = tokenize(expansion)
@@ -1947,6 +1874,36 @@ class Shell:
                         cmd = self.registry.get(name)
                         desc = cmd.help_text.split("\n")[0] if cmd.help_text else ""
                         print(f"  {name:20s} {desc}")
+
+        @self.registry.command(
+            name="history",
+            sync=True,
+            help=(
+                "List past command lines (every context and eosh process).\n\n"
+                "  history              the last 25\n"
+                "  history docker run   the last 25 containing every keyword\n"
+                "  history -n 100 --here"
+            ),
+            params=[
+                arg("keywords", nargs="*", metavar="KEYWORD",
+                    help="only lines containing all of these (case-insensitive)"),
+                arg("-n", type=int, default=25, metavar="N", dest="limit",
+                    help="how many (default 25)"),
+                arg("--here", action="store_true",
+                    help="only lines run in this directory"),
+            ],
+        )
+        def history_cmd(keywords, limit, here):
+            entries = self._history.entries(
+                limit, keywords=keywords, cwd=os.getcwd() if here else None)
+            home = norm_dir(os.path.expanduser("~"))
+            for e in entries:
+                when = time.strftime("%m-%d %H:%M", time.localtime(e.ts))
+                status = "" if not e.status else str(e.status)
+                where = e.cwd or ""
+                if where == home or where.startswith(home + os.sep):
+                    where = "~" + where[len(home):]
+                print(f"{when}  {status:>3}  {where.replace(os.sep, '/')}  {e.cmd}")
 
         _names_after_subcommands = {"switch", "kill"}
 
@@ -2315,7 +2272,7 @@ class Shell:
 
         return sorted(changed), sorted(removed), new_cwd
 
-    def _execute(self, line: str) -> None:
+    def _execute(self, line: str, history_id: int | None = None) -> None:
         try:
             seq = parse_line(expand_vars(line))
         except DecoratorParseError as e:
@@ -2328,6 +2285,7 @@ class Shell:
         # exit callback instead of from this (premature) return.
         self._backgrounded = False
         self._current_line = line
+        self._current_history_id = history_id
         hooks.fire("on_command_starting", line)
         try:
             for op, pipeline in seq.items:
@@ -2340,8 +2298,10 @@ class Shell:
                 self._notice_state_change()
         finally:
             self._current_line = None
+            self._current_history_id = None
             if not self._backgrounded:
                 elapsed = time.monotonic() - started
+                self._history.finish(history_id, last_exit, elapsed)
                 notify.command_done(line, elapsed, last_exit)
                 hooks.fire("on_command_finished", line, last_exit, elapsed)
             # User-run commands may have mutated remote state (e.g.
@@ -2358,6 +2318,7 @@ class Shell:
         ctx.process_slot = slot
         slot.parked = True
         slot.line = self._current_line
+        slot.history_id = self._current_history_id
         self._backgrounded = True
 
     def _slot_finished(self, slot) -> None:
@@ -2381,6 +2342,7 @@ class Shell:
         out_of_sight = owner is not None and owner != self.context_manager.current_name
         notify.command_done(" ".join(slot.argv), slot.elapsed(), slot.exit_code or 0,
                             context=owner if out_of_sight else None)
+        self._history.finish(slot.history_id, slot.exit_code or 0, slot.elapsed())
         hooks.fire("on_command_finished", slot.line or " ".join(slot.argv),
                    slot.exit_code or 0, slot.elapsed())
 
@@ -3498,8 +3460,8 @@ class Shell:
                     full_text = partial + cont
 
                 if full_text.strip():
-                    self._line_editor.add_to_history(full_text)
-                    self._execute(full_text.strip())
+                    history_id = self._record_history(full_text.strip())
+                    self._execute(full_text.strip(), history_id=history_id)
                     if self._exit_requested:
                         break
             except KeyboardInterrupt:

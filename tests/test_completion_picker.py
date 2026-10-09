@@ -16,7 +16,8 @@ Three rules are pinned here:
 import re
 
 from eosh.completion import Completion
-from eosh.lineedit import History, LineEditor
+from eosh.history import HistoryStore
+from eosh.lineedit import LineEditor
 from eosh.tui import (InlinePicker, _compose_meta,
                          _meta_col_widths)
 
@@ -270,7 +271,7 @@ def _editor(monkeypatch, tmp_path, completions_for):
     monkeypatch.setattr(tui, "InlinePicker", _StubPicker)
     _StubPicker.instances = []
     ed = LineEditor(
-        history=History(tmp_path / "history"),
+        history=HistoryStore(None),
         get_completions=completions_for,
         get_prompt=lambda: "> ",
     )

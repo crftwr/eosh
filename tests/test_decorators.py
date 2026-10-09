@@ -785,7 +785,7 @@ def _make_blocking_pipeline(release_event):
 
 def test_command_name_completion_leaves_decorators_out(watch_deco):
     shell = Shell()
-    completions, _, _ = shell._get_base_completions("w")
+    completions, _, _ = shell._get_completions("w")
     assert "@watch" not in [c.value for c in completions]
 
 
@@ -809,6 +809,6 @@ def test_a_decorator_flag_value_completes_like_a_commands():
         pass
 
     shell = Shell()
-    completions, _, label = shell._get_base_completions("@_t_val -m ")
+    completions, _, label = shell._get_completions("@_t_val -m ")
     assert [c.value for c in completions] == ["fast", "slow"]
     assert label.startswith("-m <MODE>")
