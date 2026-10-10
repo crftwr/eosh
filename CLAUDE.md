@@ -5,19 +5,25 @@ A lightweight but powerful terminal shell environment implemented in Python.
 ## Before designing features or fixes — read these first
 
 When designing a non-trivial new feature or working out a bug fix, always
-consult these two documents *before* proposing a solution:
+consult these two sources *before* proposing a solution:
 
 - [doc/limitations.md](doc/limitations.md) — known limitations of existing
   features. A "small" fix may already be a known gap with broader scope;
   one careful change can often resolve several entries at once.
-- [doc/enhancements.md](doc/enhancements.md) — enhancement ideas and
-  in-flight design drafts. A new feature may overlap with a planned one,
-  or a bug fix may unlock part of an existing draft.
+- [GitHub Discussions → Ideas](https://github.com/crftwr/eosh/discussions/categories/ideas) —
+  enhancement ideas and in-flight design drafts, one discussion per topic
+  (`gh api graphql` to read them; open ones are the live backlog). A new
+  feature may overlap with a planned one, or a bug fix may unlock part of
+  an existing draft.
 
 Cross-checking both lets you spot opportunities to solve multiple problems
 together instead of stacking point fixes. When you ship something that
-touches an entry in either doc, update or remove that entry in the same
-change.
+touches an entry, update or remove the limitations.md entry in the same
+change, and tick off or close the discussion.
+
+**Current focus:** optimising conventional terminal work over text
+streams. Structured data in pipelines (Nushell / PowerShell-style objects)
+is a deliberate non-goal — see issue #13.
 
 ## Architecture Overview
 
@@ -789,7 +795,7 @@ osc133:  A <prompt> B <line>                        C <output> D;<status>
   `notify.SKIP_COMMANDS`). Nothing unless stdout is a tty.
 - `var shell_integration=auto|osc133|osc633|off` (a `GlobalVar`; unset →
   `auto`) forces a dialect or turns marks off. Gaps are in
-  `doc/limitations.md`, follow-ups in `doc/enhancements.md`.
+  `doc/limitations.md`, follow-ups in discussion #69.
 
 ### hooks.py — Event Hooks
 
@@ -987,7 +993,7 @@ The decorator function receives a `Pipeline` (the parsed AST of the wrapped body
 
 **Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `ctx.run_interactive` / `ctx.input` / `ctx.choose` raise `RuntimeError` from a piped decorator.
 
-See [doc/decorators.md](doc/decorators.md) for the full design rationale, IPython-magic precedent, parser/executor walkthrough, and resolved UX questions; remaining follow-ups (stacking, more built-ins, …) are in [doc/enhancements.md](doc/enhancements.md).
+See [doc/decorators.md](doc/decorators.md) for the full design rationale, IPython-magic precedent, parser/executor walkthrough, and resolved UX questions; remaining follow-ups (stacking, more built-ins, …) are in [discussion #67](https://github.com/crftwr/eosh/discussions/67).
 
 ### User Config (~/.eosh/config.py)
 

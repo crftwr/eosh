@@ -39,7 +39,7 @@ Two things about naming, both consequences of what the API returns:
 Read-only apart from ``delete``, which deletes the *resource*.  Deleting
 individual events and records (``DeleteEvent`` / ``DeleteMemoryRecord``) and
 writing turns into a memory (``CreateEvent``) are deliberately not here — see
-``doc/enhancements.md``.
+discussion #68 (github.com/crftwr/eosh/discussions/68).
 """
 
 from __future__ import annotations

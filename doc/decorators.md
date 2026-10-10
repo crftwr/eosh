@@ -18,9 +18,8 @@ unambiguous and the construct doesn't collide with POSIX command names.
 four built-in decorators (`@watch`, `@time`, `@retry`, `@quiet`)
 are in place; `@deco {body} | next` composition runs the body's stdout
 through the outer pipeline. Open follow-ups (decorator stacking,
-outer sequencing, more built-ins) live in
-[enhancements.md](enhancements.md) under "Pipeline decorators —
-follow-up items."
+outer sequencing, more built-ins) are tracked in
+[discussion #67](https://github.com/crftwr/eosh/discussions/67).
 
 **Shipped:**
 
@@ -583,8 +582,7 @@ Future ideas:
    re-registered by the re-run config.
 
 Open questions are tracked in
-[enhancements.md](enhancements.md) under "Pipeline decorators —
-follow-up items."
+[discussion #67](https://github.com/crftwr/eosh/discussions/67).
 
 ## Non-goals (for the first cut)
 
@@ -656,26 +654,8 @@ follow-up items."
 
 ## What's left for follow-up commits
 
-- **Stacking** (`@time @watch {ls}`) — the parser currently peels one
-  decorator. Loop in `_extract_decorator_prefix` and chain calls in
-  dispatch.
-- **Outer sequencing after a decorator scope** (`@deco {...} ; pwd`,
-  `@deco {...} && other`) — currently rejected with a clear error.
-  Allowing it means letting the outer-sequence parser treat the
-  decorator-stage as one statement; the parser already isolates the
-  decorator scope so the additional change is small.
-- **More built-ins** — `@time`, `@retry` and `@quiet` are shipped.  Future candidates: `@confirm` (prompt before running)
-  and `@nice -n N` (process-priority wrapper).
-- **Slot-aware `@watch`** — route long-running decorator bodies
-  through `PythonCommandSlot` so `Ctrl+]` backgrounding works the
-  same as for regular Python commands.
-- **`@watche ls` typo suggestions** — we own the lookup so suggesting
-  `@watch` is a small, low-risk follow-up.
-- **History** — `@watch ls` is stored in history as written, not
-  per-iteration. Almost certainly the right default; just hasn't
-  been pinned with a test.
-- **Redirects bound to the decorator vs. the body** —
-  `@time {make} > build.log` currently binds the redirect to the
-  body's only stage, so `@time`'s own timing line would print to
-  the terminal rather than land in the file. Likely correct; codify
-  with a test once `@time` ships.
+Tracked in
+[discussion #67](https://github.com/crftwr/eosh/discussions/67):
+stacking, outer sequencing after a decorator scope, slot-aware
+`@watch`, more built-ins, typo suggestions, and tests pinning history
+and redirect binding.
