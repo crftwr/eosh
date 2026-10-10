@@ -155,6 +155,47 @@ This replaced a separate multi-select checkbox picker and an after-TAB "arg hint
 - **Short-flag cluster parsing** — `-hs` in `ctx.args` is treated as both `-h` and `-s` already used
 - **Preceding-flag hint** — when the last completed arg is a value-taking flag and the user presses TAB without typing `-`, the engine shows a hint instead of opening a picker
 
+### OverlayCompleter
+
+Adds candidates to a completer instead of replacing it. Use it for a tool with
+its own completion protocol (a `delegate`) that leaves some slots unanswered:
+
+```python
+delegate=OverlayCompleter(
+    AwsCompleter(),                                    # flags, services, operations
+    _AwsS3PathArg(S3PathCompleter(), _S3_REMOTE_OPS),  # s3:// on `aws s3 <op>` paths
+    _AwsS3PathArg(FileCompleter(), _S3_LOCAL_OPS),     # local paths on cp / mv / sync
+)
+```
+
+- **When an extra runs.** Each extra's `should_activate` decides where it
+  applies.
+- **Duplicates.** A value already offered keeps its first entry.
+- **Future-proof.** Because the extras add rather than replace, they keep
+  working if the base tool later starts answering in the same slot too.
+
+### S3PathCompleter
+
+`eosh.recipes.aws.S3PathCompleter` completes `s3://bucket/key` (discussion #33).
+Put it on any argument that takes an S3 URI:
+`arg("src", completer=S3PathCompleter())`.
+
+- **What it lists.** First the buckets, then one "directory" level of keys at a
+  time, using `/` as the delimiter. Size and date are shown as `fields`.
+- **How it lists.** Through the `aws` CLI (`s3api list-buckets` /
+  `list-objects-v2`), so the core needs no boto3. It honours a `--profile` or
+  `--region` already typed on the line.
+- **Caching.** Results are cached per account. One listing serves every
+  keystroke that narrows within the same level.
+- **Failures.** An error or a timeout is reported once and cached as empty
+  until the next command runs.
+- **Before `s3://` is typed.** On an empty word, or one that could still become
+  `s3://` (`s`, `s3:`), it offers `s3://` itself and doesn't call AWS.
+
+The `aws` recipe uses it only on the path arguments of `aws s3 ls|cp|mv|rm|sync|rb|presign`.
+It is never applied by scheme to every command, because most commands don't
+accept an S3 URI.
+
 Past command lines are not completion candidates: they come back as the line
 editor's ghost suggestion, through Ctrl+R, and through `history` — see
 [history.md](history.md).

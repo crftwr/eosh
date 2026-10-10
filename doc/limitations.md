@@ -250,6 +250,20 @@ re-render it on `activate()`.
   scanning raw input chunks. Bound to Esc itself, it would fire on every
   escape sequence the program receives.
 
+## S3 path completion
+
+- **One listing shows at most 1000 entries per level** (`max_keys`). A
+  bigger "directory" is cut off there. Type more of the name to narrow it:
+  the prefix stays the same, so it hits the same cached listing.
+- **It needs the `aws` CLI on `PATH`** and goes through it, so the first TAB
+  at a level pays the CLI's start-up time (about half a second) plus the
+  request. The account comes from the environment plus `--profile` /
+  `--region` on the line. Other account-selecting flags (`--endpoint-url`)
+  are not passed on.
+- **`aws s3` only.** `aws s3api` takes a bucket and a key as separate flags
+  (`--bucket`, `--key`), and there is no completer for those. `gs://` has
+  none either.
+
 ## Event hooks — what they don't see
 
 - **A backgrounded line's `on_command_finished` runs on a background

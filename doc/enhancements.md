@@ -267,6 +267,12 @@ pick them up without re-deriving the motivation.
   like a `--view` flag or `@table` decorator (heuristic parsing of known
   command output, à la a lightweight Nushell — fragile but maybe
   practical without sacrificing compatibility).
+  To keep the fragile part small and replaceable, use a registry of
+  per-command parsers. XeFM does the same for formats, with a
+  `suffix → decoder` table. Here it would be `@register_parser("ps") def
+  parse(text) -> rows`, with whitespace-column heuristics as the fallback
+  for anything unregistered. Design it together with `@table`, not before
+  (from discussion #33).
 
 - **Lowering the pipe learning curve.** The "data flowing through a
   pipeline" mental model is hard to build without visual feedback;
