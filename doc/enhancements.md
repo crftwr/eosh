@@ -36,8 +36,8 @@ here in enhancements.md until each item lands.
 - **Redirects bound to the decorator vs. the body** —
   `@time {make} > build.log` currently binds the redirect to the
   body's only stage, so `@time`'s own timing line would print to
-  the terminal rather than land in the file. Likely correct; codify
-  with a test once `@time` ships.
+  the terminal rather than land in the file. Likely correct; `@time`
+  has shipped, so this just needs a test.
 
 ## `awsut bedrock-agentcore` — the rest of the service
 
@@ -197,12 +197,10 @@ of [architecture.md](architecture.md).
 
 - **Move the Ctrl+] context-switch UI into a `switcher.py`** (or
   back into `context.py`). `_show_switch_menu`, `_resume_pty_slot`,
-  `_handle_switch`, `_NEW_CTX_SENTINEL`, `_running_contexts`,
-  `_confirm_exit` are UI-over-`ContextManager`. *Risk:* low —
-  almost a pure move; `_handle_switch` already returns a sentinel
-  to `lineedit`, which is a clean boundary. Today
-  `_resume_pty_slot` reaches into `slot.terminal_modes`
-  (process.py internals) — make this a method on the slot.
+  `_handle_switch`, `_running_contexts`, `_confirm_exit` are
+  UI-over-`ContextManager`. *Risk:* low — almost a pure move;
+  `_handle_switch` already returns a sentinel to `lineedit`, which
+  is a clean boundary.
 
 - **Promote `pipeline._split_on_operators` to a public name.**
   It is imported from `shell.py` (cross-module use of a leading
