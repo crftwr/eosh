@@ -10,7 +10,7 @@ import time
 import unicodedata
 from typing import Callable
 
-from . import terminal
+from . import keys, terminal
 from .completion import Completion
 from .history import HistoryEntry, HistoryStore
 from .parsing import raw_token_start
@@ -212,6 +212,10 @@ class LineEditor:
         # replay once so the final geometry isn't lost.
         self._in_resize: bool = False
         self._resize_pending: bool = False
+        # User actions running right now (the ctx.invoke re-entry guard), and
+        # a line an action asked to finish with (ctx.invoke("accept")).
+        self._invoking: set[str] = set()
+        self._pending_result: str | None = None
 
     def add_to_history(self, line: str) -> None:
         """Append *line* to the current context's Up/Down list (the caller
@@ -511,156 +515,207 @@ class LineEditor:
 
     # ── input ────────────────────────────────────────────────────────────────
 
-    def _handle_key(self, key: bytes, fd: int) -> str | None:
+    def _handle_key(self, key: bytes, fd: int = 0) -> str | None:
         """Return a result string to finish, or None to keep editing."""
         self._suppress_statusbar = False  # bring the bar back on user activity
 
-        # Enter
-        if key in (b"\r", b"\n"):
-            return self._buf
+        name = keys.lookup("prompt", key)
+        if name is not None:
+            return self.run_action(name)
 
-        # Ctrl+D — EOF if buffer empty
-        if key == b"\x04":
-            if not self._buf:
-                raise EOFError
-            return None
-
-        # Ctrl+C
-        if key == b"\x03":
-            self._buf = ""
-            self._cursor = 0
-            raise KeyboardInterrupt
-
-        # Ctrl+] — context switch (inert without a switch_fn, e.g. in tests)
-        if key == b"\x1d":
-            if self._switch_fn is None:
-                return None
-            self._erase_ghost()
-            needs_forward = self._do_inline_switch()
-            return CONTEXT_CHANGED_SENTINEL if needs_forward else None
-
-        # TAB — completion
-        if key == b"\x09":
-            self._erase_ghost()
-            self._complete()
-            return None
-
-        # Backspace
-        if key in (b"\x7f", b"\x08"):
-            if self._cursor > 0:
-                self._buf = self._buf[: self._cursor - 1] + self._buf[self._cursor :]
-                self._cursor -= 1
-            return None
-
-        # Ctrl+W — delete word before cursor
-        if key == b"\x17":
-            i = self._cursor
-            while i > 0 and self._buf[i - 1] == " ":
-                i -= 1
-            while i > 0 and self._buf[i - 1] != " ":
-                i -= 1
-            self._buf = self._buf[:i] + self._buf[self._cursor :]
-            self._cursor = i
-            return None
-
-        # Ctrl+K — delete to end of line
-        if key == b"\x0b":
-            self._buf = self._buf[: self._cursor]
-            return None
-
-        # Ctrl+U — delete to beginning
-        if key == b"\x15":
-            self._buf = self._buf[self._cursor :]
-            self._cursor = 0
-            return None
-
-        # Ctrl+A / Home (CSI and SS3 forms — Terminal.app sends SS3 in app cursor mode)
-        if key in (b"\x01", b"\x1b[H", b"\x1b[1~", b"\x1bOH"):
-            self._cursor = 0
-            return None
-
-        # Ctrl+E / End — at the end of the line, accept the ghost suggestion
-        if key in (b"\x05", b"\x1b[F", b"\x1b[4~", b"\x1bOF"):
-            if not self._accept_ghost():
-                self._cursor = len(self._buf)
-            return None
-
-        # Ctrl+L — clear screen
-        if key == b"\x0c":
-            sys.stdout.write("\033[2J\033[H")
-            return None
-
-        # Ctrl+B / Left arrow
-        if key in (b"\x02", b"\x1b[D", b"\x1bOD"):
-            if self._cursor > 0:
-                self._cursor -= 1
-            return None
-
-        # Ctrl+F / Right arrow — at the end of the line, accept the ghost
-        if key in (b"\x06", b"\x1b[C", b"\x1bOC"):
-            if self._cursor < len(self._buf):
-                self._cursor += 1
-            else:
-                self._accept_ghost()
-            return None
-
-        # Alt+B — move word left
-        if key == b"\x1bb":
-            i = self._cursor
-            while i > 0 and self._buf[i - 1] == " ":
-                i -= 1
-            while i > 0 and self._buf[i - 1] != " ":
-                i -= 1
-            self._cursor = i
-            return None
-
-        # Alt+F — move word right; at the end of the line, accept one word
-        # of the ghost suggestion
-        if key == b"\x1bf":
-            if self._cursor == len(self._buf) and self._accept_ghost(word=True):
-                return None
-            i = self._cursor
-            n = len(self._buf)
-            while i < n and self._buf[i] == " ":
-                i += 1
-            while i < n and self._buf[i] != " ":
-                i += 1
-            self._cursor = i
-            return None
-
-        # Ctrl+R — history search, starting from what is typed
-        if key == b"\x12":
-            self._erase_ghost()
-            self._history_search()
-            return None
-
-        # Up arrow — history back (CSI and SS3 forms; SS3 is what Terminal.app
-        # sends when the keypad/cursor is in application mode — DECCKM)
-        if key in (b"\x1b[A", b"\x1bOA", b"\x10"):
-            self._hist_back()
-            return None
-
-        # Down arrow — history forward
-        if key in (b"\x1b[B", b"\x1bOB", b"\x0e"):
-            self._hist_fwd()
-            return None
-
-        # Printable ASCII
-        if len(key) == 1 and 0x20 <= key[0] < 0x7F:
-            ch = key.decode()
-            self._buf = self._buf[: self._cursor] + ch + self._buf[self._cursor :]
-            self._cursor += 1
-            return None
-
-        # UTF-8 multi-byte char (already fully assembled by terminal.read_key)
-        if key[:1] >= b"\x80":
+        # Printable ASCII, or a UTF-8 character (already fully assembled by
+        # terminal.read_key).  Printable keys are never bindable.
+        if (len(key) == 1 and 0x20 <= key[0] < 0x7F) or key[:1] >= b"\x80":
             ch = key.decode("utf-8", errors="replace")
             if ch.isprintable():
-                self._buf = self._buf[: self._cursor] + ch + self._buf[self._cursor :]
-                self._cursor += 1
-            return None
-
+                self._insert(ch)
         return None
+
+    def run_action(self, name: str) -> str | None:
+        """Run the action *name* (a user action first, then the built-in) and
+        return what :meth:`_handle_key` should: a line to finish with, or None.
+
+        A user action already running is skipped in favour of the built-in of
+        the same name, so ``ctx.invoke("history_search")`` inside an action
+        that overrides it reaches the original (XeFM's re-entry guard).
+        """
+        action = keys.get_action(name)
+        if action is None:
+            return None
+        name = action.name
+        if action.is_user and name not in self._invoking:
+            self._invoking.add(name)
+            self._pending_result = None
+            try:
+                action.func(EditorContext(self))
+            except (EOFError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                self._report_action_error(action.short_name, exc)
+            finally:
+                self._invoking.discard(name)
+            result, self._pending_result = self._pending_result, None
+            return result
+        handler = self._builtin_actions().get(name)
+        return handler() if handler is not None else None
+
+    def _report_action_error(self, name: str, exc: BaseException) -> None:
+        """A raising user action prints its traceback below the line; the
+        prompt is drawn afresh under it and editing goes on."""
+        from .user_errors import format_user_exception
+        self._erase_ghost()
+        text = f"key action {name!r} failed:\n" + format_user_exception(exc)
+        sys.stdout.write("\r\n" + text.rstrip("\n").replace("\n", "\r\n") + "\r\n")
+        sys.stdout.flush()
+        self._cursor_row = 0
+
+    def _builtin_actions(self) -> dict[str, Callable[[], str | None]]:
+        return {
+            "prompt.accept": lambda: self._buf,
+            "prompt.complete": self._act_complete,
+            "prompt.history_search": self._act_history_search,
+            "prompt.previous_history": self._act(self._hist_back),
+            "prompt.next_history": self._act(self._hist_fwd),
+            "prompt.switch_context": self._act_switch_context,
+            "prompt.beginning_of_line": self._act(lambda: self._move_to(0)),
+            "prompt.end_of_line": self._act(self._end_of_line),
+            "prompt.backward_char": self._act(lambda: self._move_to(self._cursor - 1)),
+            "prompt.forward_char": self._act(self._forward_char),
+            "prompt.backward_word": self._act(lambda: self._move_to(self._word_start())),
+            "prompt.forward_word": self._act(self._forward_word),
+            "prompt.backward_delete_char": self._act(
+                lambda: self._delete(self._cursor - 1, self._cursor)),
+            "prompt.delete_char": self._act(
+                lambda: self._delete(self._cursor, self._cursor + 1)),
+            "prompt.backward_kill_word": self._act(
+                lambda: self._delete(self._word_start(), self._cursor)),
+            "prompt.kill_line": self._act(lambda: self._delete(self._cursor, len(self._buf))),
+            "prompt.backward_kill_line": self._act(lambda: self._delete(0, self._cursor)),
+            "prompt.clear_screen": self._act(lambda: sys.stdout.write("\033[2J\033[H")),
+            "prompt.eof": self._act_eof,
+            "prompt.interrupt": self._act_interrupt,
+        }
+
+    @staticmethod
+    def _act(func: Callable[[], object]) -> Callable[[], None]:
+        """An editing action: runs *func*, never finishes the line."""
+        def run() -> None:
+            func()
+        return run
+
+    # ── editing primitives (the built-in actions and EditorContext use these)
+
+    def _insert(self, text: str) -> None:
+        self._buf = self._buf[: self._cursor] + text + self._buf[self._cursor :]
+        self._cursor += len(text)
+
+    def _delete(self, start: int, end: int) -> None:
+        start, end = max(0, start), min(len(self._buf), end)
+        if start >= end:
+            return
+        self._buf = self._buf[:start] + self._buf[end:]
+        if self._cursor > end:
+            self._cursor -= end - start
+        elif self._cursor > start:
+            self._cursor = start
+
+    def _move_to(self, pos: int) -> None:
+        self._cursor = max(0, min(len(self._buf), pos))
+
+    def _word_start(self) -> int:
+        i = self._cursor
+        while i > 0 and self._buf[i - 1] == " ":
+            i -= 1
+        while i > 0 and self._buf[i - 1] != " ":
+            i -= 1
+        return i
+
+    def _end_of_line(self) -> None:
+        # At the end of the line, accept the ghost suggestion.
+        if not self._accept_ghost():
+            self._cursor = len(self._buf)
+
+    def _forward_char(self) -> None:
+        # At the end of the line, accept the ghost suggestion.
+        if self._cursor < len(self._buf):
+            self._cursor += 1
+        else:
+            self._accept_ghost()
+
+    def _forward_word(self) -> None:
+        # At the end of the line, accept one word of the ghost suggestion.
+        if self._cursor == len(self._buf) and self._accept_ghost(word=True):
+            return
+        i, n = self._cursor, len(self._buf)
+        while i < n and self._buf[i] == " ":
+            i += 1
+        while i < n and self._buf[i] != " ":
+            i += 1
+        self._cursor = i
+
+    def _act_complete(self) -> None:
+        self._erase_ghost()
+        self._complete()
+
+    def _act_history_search(self) -> None:
+        self._erase_ghost()
+        self._history_search()
+
+    def _act_switch_context(self) -> str | None:
+        # Inert without a switch_fn (e.g. in tests).
+        if self._switch_fn is None:
+            return None
+        self._erase_ghost()
+        return CONTEXT_CHANGED_SENTINEL if self._do_inline_switch() else None
+
+    def _act_eof(self) -> None:
+        if not self._buf:
+            raise EOFError
+
+    def _act_interrupt(self) -> None:
+        self._buf = ""
+        self._cursor = 0
+        raise KeyboardInterrupt
+
+    def _choose(self, items: list[str], title: str = "") -> str | None:
+        """:meth:`EditorContext.choose`: a picker below the line, filtered by
+        keywords typed while it is open.  What is typed is a query, not text,
+        so it never reaches the buffer."""
+        from .tui import InlinePicker
+
+        items = [str(i) for i in items]
+        if not items:
+            return None
+        self._erase_ghost()
+        caret_char = self._prompt_len + _wcswidth(self._buf[:self._cursor])
+        caret_col = _pending_wrap_col(caret_char, self._cols)
+        caret_row = _pending_wrap_row(caret_char, self._cols)
+        end_row = _pending_wrap_row(self._prompt_len + _wcswidth(self._buf), self._cols)
+        rows_above = end_row - caret_row + 1
+        cols_from_end = _wcswidth(self._buf[self._cursor:])
+        if cols_from_end > 0:
+            sys.stdout.write(f"\033[{cols_from_end}C")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+        def matching(typed: str) -> list[str]:
+            words = typed.lower().split()
+            return [i for i in items if all(w in i.lower() for w in words)]
+
+        picker = InlinePicker(
+            items,
+            max_height=10,
+            col=0,
+            initial_offset=caret_col,
+            rows_above=rows_above,
+            refresh_fn=lambda typed: (matching(typed), 0),
+            status_label=title,
+            empty_placeholder="(no matches)",
+        )
+        with self._picker_session():
+            choice = picker.run()
+        sys.stdout.write(f"\033[{rows_above}A")
+        return choice
 
     # ── history ──────────────────────────────────────────────────────────────
 
@@ -1011,3 +1066,64 @@ class LineEditor:
             value = value + " "
         self._buf = pre + value + post
         self._cursor = len(pre) + len(value)
+
+
+class EditorContext:
+    """What a ``@keys.action`` function receives: the line being edited.
+
+    ``buffer`` and ``cursor`` are read-write (the cursor is clamped to the
+    line); the methods edit at the caret, run another action by name, or ask
+    the user to pick from a list.
+    """
+
+    def __init__(self, editor: LineEditor):
+        self._editor = editor
+
+    @property
+    def buffer(self) -> str:
+        return self._editor._buf
+
+    @buffer.setter
+    def buffer(self, text: str) -> None:
+        self._editor._buf = str(text)
+        self._editor._move_to(self._editor._cursor)
+
+    @property
+    def cursor(self) -> int:
+        return self._editor._cursor
+
+    @cursor.setter
+    def cursor(self, pos: int) -> None:
+        self._editor._move_to(int(pos))
+
+    @property
+    def history(self) -> list[str]:
+        """This context's Up/Down history, oldest first (a copy)."""
+        return list(self._editor._local_entries())
+
+    def insert(self, text: str) -> None:
+        """Insert *text* at the caret and move past it."""
+        self._editor._insert(str(text))
+
+    def replace(self, start: int, end: int, text: str) -> None:
+        """Replace ``buffer[start:end]`` with *text*; the caret ends after it."""
+        ed = self._editor
+        start = max(0, min(len(ed._buf), start))
+        end = max(start, min(len(ed._buf), end))
+        ed._buf = ed._buf[:start] + str(text) + ed._buf[end:]
+        ed._cursor = start + len(str(text))
+
+    def invoke(self, name: str) -> None:
+        """Run the action *name* (``"complete"``, ``"accept"``, another user
+        action …).  Inside an action that overrides a built-in, its own name
+        runs the built-in.  ``"accept"`` finishes the line once this action
+        returns."""
+        if keys.get_action(name) is None:
+            raise ValueError(f"unknown key action {name!r}")
+        result = self._editor.run_action(name)
+        if result is not None:
+            self._editor._pending_result = result
+
+    def choose(self, items: list[str], title: str = "") -> str | None:
+        """Pick one of *items* in a picker below the line; None on Esc."""
+        return self._editor._choose(items, title)

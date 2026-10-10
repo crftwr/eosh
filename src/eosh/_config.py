@@ -296,6 +296,40 @@ notify.SKIP_COMMANDS.update({"psql", "mysql", "sqlite3", "ipython"})
 #     return False
 
 
+
+# ── Key bindings ─────────────────────────────────────────────────────────────
+#
+# Change the keys of the line editor (prompt.*), the pickers (picker.*) and
+# the Ctrl+] switcher (switcher.*), or bind a key to your own function.
+# `help keys` lists every action and its current keys.
+#
+# import shlex
+# from eosh import keys
+#
+# keys.bind("prompt.history_search", "Ctrl-S")    # replace an action's keys
+# keys.bind("picker.next", ["Down", "Ctrl-J"])
+# keys.bind("prompt.clear_screen", [])            # unbind
+#
+# A name without a surface binds it everywhere it exists. accept, complete,
+# backward_delete_char and interrupt are on both the prompt and the pickers:
+#
+# keys.bind("complete", ["Tab", "Ctrl-Space"])    # prompt.complete + picker.complete
+# keys.bind("interrupt", ["Ctrl-C", "Ctrl-G"])    # prompt + picker
+#
+# A dotted name wins on its own surface, whatever the order:
+#
+# keys.bind("accept", ["Enter", "Ctrl-O"])        # both surfaces...
+# keys.bind("picker.accept", ["Enter", "Tab"])    # ...except the pickers, where
+#                                                 # Tab now picks the row (and
+#                                                 # leaves picker.complete)
+#
+# @keys.action("insert_last_arg", keys="Alt-.")
+# def insert_last_arg(ctx):
+#     """Insert the last word of the previous line."""
+#     if ctx.history:
+#         ctx.insert(shlex.split(ctx.history[-1])[-1])
+
+
 # ── Customize the prompt ──────────────────────────────────────────────────────
 
 import os

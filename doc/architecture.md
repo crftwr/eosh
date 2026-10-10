@@ -58,7 +58,10 @@
 │  └── Default + user-overrideable prompt function   │
 ├─────────────────────────────────────────────────────┤
 │  Colors (colors.py)                                 │
-│  └── ColorScheme: dark / light / mono (NO_COLOR)    │
+│  └── ColorScheme: dark / light / mono (NO_COLOR)   │
+├─────────────────────────────────────────────────────┤
+│  Key Bindings (keys.py)                             │
+│  └── keys.bind(), @keys.action() from config       │
 ├─────────────────────────────────────────────────────┤
 │  Recipes (recipes/)                                 │
 │  └── Completion recipes for external commands      │
@@ -160,6 +163,10 @@ Inline-rendered widgets anchored with DECSC/DECRC (no alternate screen). Cancel 
 Provides `set_prompt()` / `get_prompt_func()` for customizable prompt generation.
 
 Default prompt: `[context] path/cwd HH:MM:SS [bg:N]>` (ANSI colors). The `[context]` prefix is omitted when the context name is `"default"`. `[bg:N]` appears when N other contexts have live processes.
+
+### keys.py — Key Bindings
+
+One action→keys table for the line editor (`prompt.*`), every inline picker (`picker.*`) and the context switcher (`switcher.*`), dotted names as in XeFM's `KEY_BINDINGS`. `config.py` calls `keys.bind(action, keys)` (replaces an action's keys, `[]` unbinds; a bare name binds every surface that has it, a dotted one wins on its own surface) and `@keys.action(name, keys=...)` (a user `prompt.*` action, `func(ctx)` with an `EditorContext`). Key names (`Ctrl-R`, `Alt-.`, `Shift-Tab`) parse to the byte sequences `terminal.read_key` returns. Bad names, unknown actions and printable keys are `config warning:`s, and `reload` resets everything. `help keys` lists the table. See [keys.md](keys.md).
 
 ### hooks.py — Event Hooks
 
@@ -285,6 +292,7 @@ eosh/
 │       ├── process.py          # PTY subprocess slots, output buffering, terminal-mode tracking
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
 │       ├── colors.py           # ColorScheme + set_color_scheme (dark/light/mono), NO_COLOR
+│       ├── keys.py             # key bindings: action table, keys.bind, @keys.action
 │       ├── terminal.py         # cross-platform raw-mode + key reading
 │       ├── tui.py              # InlinePicker, InlineArgPrompt
 │       ├── recipes/            # external-command completion recipes (28+ files)
