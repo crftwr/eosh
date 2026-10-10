@@ -189,3 +189,21 @@ def test_block_falls_back_to_input_in_a_slot_when_stdin_is_not_a_terminal(monkey
     lines = iter(["export A=1", ""])
     monkeypatch.setattr("builtins.input", lambda *a: next(lines))
     assert _read_from_user("", block=True) == "export A=1"
+
+
+# ── Ctrl+] where nothing can park the command (discussion #76) ─────────────
+
+def test_the_switch_key_on_the_main_thread_says_why_nothing_happens(capsys):
+    from eosh.slots import PARK_REFUSED
+    answer = _read_typed(_feed(b"y\x1d", b"es\r"), "Exit anyway? ", block=False,
+                         refuse_switch=True)
+    assert answer == "yes"
+    out = capsys.readouterr().out
+    assert PARK_REFUSED in out
+    assert out.endswith("Exit anyway? y" + "es\n")      # the question, redrawn
+
+
+def test_the_switch_key_is_dropped_quietly_elsewhere(capsys):
+    from eosh.slots import PARK_REFUSED
+    assert _read_typed(_feed(b"a\x1db\r"), "", block=False) == "ab"
+    assert PARK_REFUSED not in capsys.readouterr().out

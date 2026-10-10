@@ -444,8 +444,11 @@ def _read_from_user(prompt: str, *, block: bool, what: str = "input") -> str:
         if slot is not None:
             return slot._read_typed(prompt, block=block)
         if not IS_WINDOWS:
+            # The main thread — or a stage on a PipelineSlot's PTY, which
+            # never sees the switch key (the forwarding loop takes it).
             with _terminal_keys() as next_bytes:
-                return _read_typed(next_bytes, prompt, block=block)
+                return _read_typed(next_bytes, prompt, block=block,
+                                   refuse_switch=getattr(_job_local, "job", None) is None)
     if not block:
         return input(prompt)
     if prompt:
@@ -527,7 +530,13 @@ def _terminal_keys():
         terminal.restore_mode(fd, saved)
 
 
-def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool) -> str:
+#: What a command on the main thread says when Ctrl+] can't park it
+#: (discussion #76): it is reading the answer to a question itself.
+PARK_REFUSED = "eosh: this command runs on the main thread; it can't be sent to the background"
+
+
+def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool,
+                refuse_switch: bool = False) -> str:
     """Assemble typed or pasted text off a raw key stream, echoing it.
 
     *next_bytes* returns whatever keys have arrived (possibly ``b""`` after a
@@ -540,8 +549,18 @@ def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool) ->
     and raises ``KeyboardInterrupt``.  Escape sequences — arrow keys, the
     terminal's bracketed-paste markers — are dropped, and a CRLF in pasted
     text is one line ending, not two.
+
+    With *refuse_switch* (the main thread, where nothing can park the
+    command), the context-switch key prints :data:`PARK_REFUSED` and the
+    question again, instead of being dropped without a word.
     """
+    from . import keys as keymap
     from .lineedit import _wcswidth
+
+    switch_keys = set()
+    if refuse_switch:
+        switch_keys = {seq.decode() for seq in keymap.sequences("prompt.switch_context")
+                       if len(seq) == 1}
 
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     lines: list[str] = []
@@ -616,6 +635,9 @@ def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool) ->
                     cut -= 1
                 erase(current[cut:])
                 del current[cut:]
+                continue
+            if ch in switch_keys:
+                echo(f"\n{PARK_REFUSED}\n{prompt}{''.join(current)}")
                 continue
             if ch < " " and ch != "\t":
                 continue                             # other C0 controls

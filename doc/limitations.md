@@ -221,6 +221,21 @@ in the context just switched to. eosh says `the rest of the line was not
 run`. Sending the whole line along is part of
 [discussion #76](https://github.com/crftwr/eosh/discussions/76).
 
+## What Ctrl+] can't park, and when it says so
+
+Everything typed at a POSIX terminal can be parked except the commands that
+change the whole shell (`context`, `alias`, `reload`, `exit`, …), which run
+on the main thread (`sync`) and finish at once. When one of them asks a
+question (`exit`'s "Exit anyway?"), Ctrl+] prints `eosh: this command runs on
+the main thread; it can't be sent to the background` and asks again. It stays
+silent where eosh isn't the one reading the keys:
+
+- **`config edit`**: the editor owns the terminal, and gets Ctrl+] as a key
+  (vi's tag jump).
+- **Windows**: commands run on the real console (no PTY slots), so the key
+  goes to whatever is running.
+- **A picker from a main-thread command** (`ctx.choose`) ignores it.
+
 ## A question left open by Ctrl+] is not redrawn on return
 
 If you press Ctrl+] while a command is waiting in `ctx.input` or `ctx.choose`,
