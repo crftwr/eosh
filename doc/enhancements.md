@@ -111,6 +111,24 @@ having:
   session listing to use instead, so the options are concurrency (a thread
   pool over actors) or requiring ACTOR once the count is large.
 
+## Prompt marks — follow-ups
+
+`shell_integration.py` writes `OSC 633` in VS Code and `OSC 133` in an
+allowlist of terminals (issue #26). Open ends:
+
+- **Report the cwd outside VS Code.** OSC 633 carries it (`P;Cwd`); the
+  `OSC 133` terminals read `OSC 7` instead (Windows Terminal `OSC 9;9`),
+  which opens a new tab in the same directory. Nushell and fish both send
+  it.
+- **Ask the terminal instead of the environment.** XTVERSION (`CSI > q`)
+  answers through `ssh` and `tmux`, where `TERM_PROGRAM` is gone. fish
+  uses it to recognise Konsole. eosh already does a DSR round-trip at
+  startup (`terminal.py`), so one more query is cheap — but a terminal
+  that doesn't answer has to be timed out.
+- **kitty's `133` extensions.** `A;click_events=1` (click to move the
+  caret — needs the line editor to read mouse reports) and
+  `C;cmdline_url=…` (the command line, URL-encoded).
+
 ## Architectural follow-ups
 
 The features have shipped (Python pipelines, decorators,

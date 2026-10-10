@@ -63,7 +63,7 @@ from .pipeline import (
     set_pipeline_executor,
     _split_on_operators,
 )
-from . import hooks, notify
+from . import hooks, notify, shell_integration
 from . import keys as keymap
 from .process import ExitCallbackMixin, OutputBuffer, ProcessSlot
 from .colors import set_color_scheme
@@ -1652,7 +1652,8 @@ class Shell:
                 os.chdir(target)
                 os.environ["PWD"] = os.getcwd()
             except OSError as e:
-                print(f"cd: {e}")
+                print(f"cd: {e}", file=sys.stderr)
+                return 1
 
         @self.registry.command(name="exit", help="Exit the shell.", sync=True)
         def exit_shell():
@@ -2052,6 +2053,8 @@ class Shell:
 
         # `var notify=off` / `var notify_threshold=30`.
         notify.register_vars()
+        # `var shell_integration=off`.
+        shell_integration.register_vars()
 
     def _reload_config(self) -> None:
         """``reload``: undo everything the config registered, then run it again."""
@@ -2090,6 +2093,7 @@ class Shell:
         set_color_scheme(None)
         keymap.reset()
         notify.reset_config()
+        shell_integration.reset_config()
         hooks.clear()
 
     def _edit_config(self) -> int:
@@ -2313,12 +2317,14 @@ class Shell:
 
         return sorted(changed), sorted(removed), new_cwd
 
-    def _execute(self, line: str, history_id: int | None = None) -> None:
+    def _execute(self, line: str, history_id: int | None = None) -> int | None:
+        """Run one line; its exit status, or ``None`` when Ctrl+] sent it to
+        the background before it finished."""
         try:
             seq = parse_line(expand_vars(line))
         except DecoratorParseError as e:
             print(f"eosh: {e}", file=sys.stderr)
-            return
+            return 2
         last_exit = 0
         started = time.monotonic()
         # Cleared per line; set by whichever path hands the work to a
@@ -2350,6 +2356,7 @@ class Shell:
             # fetches so the next TAB session re-queries.
             from . import completion_cache
             completion_cache.invalidate_all()
+        return None if self._backgrounded else last_exit
 
     # --- long-command notifications ------------------------------------------
 
@@ -3429,14 +3436,19 @@ class Shell:
         self._install_sigwinch_handler()
         print("Eolith Shell — type 'help' for available commands, 'exit' to quit.")
         hooks.fire("on_startup")
+        shell_integration.startup()
         try:
             self._run_loop()
         finally:
+            shell_integration.command_finished(None)
             hooks.fire("on_exit")
 
     def _run_loop(self) -> None:
         while True:
             try:
+                # A line that ran nothing (empty, Ctrl+C, a Ctrl+] switch)
+                # or was interrupted is closed here.
+                shell_integration.command_finished(None)
                 ctx = self.context_manager.current()
 
                 if ctx and ctx.process_slot and ctx.process_slot.is_alive():
@@ -3505,7 +3517,9 @@ class Shell:
 
                 if full_text.strip():
                     history_id = self._record_history(full_text.strip())
-                    self._execute(full_text.strip(), history_id=history_id)
+                    shell_integration.command_started(full_text.strip())
+                    status = self._execute(full_text.strip(), history_id=history_id)
+                    shell_integration.command_finished(status)
                     if self._exit_requested:
                         break
             except KeyboardInterrupt:

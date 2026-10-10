@@ -10,7 +10,7 @@ import time
 import unicodedata
 from typing import Callable
 
-from . import keys, terminal
+from . import keys, shell_integration, terminal
 from .completion import Completion
 from .history import HistoryEntry, HistoryStore
 from .parsing import raw_token_start
@@ -187,6 +187,7 @@ class LineEditor:
         self._lines = 24
         self._prompt_str = ""
         self._prompt_len = 0
+        self._prompt_marks = ("", "")  # shell_integration's, around the prompt
         self._cursor_row = 0  # rows below render-top where cursor sits
         # VSCode integrated terminal does not reflow content on resize;
         # cursor stays at the same row (clamped column). Detect it so we
@@ -278,6 +279,8 @@ class LineEditor:
         # history entry starts with.
         self._ghost_enabled = prompt_str is None
         self._ghost = None
+        self._prompt_marks = shell_integration.prompt_marks(
+            continuation=prompt_str is not None)
 
         fd = sys.stdin.fileno()
         old_attrs = terminal.get_mode(fd)
@@ -444,7 +447,8 @@ class LineEditor:
         if self._cursor_row > 0:
             sys.stdout.write(f"\033[{self._cursor_row}A")
         sys.stdout.write("\r\033[J")
-        sys.stdout.write(self._prompt_str + self._buf)
+        mark_start, mark_end = self._prompt_marks
+        sys.stdout.write(mark_start + self._prompt_str + mark_end + self._buf)
         ghost = self._ghost_suffix(total_char)
         if ghost:
             sys.stdout.write(f"\033[2m{ghost}\033[22m")
