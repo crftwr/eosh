@@ -166,7 +166,7 @@ Default prompt: `[context] path/cwd HH:MM:SS [bg:N]>` (ANSI colors). The `[conte
 
 ### keys.py — Key Bindings
 
-One action→keys table for the line editor (`prompt.*`), every inline picker (`picker.*`) and the context switcher (`switcher.*`), dotted names as in XeFM's `KEY_BINDINGS`. `config.py` calls `keys.bind(action, keys)` (replaces an action's keys, `[]` unbinds; a bare name binds every surface that has it, a dotted one wins on its own surface) and `@keys.action(name, keys=...)` (a user `prompt.*` action, `func(ctx)` with an `EditorContext`). Key names (`Ctrl-R`, `Alt-.`, `Shift-Tab`) parse to the byte sequences `terminal.read_key` returns. Bad names, unknown actions and printable keys are `config warning:`s, and `reload` resets everything. `help keys` lists the table. See [keys.md](keys.md).
+One action→keys table for the line editor (`prompt.*`), every inline picker (`picker.*`) and the context switcher (`switcher.*`), dotted names as in XeFM's `KEY_BINDINGS`. `config.py` calls `keys.bind(action, keys)` (replaces an action's keys, `[]` unbinds; a bare name binds every surface that has it, a dotted one wins on its own surface) and `@keys.action(name)` (a user `prompt.*` action, `func(ctx)` with an `EditorContext`, bound with `keys.bind` like any other — before or after it is defined; names are checked after the config runs). Key names (`Ctrl-R`, `Alt-.`, `Shift-Tab`) parse to the byte sequences `terminal.read_key` returns. Bad names, unknown actions and printable keys are `config warning:`s, and `reload` resets everything. `help keys` lists the table. See [keys.md](keys.md).
 
 ### hooks.py — Event Hooks
 

@@ -706,8 +706,9 @@ One action→keys table for every surface, in XeFM's shape: dotted names
 from eosh import keys
 
 keys.bind("prompt.history_search", "Ctrl-S")   # replaces its keys; [] unbinds
+keys.bind("insert_last_arg", "Alt-.")         # before or after the definition
 
-@keys.action("insert_last_arg", keys="Alt-.")
+@keys.action("insert_last_arg")
 def insert_last_arg(ctx):                     # ctx: lineedit.EditorContext
     ctx.insert(ctx.history[-1].split()[-1])
 ```
@@ -723,8 +724,13 @@ def insert_last_arg(ctx):                     # ctx: lineedit.EditorContext
   binds one surface and wins there over the bare entry, whatever the call
   order, as in XeFM. `@keys.action` and `ctx.invoke` read a bare name as
   `prompt.`.
-- **Which binding wins.** Built-in defaults first, then a user action's own
-  `keys=`, then every `bind()` in call order; each later one takes the key.
+- **Defining and binding are separate** (XeFM's `ACTIONS` / `KEY_BINDINGS`).
+  `@keys.action` takes no keys; `bind` only records the name, so it may
+  precede the definition. `_load_user_config` calls `keys.check_bindings()`
+  after the config runs, which warns about and drops names that don't exist.
+- **Which binding wins.** Defaults first, then every `bind()` in call order;
+  each later one takes the key. An `override=True` action keeps the
+  built-in's keys.
 - **Errors.** Unknown action names, unparseable key names, chords the terminal
   can't send and printable keys are each a `config warning:`. An unknown
   modifier is refused, never dropped. `reload` → `keys.reset()`.

@@ -323,7 +323,11 @@ notify.SKIP_COMMANDS.update({"psql", "mysql", "sqlite3", "ipython"})
 #                                                 # Tab now picks the row (and
 #                                                 # leaves picker.complete)
 #
-# @keys.action("insert_last_arg", keys="Alt-.")
+# Your own action: define it, and bind it like any other (in either order).
+#
+# keys.bind("insert_last_arg", "Alt-.")
+#
+# @keys.action("insert_last_arg")
 # def insert_last_arg(ctx):
 #     """Insert the last word of the previous line."""
 #     if ctx.history:

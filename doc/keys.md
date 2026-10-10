@@ -11,14 +11,16 @@ from eosh import keys
 keys.bind("prompt.history_search", "Ctrl-S")      # replace an action's keys
 keys.bind("picker.next", ["Down", "Ctrl-J"])      # several keys
 keys.bind("prompt.clear_screen", [])              # unbind
+keys.bind("insert_last_arg", "Alt-.")             # your own actions, below
+keys.bind("pick_branch", "Alt-G")
 
-@keys.action("insert_last_arg", keys="Alt-.")
+@keys.action("insert_last_arg")
 def insert_last_arg(ctx):
     """Insert the last word of the previous line."""
     if ctx.history:
         ctx.insert(shlex.split(ctx.history[-1])[-1])
 
-@keys.action("pick_branch", keys="Alt-G")
+@keys.action("pick_branch")
 def pick_branch(ctx):
     import subprocess
     out = subprocess.run(["git", "branch", "--format=%(refname:short)"],
@@ -67,13 +69,18 @@ runs in the foreground, so rebinding it moves Ctrl+] everywhere.
   keys. Its defaults are gone, and `[]` leaves it with none.
 - **A dotted entry beats a bare one** for its surface, whatever the call
   order. This is XeFM's "qualified entry first".
-- **The last claim on a key wins.** A key goes to built-in defaults first,
-  then to a user action's own `keys=`, then to every `bind` in call order. Each
-  later source takes the key from an earlier one. `keys.bind("history_search",
+- **Defining and binding are separate**, as XeFM's `ACTIONS` and
+  `KEY_BINDINGS` are, and their order doesn't matter. `bind` only records the
+  name. Once the config has run, `keys.check_bindings()` reports each name
+  that doesn't exist.
+- **The last claim on a key wins.** A key goes to the defaults first, then to
+  every `bind` in call order. Each later one takes the key from an earlier
+  one. `keys.bind("history_search",
   "Ctrl-N")` takes Ctrl-N away from `next_history`, which keeps Down.
 - **Nothing fails silently.** Each of these prints a `config warning:` and the
   rest of the config still runs:
-  - an unknown action name (XeFM ignores it)
+  - an unknown action name, reported after the config has run (XeFM ignores
+    it)
   - a key name that doesn't parse, such as an unknown modifier (XeFM drops the
     modifier, so `Hyper-X` becomes a bare `X`)
   - a chord the terminal can't send, such as `Ctrl-Shift-A` or `Ctrl-Tab`
@@ -105,8 +112,8 @@ Modifiers and the key are joined with `-`: `Ctrl-R`, `Alt-.`, `Ctrl-Alt-H`,
 
 ## User actions
 
-`@keys.action(name, keys=…, help=…, override=False)` registers `func(ctx)` as
-a `prompt.*` action. `help` defaults to the docstring's first line, which is
+`@keys.action(name, help=…, override=False)` registers `func(ctx)` as a
+`prompt.*` action. It has no keys until `keys.bind(name, …)` gives it some. `help` defaults to the docstring's first line, which is
 what `help keys` shows. Only `prompt.*` actions can be defined for now. XeFM also
 starts with one surface (`filer`).
 
@@ -123,7 +130,7 @@ starts with one surface (`filer`).
 | `ctx.choose(items, title="")` | a picker below the line, filtered by typed keywords; `None` on Esc |
 
 **Wrapping a built-in.** Pass `override=True` to take a built-in's name. Its
-default keys carry over unless you give `keys=`. Inside the action,
+default keys carry over, and `keys.bind` changes them as usual. Inside the action,
 `ctx.invoke(<its own name>)` runs the built-in, because invoke skips a user
 action that is already running and falls through to the built-in, as XeFM's
 guard does. The same guard stops mutual recursion between two user actions.

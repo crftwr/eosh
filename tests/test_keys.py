@@ -5,7 +5,12 @@ import pytest
 from eosh import keys
 from eosh.history import HistoryStore
 from eosh.lineedit import LineEditor
+from eosh.shell import Shell
 from eosh.tui import InlinePicker
+
+
+# Captured before the autouse fixture stubs it out for every Shell().
+_real_load_user_config = Shell.__dict__["_load_user_config"]
 
 
 def _editor(local=None):
@@ -121,6 +126,7 @@ def test_unknown_action_is_a_warning(capsys):
     keys.bind("prompt.no_such_thing", "Ctrl-X")
     keys.bind("no_such_thing", "Ctrl-X")
     keys.bind("prompt.next", "Ctrl-X")            # next is picker's, not prompt's
+    keys.check_bindings()                          # names are checked after the config
     err = capsys.readouterr().err
     assert "unknown action 'prompt.no_such_thing'" in err
     assert "unknown action 'no_such_thing'" in err
@@ -175,7 +181,9 @@ def test_delete_char():
 
 
 def test_user_action_edits_the_buffer():
-    @keys.action("insert_last_arg", keys="Alt-.")
+    keys.bind("insert_last_arg", "Alt-.")
+
+    @keys.action("insert_last_arg")
     def insert_last_arg(ctx):
         ctx.insert(ctx.history[-1].split()[-1])
 
@@ -186,7 +194,9 @@ def test_user_action_edits_the_buffer():
 
 
 def test_context_buffer_cursor_and_replace():
-    @keys.action("upcase_word", keys="Alt-U")
+    keys.bind("upcase_word", "Alt-U")
+
+    @keys.action("upcase_word")
     def upcase_word(ctx):
         start = ctx.buffer.rfind(" ", 0, ctx.cursor) + 1
         ctx.replace(start, ctx.cursor, ctx.buffer[start:ctx.cursor].upper())
@@ -198,7 +208,9 @@ def test_context_buffer_cursor_and_replace():
 
 
 def test_invoke_accept_finishes_the_line():
-    @keys.action("sudo_accept", keys="Alt-S")
+    keys.bind("sudo_accept", "Alt-S")
+
+    @keys.action("sudo_accept")
     def sudo_accept(ctx):
         ctx.buffer = "sudo " + ctx.buffer
         ctx.invoke("accept")
@@ -224,7 +236,9 @@ def test_override_wraps_the_builtin_through_invoke():
 
 
 def test_overriding_a_builtin_needs_override(capsys):
-    @keys.action("kill_line", keys="Alt-K")
+    keys.bind("kill_line", "Alt-K")
+
+    @keys.action("kill_line")
     def kill_line(ctx):
         pass
 
@@ -233,7 +247,9 @@ def test_overriding_a_builtin_needs_override(capsys):
 
 
 def test_a_raising_action_is_reported_and_editing_goes_on(capsys):
-    @keys.action("boom", keys="Alt-X")
+    keys.bind("boom", "Alt-X")
+
+    @keys.action("boom")
     def boom(ctx):
         raise RuntimeError("kaboom")
 
@@ -249,7 +265,9 @@ def test_a_raising_action_is_reported_and_editing_goes_on(capsys):
 def test_invoke_unknown_action_raises():
     seen = []
 
-    @keys.action("bad", keys="Alt-X")
+    keys.bind("bad", "Alt-X")
+
+    @keys.action("bad")
     def bad(ctx):
         try:
             ctx.invoke("nope")
@@ -271,7 +289,9 @@ def test_only_prompt_actions_can_be_defined(capsys):
 def test_choose_picks_from_a_list(monkeypatch):
     monkeypatch.setattr(InlinePicker, "run", lambda self: self._items[1])
 
-    @keys.action("pick", keys="Alt-P")
+    keys.bind("pick", "Alt-P")
+
+    @keys.action("pick")
     def pick(ctx):
         choice = ctx.choose(["main", "dev"], title="branch")
         ctx.insert(choice)
@@ -302,9 +322,9 @@ def test_switch_key_in_raw_input():
 
 
 def test_help_keys_lists_the_table(capsys):
-    from eosh.shell import Shell
+    keys.bind("shout", "Alt-S")
 
-    @keys.action("shout", keys="Alt-S", help="upper-case the line")
+    @keys.action("shout", help="upper-case the line")
     def shout(ctx):
         pass
 
@@ -316,10 +336,50 @@ def test_help_keys_lists_the_table(capsys):
     assert "shout *                  Alt-S" in out and "* from your config" in out
 
 
-def test_a_user_action_can_be_bound_by_its_bare_name():
-    @keys.action("shout", keys="Alt-S")
+def test_a_binding_may_come_before_its_action():
+    keys.bind("shout", "Alt-Z")                    # not defined yet: just recorded
+
+    @keys.action("shout")
     def shout(ctx):
         pass
 
-    keys.bind("shout", "Alt-Z")
+    keys.check_bindings()
+    assert keys.key_names("prompt.shout") == ["Alt-Z"]
+
+
+def test_a_user_action_has_no_keys_until_bound():
+    @keys.action("shout")
+    def shout(ctx):
+        pass
+
+    assert keys.key_names("prompt.shout") == []
+
+
+def test_an_override_keeps_the_builtin_keys():
+    @keys.action("kill_line", override=True)
+    def kill_line(ctx):
+        pass
+
+    assert keys.key_names("prompt.kill_line") == ["Ctrl-K"]
+
+
+def test_config_load_reports_a_binding_to_nothing(tmp_path, monkeypatch, capsys):
+    import sys
+    from eosh import shell as shell_mod
+
+    home = tmp_path / ".eosh"
+    home.mkdir()
+    (home / "config.py").write_text(
+        "from eosh import keys\n"
+        "keys.bind('shout', 'Alt-Z')\n"
+        "keys.bind('typo_action', 'Alt-Q')\n"
+        "@keys.action('shout')\n"
+        "def shout(ctx):\n"
+        "    pass\n"
+    )
+    monkeypatch.setattr(shell_mod, "config_dir", lambda: home)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    _real_load_user_config(Shell.__new__(Shell))
+    err = capsys.readouterr().err
+    assert "unknown action 'typo_action'" in err and "shout" not in err
     assert keys.key_names("prompt.shout") == ["Alt-Z"]

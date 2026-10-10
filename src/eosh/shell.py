@@ -2156,6 +2156,9 @@ class Shell:
                 from .user_errors import format_user_exception
                 print(f"Error loading config ({config_path}):", file=sys.stderr)
                 print(format_user_exception(e), file=sys.stderr, end="")
+            # A keys.bind() may precede the action it names; check the
+            # names now that the whole config has run.
+            keymap.check_bindings()
 
     _ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)")
 

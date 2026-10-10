@@ -10,19 +10,25 @@ so one flat namespace covers every surface (the shape XeFM's
     keys.bind("prompt.history_search", "Ctrl-S")     # replace its keys
     keys.bind("picker.next", ["Down", "Ctrl-J"])
     keys.bind("prompt.clear_screen", [])             # unbind
+    keys.bind("insert_last_arg", "Alt-.")            # before or after it's defined
 
-    @keys.action("insert_last_arg", keys="Alt-.")   # a new prompt action
+    @keys.action("insert_last_arg")                  # a new prompt action
     def insert_last_arg(ctx):
         ...
+
+Defining an action and binding keys to it are separate, as in XeFM
+(``ACTIONS`` / ``KEY_BINDINGS``), and their order doesn't matter: ``bind``
+only records the name, and :func:`check_bindings` — run once the config has
+finished — reports the names that turned out not to exist.
 
 In ``bind`` a name without a surface means every surface that has an action
 of that name (``"accept"`` is ``prompt.accept`` and ``picker.accept``), and
 a dotted one narrows it to one surface, winning there over the undotted
 entry whatever the call order — XeFM's rule.  A bound key wins over any
-default that used it, and a later ``bind`` wins over an earlier one.  A key name that doesn't parse, an action name that
-doesn't exist, or a printable key (which typing must keep) is a
-``config warning:`` naming the problem, never a silent no-op.  ``reload``
-calls :func:`reset`.
+default that used it, and a later ``bind`` wins over an earlier one.  A key
+name that doesn't parse, an action name that doesn't exist, or a printable
+key (which typing must keep) is a ``config warning:`` naming the problem,
+never a silent no-op.  ``reload`` calls :func:`reset`.
 
 There are no multi-stroke keys (``Ctrl-G b``).
 """
@@ -142,14 +148,24 @@ def bind(action: str, keys: str | Iterable[str]) -> None:
     (``"accept"``: every surface with an action of that name).  On a surface
     where both are bound, the dotted entry wins.  ``[]`` unbinds.  A key
     already used by another action of the same surface moves to this one.
+
+    The action may be defined later in the config: the name is checked by
+    :func:`check_bindings` once the config has run.  Key names are checked
+    here.
     """
-    if not _targets(action):
-        config_warning(f"keys.bind: unknown action {action!r}"
-                       f" (`help keys` lists them)")
-        return
     specs = (keys,) if isinstance(keys, str) else tuple(keys)
     _bindings.pop(action, None)
     _bindings[action] = tuple(s for s in specs if _check_spec(s, action))
+    _tables.clear()
+
+
+def check_bindings() -> None:
+    """Warn about, and drop, every bind() whose action doesn't exist — run
+    after the config, so a binding may come before its ``@keys.action``."""
+    for name in [n for n in _bindings if not _targets(n)]:
+        config_warning(f"keys.bind: unknown action {name!r}"
+                       f" (`help keys` lists them)")
+        del _bindings[name]
     _tables.clear()
 
 
@@ -168,12 +184,13 @@ def _binding_for(a: Action) -> tuple[str, ...] | None:
     return _bindings.get(a.short_name)
 
 
-def action(name: str, *, keys: str | Iterable[str] = (), help: str = "",
+def action(name: str, *, help: str = "",
            override: bool = False) -> Callable[[Callable], Callable]:
     """Register the decorated ``func(ctx)`` as a prompt action.
 
-    *ctx* is the line editor's :class:`~eosh.lineedit.EditorContext`.  A
-    built-in's name needs ``override=True``; inside it,
+    *ctx* is the line editor's :class:`~eosh.lineedit.EditorContext`.  It
+    has no keys until :func:`bind` gives it some.  A built-in's name needs
+    ``override=True`` and keeps the built-in's keys; inside it,
     ``ctx.invoke(<same name>)`` runs the built-in, so an action can wrap one.
     """
     def decorate(func: Callable) -> Callable:
@@ -186,11 +203,9 @@ def action(name: str, *, keys: str | Iterable[str] = (), help: str = "",
             config_warning(f"keys.action: {name!r} is a built-in action;"
                            f" pass override=True to replace it")
             return func
-        specs = (keys,) if isinstance(keys, str) else tuple(keys)
-        default = _BUILTINS[full].default_keys if full in _BUILTINS and not specs else ()
-        valid = tuple(s for s in specs if _check_spec(s, full)) or default
+        default = _BUILTINS[full].default_keys if full in _BUILTINS else ()
         description = help or (func.__doc__ or "").strip().split("\n")[0]
-        _user_actions[full] = Action(full, description, valid, func)
+        _user_actions[full] = Action(full, description, default, func)
         _tables.clear()
         return func
     return decorate
@@ -228,15 +243,12 @@ def _table(context: str) -> dict[bytes, tuple[str, str]]:
             for seq in parse_key(spec):
                 table[seq] = (name, spec)
 
-    # Built-in defaults first, then a user action's own keys, then every
-    # bind() in call order — each later source takes a key from an earlier.
-    # A bare entry skips an action whose dotted entry exists: that one wins.
+    # Defaults first, then every bind() in call order — each later one takes
+    # a key from an earlier.  A bare entry skips an action whose dotted entry
+    # exists: that one wins.
     actions = _actions_in(context)
     for a in actions:
-        if _binding_for(a) is None and not a.is_user:
-            put(a.name, a.default_keys)
-    for a in actions:
-        if _binding_for(a) is None and a.is_user:
+        if _binding_for(a) is None:
             put(a.name, a.default_keys)
     for name, specs in _bindings.items():
         for a in actions:
