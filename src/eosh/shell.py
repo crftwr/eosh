@@ -2904,7 +2904,7 @@ class Shell:
                 slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished,
                                          ctx=self._command_context())
                 slot.start()
-                result = self._enter_python_forwarding_mode(slot)
+                result = self._forward(slot)
                 if result == "switched":
                     slot.deactivate()
                     if ctx is not None:
@@ -2976,7 +2976,7 @@ class Shell:
 
         slot.activate()
         slot.replay_buffer()  # flush any output that arrived before activate()
-        result = self._enter_forwarding_mode(slot)
+        result = self._forward(slot)
         if result == "switched":
             self._park(slot, ctx or self.context_manager.current())
             slot.deactivate()
@@ -2991,75 +2991,35 @@ class Shell:
             print(f"\n[Process exited with code {exit_code}]")
         return exit_code
 
-    def _enter_forwarding_mode(self, slot: ProcessSlot, force_redraw: bool = False) -> str:
-        """Forward I/O between real terminal and subprocess PTY.
+    def _forward(self, slot, force_redraw: bool = False) -> str:
+        """Forward the terminal to a running *slot* until it ends or is left.
 
-        Returns 'exited' if process finished, 'switched' if user pressed Ctrl+].
+        One loop for both slot kinds — a ``ProcessSlot`` (an external command
+        on its own PTY) and a ``PythonCommandSlot`` (a Python command on a
+        thread).  It holds stdin in raw mode, ignores SIGINT (the key reaches
+        the slot as a byte instead), passes window resizes on through
+        ``slot.resize`` and forwards every key with ``slot.write_stdin``:
+
+          • the switch key (prompt.switch_context, Ctrl+] by default) —
+            anything typed before it is still forwarded; returns 'switched'
+            so the caller can park the slot
+          • Ctrl+C on a Python command that is neither running a
+            ctx.run_interactive() subprocess (which gets the byte, so SSH /
+            SSM see the interrupt) nor asking a question (whose reader turns
+            it into its own KeyboardInterrupt) — injects KeyboardInterrupt
+            into the command thread and returns 'interrupted'
+
+        A PTY child gets the terminal fully raw: its own line discipline does
+        the output processing.  A Python command writes straight to our
+        stdout, so it gets raw input but cooked output (the kernel's ONLCR
+        adds the CRs to bare LFs) — print(), pexpect output and piped
+        subprocess output all get proper line endings.  Its slot is activated
+        here, after the mode change, replaying what it printed before.
+
+        *force_redraw* sends the current size to a resumed PTY child at once.
+        Returns 'exited' when the slot finishes.
         """
-        fd = sys.stdin.fileno()
-        old_attrs = termios.tcgetattr(fd)
-        old_sigint = signal.getsignal(signal.SIGINT)
-        old_sigwinch = signal.getsignal(signal.SIGWINCH)
-        result = "exited"
-        try:
-            tty.setraw(fd)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-            def on_resize(signum, frame):
-                try:
-                    size = os.get_terminal_size(fd)
-                    slot.resize(size.lines, size.columns)
-                except OSError:
-                    pass
-
-            signal.signal(signal.SIGWINCH, on_resize)
-
-            if force_redraw:
-                on_resize(None, None)
-
-            while slot.is_alive():
-                rlist, _, _ = select.select([fd], [], [], 0.1)
-                if fd in rlist:
-                    data = os.read(fd, 1024)
-                    if not data:
-                        break
-                    idx = _find_switch_key(data)
-                    if idx >= 0:
-                        if idx > 0:
-                            slot.write_stdin(data[:idx])
-                        result = "switched"
-                        break
-                    slot.write_stdin(data)
-            return result
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
-            signal.signal(signal.SIGINT, old_sigint)
-            signal.signal(signal.SIGWINCH, old_sigwinch)
-            if result == "switched":
-                suspend_seq = slot.suspend_terminal_modes()
-                if suspend_seq:
-                    sys.stdout.write(suspend_seq)
-                    sys.stdout.flush()
-
-    def _enter_python_forwarding_mode(self, slot: PythonCommandSlot) -> str:
-        """Monitor stdin while a Python command runs in a background thread.
-
-        Sets the terminal to raw mode, activates the slot's stdout proxy
-        (replaying any buffered output), then loops:
-          • the switch key (prompt.switch_context, Ctrl+] by default) — return
-            'switched' so caller can store the slot
-          • Ctrl+C (\\x03) — forwarded to a ctx.run_interactive() subprocess if
-            one is active (so e.g. SSH/SSM see the interrupt); otherwise
-            inject KeyboardInterrupt into the command thread.
-          • other keys    — forwarded to slot.write_stdin, which writes to
-            a ctx.run_interactive() PTY master if active (no-op otherwise).
-
-        A command reading input (ctx.input / input_block) gets the keys
-        through ``slot.write_stdin`` like everything else; the loop keeps
-        raw mode throughout.
-
-        Returns 'exited' when the thread finishes, 'switched' on Ctrl+].
-        """
+        python = isinstance(slot, PythonCommandSlot)
         fd = sys.stdin.fileno()
         old_attrs = termios.tcgetattr(fd)
         old_sigint = signal.getsignal(signal.SIGINT)
@@ -3074,45 +3034,47 @@ class Shell:
                 pass
 
         try:
-            # Raw INPUT (so the main loop sees Ctrl+] / Ctrl+C / etc one key
-            # at a time) but COOKED OUTPUT (kernel ONLCR re-adds CRs to bare
-            # LFs).  Anything the Python command writes — print(), pexpect's
-            # captured remote output, raw byte writes, piped subprocess
-            # output — gets proper line endings without per-call effort.
-            terminal.set_raw_input_cooked_output(fd)
+            if python:
+                terminal.set_raw_input_cooked_output(fd)
+            else:
+                tty.setraw(fd)
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGWINCH, on_resize)
-            # Replay any output buffered before raw mode was set
-            slot.activate()
+            if python:
+                slot.activate()
+            elif force_redraw:
+                on_resize(None, None)
 
             while slot.is_alive():
                 rlist, _, _ = select.select([fd], [], [], 0.1)
-                if fd in rlist:
-                    data = os.read(fd, 1024)
-                    if not data:
-                        break
-                    if _find_switch_key(data) >= 0:
-                        result = "switched"
-                        break
-                    if (b"\x03" in data and not slot._pty_active
-                            and not slot._reading_input):
-                        # No passthrough subprocess is running and the
-                        # command isn't asking a question (whose reader
-                        # turns Ctrl+C into its own KeyboardInterrupt) —
-                        # interrupt the Python command itself.
-                        slot.deactivate()
-                        slot.kill()
-                        result = "interrupted"
-                        break
-                    # Forward to slot.  When a ctx.run_interactive() subprocess
-                    # is active, this writes to its PTY master.  Otherwise
-                    # write_stdin() is a no-op (the command isn't reading).
-                    slot.write_stdin(data)
+                if fd not in rlist:
+                    continue
+                data = os.read(fd, 1024)
+                if not data:
+                    break
+                idx = _find_switch_key(data)
+                if idx >= 0:
+                    if idx > 0:
+                        slot.write_stdin(data[:idx])
+                    result = "switched"
+                    break
+                if (python and b"\x03" in data and not slot._pty_active
+                        and not slot._reading_input):
+                    slot.deactivate()
+                    slot.kill()
+                    result = "interrupted"
+                    break
+                slot.write_stdin(data)
             return result
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
             signal.signal(signal.SIGINT, old_sigint)
             signal.signal(signal.SIGWINCH, old_sigwinch)
+            if result == "switched":
+                suspend_seq = slot.suspend_terminal_modes()
+                if suspend_seq:
+                    sys.stdout.write(suspend_seq)
+                    sys.stdout.flush()
 
     _PREVIEW_HEIGHT = 3
     # switcher.* actions → the hint shown for each in the status bar.
@@ -3397,7 +3359,7 @@ class Shell:
             # re-activate PTY slots so their reader thread can stream output
             # again.  PythonCommandSlots stay deactivated: their buffered
             # output will be replayed correctly the next
-            # time _enter_python_forwarding_mode is called from run().
+            # time _forward is called from run().
             new_ctx = self.context_manager.current()
             if new_ctx is None or (new_ctx.name != original_name):
                 needs_forward = bool(new_ctx and new_ctx.process_slot)
@@ -3455,7 +3417,7 @@ class Shell:
                     slot = ctx.process_slot
                     if isinstance(slot, PythonCommandSlot):
                         # Resume a backgrounded Python command.
-                        result = self._enter_python_forwarding_mode(slot)
+                        result = self._forward(slot)
                         slot.deactivate()
                         if result == "switched":
                             self._handle_switch()
@@ -3472,7 +3434,7 @@ class Shell:
                     else:
                         # Resume a PTY subprocess.
                         self._resume_pty_slot(slot)
-                        result = self._enter_forwarding_mode(slot, force_redraw=True)
+                        result = self._forward(slot, force_redraw=True)
                         slot.deactivate()
                         if result == "switched":
                             self._handle_switch()
