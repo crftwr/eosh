@@ -14,7 +14,8 @@ import pytest
 
 from eosh.commands import registry
 from eosh.command_context import CommandContext
-from eosh.shell import Shell, _in_pipeline
+from eosh.shell import Shell
+from eosh.slots import _in_pipeline
 
 
 # All tests in this module exercise the in-process pipeline whose worker
@@ -336,7 +337,7 @@ def test_assignment_with_redirect_still_assigns(shell, tmp_path, monkeypatch):
 def test_an_interrupted_stage_does_not_fall_back_to_the_terminal(shell):
     """Ctrl+C closes a stage's pipe ends; a decorator body re-run after
     that (``@watch {…} | cat``) must fail, not write to the real terminal."""
-    from eosh.shell import _dup_threadlocal_override_fd
+    from eosh.slots import _dup_threadlocal_override_fd
 
     r, w = os.pipe()
     os.close(r)
