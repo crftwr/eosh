@@ -240,6 +240,15 @@ def wait_readable(fd: int, timeout: float) -> bool:
     return bool(r)
 
 
+def unread(data: bytes) -> None:
+    """Hand *data* back as if it had not been read yet: the next
+    :func:`read_key` / :func:`wait_readable` see it before the terminal.
+    For keys a forwarding loop took that nobody consumed — typed ahead of
+    the next prompt while a command ran."""
+    global _pending_input
+    _pending_input += data
+
+
 def _read_one_byte(fd: int) -> bytes:
     """Read one byte, taking from the pending-input buffer first."""
     global _pending_input

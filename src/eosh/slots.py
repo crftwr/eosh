@@ -773,6 +773,15 @@ class PythonCommandSlot(ExitCallbackMixin):
             self._keybuf.extend(data)
             self._keybuf_event.set()
 
+    def take_unread(self) -> bytes:
+        """The keys forwarded to this slot that its command never read —
+        typed ahead of the next prompt.  Empties the buffer."""
+        with self._keybuf_lock:
+            data = bytes(self._keybuf)
+            self._keybuf.clear()
+            self._keybuf_event.clear()
+        return data
+
     def poll_key(self, timeout: float | None) -> bytes:
         """Return up to one buffered keystroke worth of stdin, or ``b\"\"``.
 

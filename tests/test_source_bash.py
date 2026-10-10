@@ -111,7 +111,7 @@ def test_apply_sets_new_and_changed_vars(sh):
     env["EOSH_TEST_OLD"] = "after"
     env["EOSH_TEST_NEW"] = "fresh"
 
-    changed, removed, new_cwd = sh._apply_bash_env(os.getcwd(), env)
+    changed, removed, new_cwd = sh._apply_bash_env(sh._command_context(), os.getcwd(), env)
 
     assert os.environ["EOSH_TEST_OLD"] == "after"
     assert os.environ["EOSH_TEST_NEW"] == "fresh"
@@ -124,7 +124,7 @@ def test_apply_unsets_what_the_script_unset(sh):
     os.environ["EOSH_TEST_GONE"] = "x"
     env = {k: v for k, v in os.environ.items() if k != "EOSH_TEST_GONE"}
 
-    changed, removed, _ = sh._apply_bash_env(os.getcwd(), env)
+    changed, removed, _ = sh._apply_bash_env(sh._command_context(), os.getcwd(), env)
 
     assert "EOSH_TEST_GONE" not in os.environ
     assert removed == ["EOSH_TEST_GONE"]
@@ -137,7 +137,7 @@ def test_apply_ignores_bash_bookkeeping(sh):
     env["SHLVL"] = "9"
     env["OLDPWD"] = "/nowhere"
 
-    changed, removed, _ = sh._apply_bash_env(os.getcwd(), env)
+    changed, removed, _ = sh._apply_bash_env(sh._command_context(), os.getcwd(), env)
 
     assert changed == []
     assert removed == []
@@ -145,7 +145,7 @@ def test_apply_ignores_bash_bookkeeping(sh):
 
 
 def test_apply_imports_cwd(sh, tmp_path):
-    changed, removed, new_cwd = sh._apply_bash_env(str(tmp_path), dict(os.environ))
+    changed, removed, new_cwd = sh._apply_bash_env(sh._command_context(), str(tmp_path), dict(os.environ))
     assert os.path.realpath(os.getcwd()) == os.path.realpath(str(tmp_path))
     assert os.path.realpath(new_cwd) == os.path.realpath(str(tmp_path))
     assert os.environ["PWD"] == os.getcwd()
@@ -153,7 +153,7 @@ def test_apply_imports_cwd(sh, tmp_path):
 
 def test_apply_respects_no_cd(sh, tmp_path):
     here = os.getcwd()
-    _, _, new_cwd = sh._apply_bash_env(
+    _, _, new_cwd = sh._apply_bash_env(sh._command_context(),
         str(tmp_path), dict(os.environ), import_cwd=False
     )
     assert new_cwd is None
@@ -166,7 +166,7 @@ def test_apply_leaves_non_identifier_keys_alone(sh):
     os.environ["not-an-identifier"] = "keep"
     env = {k: v for k, v in os.environ.items() if k != "not-an-identifier"}
 
-    _, removed, _ = sh._apply_bash_env(os.getcwd(), env)
+    _, removed, _ = sh._apply_bash_env(sh._command_context(), os.getcwd(), env)
 
     assert removed == []
     assert os.environ["not-an-identifier"] == "keep"
@@ -178,7 +178,7 @@ def test_command_sources_a_file_with_arguments(sh, tmp_path, capfd):
     script = tmp_path / "setup.sh"
     script.write_text('export EOSH_TEST_ARG="$1"\n')
 
-    sh.registry.get("source-bash").invoke([str(script), "s3"])
+    sh.registry.get("source-bash").invoke([str(script), "s3"], ctx=sh._command_context())
 
     assert os.environ["EOSH_TEST_ARG"] == "s3"
     out = capfd.readouterr().out
@@ -186,24 +186,24 @@ def test_command_sources_a_file_with_arguments(sh, tmp_path, capfd):
 
 
 def test_command_c_flag_runs_inline_script(sh):
-    sh.registry.get("source-bash").invoke(["-c", "export EOSH_TEST_INLINE=yes", "-q"])
+    sh.registry.get("source-bash").invoke(["-c", "export EOSH_TEST_INLINE=yes", "-q"], ctx=sh._command_context())
     assert os.environ["EOSH_TEST_INLINE"] == "yes"
 
 
 def test_command_summary_never_prints_values(sh, capfd):
-    sh.registry.get("source-bash").invoke(["-c", "export EOSH_TEST_SECRET=hunter2"])
+    sh.registry.get("source-bash").invoke(["-c", "export EOSH_TEST_SECRET=hunter2"], ctx=sh._command_context())
     out = capfd.readouterr().out
     assert "EOSH_TEST_SECRET" in out
     assert "hunter2" not in out
 
 
 def test_command_reports_missing_file(sh, capfd):
-    sh.registry.get("source-bash").invoke([str(tmp := "no_such_script.sh")])
+    sh.registry.get("source-bash").invoke([str(tmp := "no_such_script.sh")], ctx=sh._command_context())
     assert tmp in capfd.readouterr().out
 
 
 def test_command_rejects_c_together_with_a_file(sh, capfd):
-    sh.registry.get("source-bash").invoke(["-c", "true", "extra.sh"])
+    sh.registry.get("source-bash").invoke(["-c", "true", "extra.sh"], ctx=sh._command_context())
     assert "don't pass a FILE too" in capfd.readouterr().out
 
 
@@ -216,7 +216,7 @@ def test_command_reads_a_pasted_block(sh, monkeypatch, capfd):
         lambda prompt="", **kw: 'export EOSH_TEST_PASTE_A="s3"\n'
                           'export EOSH_TEST_PASTE_B="us-east-1"\n',
     )
-    sh.registry.get("source-bash").invoke([])
+    sh.registry.get("source-bash").invoke([], ctx=sh._command_context())
 
     assert os.environ["EOSH_TEST_PASTE_A"] == "s3"
     assert os.environ["EOSH_TEST_PASTE_B"] == "us-east-1"
@@ -226,5 +226,5 @@ def test_command_reports_empty_paste(sh, monkeypatch, capfd):
     import eosh.shell as shell_mod
 
     monkeypatch.setattr(shell_mod, "_read_from_user", lambda prompt="", **kw: "  \n")
-    sh.registry.get("source-bash").invoke([])
+    sh.registry.get("source-bash").invoke([], ctx=sh._command_context())
     assert "nothing to run" in capfd.readouterr().out

@@ -35,7 +35,9 @@ class ContextState(Enum):
 @dataclass
 class Context:
     name: str
-    variables: dict[str, str] = field(default_factory=dict)
+    # Environment set in this context; ``None`` = unset here (a variable
+    # from the environment eosh started with, removed in this context only).
+    variables: dict[str, str | None] = field(default_factory=dict)
     cwd: str = field(default_factory=os.getcwd)
     process_slot: Any = field(default=None, repr=False)  # ProcessSlot | PythonCommandSlot
     history: list[str] = field(default_factory=list, repr=False)
@@ -159,10 +161,14 @@ class ContextManager:
             os.environ[key] = value
 
     def unset_variable(self, key: str) -> None:
+        """Unset *key* in the current context only: it comes back when
+        another context is entered, and stays unset when this one is."""
         with self.lock:
             ctx = self.current()
             if ctx is not None:
-                ctx.variables.pop(key, None)
+                if key not in self._env_backup:
+                    self._env_backup[key] = os.environ.get(key)
+                ctx.variables[key] = None
             os.environ.pop(key, None)
 
     # A context other than the current one keeps its environment in
@@ -179,6 +185,23 @@ class ContextManager:
         if key in self._env_backup:
             return self._env_backup[key]
         return os.environ.get(key)
+
+    def environ_in(self, ctx: Context) -> dict[str, str]:
+        """The whole environment as *ctx* sees it, current or not."""
+        env = dict(os.environ)
+        if ctx is self.current():
+            return env
+        for key, original in self._env_backup.items():   # undo the current one
+            if original is None:
+                env.pop(key, None)
+            else:
+                env[key] = original
+        for key, value in ctx.variables.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        return env
 
     def get_variable(self, key: str) -> str | None:
         ctx = self.current()
@@ -203,7 +226,10 @@ class ContextManager:
         self._env_backup = {}
         for key, value in ctx.variables.items():
             self._env_backup[key] = os.environ.get(key)
-            os.environ[key] = value
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def _unapply_env(self) -> None:
         for key, original in self._env_backup.items():
