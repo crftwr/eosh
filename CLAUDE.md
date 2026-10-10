@@ -525,7 +525,7 @@ DIY raw-mode line editor. No prompt_toolkit or readline.
 
 ### terminal.py — Cross-Platform Terminal Layer
 
-The single place that touches OS-specific terminal APIs. `lineedit.py`, `tui.py`, and the POSIX forwarding loops in `shell.py` drive the terminal through this module so the rendering/key-dispatch code stays platform-agnostic.
+The single place that touches OS-specific terminal APIs. `lineedit.py`, `tui.py`, and the POSIX forwarding loop in `shell.py` drive the terminal through this module so the rendering/key-dispatch code stays platform-agnostic.
 
 - `init()` — one-time setup. On Windows: enables VT output processing (so the ANSI escapes the renderer emits are honoured) and disables Python's `\n`→`\r\n` translation on the std streams. No-op on POSIX.
 - `get_mode(fd)` / `set_raw(fd)` / `restore_mode(fd, saved)` — enter/leave raw mode. POSIX: `termios`/`tty` (TCSADRAIN). Windows: toggles `DISABLE_NEWLINE_AUTO_RETURN` so a bare `\n` is a pure line-feed while rendering and reverts to auto-CR for cooked output.
@@ -535,7 +535,7 @@ The single place that touches OS-specific terminal APIs. `lineedit.py`, `tui.py`
 
 **Path separators.** The shell uses `/` as the canonical separator on every platform (like Git Bash / MSYS) — Windows file APIs and executables accept it natively. This keeps `\` free for its POSIX meaning (escaping, `\`-line-continuation), so a path can never be mistaken for a continuation (`cd C:/Users/` not `cd C:\Users\`). `os.path` helpers emit native `\` on Windows, so completer output is normalized with `completion._to_slash` and the prompt renders `/` too. Users type `/` for paths; `\` still escapes as usual.
 
-**Platform support.** The full interactive shell — line editing, completion, all TUI pickers, history, pipelines, redirects, built-ins, and `Ctrl+]` context switching at the prompt — runs natively on both POSIX and Windows. The one POSIX-only piece is **PTY-backed multiplexing of a live external process** (`process.py`'s `ProcessSlot`, the `ctx.run_interactive` PTY, and the `_enter_forwarding_mode` loops): backgrounding a *running* native program via `Ctrl+]` and resuming it. On Windows, external commands run on the real console with inherited stdio (`_execute_external_windows`, with a `cmd /c` fallback for `cmd` builtins like `dir`/`echo`), and Python `@registry.command`s run synchronously on the main thread. Reviving that subsystem on Windows would mean a ConPTY (`CreatePseudoConsole`) backend for `ProcessSlot`.
+**Platform support.** The full interactive shell — line editing, completion, all TUI pickers, history, pipelines, redirects, built-ins, and `Ctrl+]` context switching at the prompt — runs natively on both POSIX and Windows. The one POSIX-only piece is **PTY-backed multiplexing of a live external process** (`process.py`'s `ProcessSlot`, the `ctx.run_interactive` PTY, and the `Shell._forward` loop): backgrounding a *running* native program via `Ctrl+]` and resuming it. On Windows, external commands run on the real console with inherited stdio (`_execute_external_windows`, with a `cmd /c` fallback for `cmd` builtins like `dir`/`echo`), and Python `@registry.command`s run synchronously on the main thread. Reviving that subsystem on Windows would mean a ConPTY (`CreatePseudoConsole`) backend for `ProcessSlot`.
 
 **Setting up a Windows dev environment** (Python, `make`, POSIX tools, and the `Makefile`'s `2>nul` vs. `2>/dev/null` gotcha) is covered in [doc/windows-setup.md](doc/windows-setup.md).
 
@@ -735,7 +735,7 @@ def insert_last_arg(ctx):                     # ctx: lineedit.EditorContext
   keys only. Behaviour stays on each surface: `LineEditor._builtin_actions`,
   `InlinePicker._ACTIONS`, and `Shell._show_switch_menu` (its `key_actions`
   come from `keys.sequences("switcher.*")` and are checked before `picker.*`).
-  The foreground forwarding loops find `prompt.switch_context` in raw input
+  The forwarding loop (`Shell._forward`) finds `prompt.switch_context` in raw input
   with `shell._find_switch_key`.
 - **Names in `bind`.** A bare name (`"accept"`) binds that action on every
   surface that has one (`prompt.accept` and `picker.accept`). A dotted name
