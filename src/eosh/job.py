@@ -289,9 +289,10 @@ class PipelineSlot(PtySlot):
         """What Ctrl+C does to the Python stages (the external ones get
         SIGINT from the line discipline)."""
         for w in self._workers:
-            interrupt = getattr(w, "interrupt", None)
-            if interrupt is not None:
-                interrupt()
+            if getattr(w, "decorator", False):
+                w.raise_keyboard_interrupt()
+            elif hasattr(w, "interrupt"):
+                w.interrupt()
 
     def kill(self) -> None:
         if not self.is_alive():

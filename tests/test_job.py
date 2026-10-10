@@ -181,3 +181,41 @@ def test_a_lone_command_still_runs_on_its_own_slot(sh, monkeypatch):
     sh._execute("echo alone")
     assert seen == ["echo"]
     assert sh.slots == []
+
+
+# ── decorators on the slot ──────────────────────────────────────────────────
+
+@pytest.mark.requires_real_stdio
+def test_a_lone_decorator_runs_on_a_slot(sh):
+    assert sh._execute("@time echo deco") == 0
+    (slot,) = sh.slots
+    assert slot.argv == ["@time {echo deco}"]
+    out = _output(slot)
+    assert "deco" in out and "real" in out
+
+
+@pytest.mark.requires_real_stdio
+def test_a_lone_decorators_body_has_the_terminal(sh):
+    assert sh._execute("@time sh -c 'test -t 0 && test -t 1 && echo both-tty'") == 0
+    assert "both-tty" in _output(sh.slots[0])
+
+
+def test_ctrl_c_raises_keyboard_interrupt_in_a_decorator_stage():
+    from eosh.slots import _PyStageHandle
+
+    slot = PipelineSlot("test")
+    calls = []
+
+    class _Deco(_PyStageHandle):
+        def raise_keyboard_interrupt(self):
+            calls.append("deco")
+
+    class _Plain(_PyStageHandle):
+        def interrupt(self):
+            calls.append("plain")
+
+    slot._workers = [_Deco("@time", decorator=True), _Plain("cmd")]
+    slot.interrupt_python_stages()
+    assert calls == ["deco", "plain"]
+    slot.discard()
+    _finish(slot)
