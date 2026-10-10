@@ -70,6 +70,7 @@ from typing import Callable
 import boto3
 import botocore.exceptions
 
+from eosh import color_enabled
 from eosh.commands import registry as command_registry, arg
 from eosh.completion import Completer, Completion, CompletionContext, FileCompleter
 from eosh.completion_cache import aws_env_key, get_or_fetch
@@ -191,9 +192,9 @@ def _get_all_profiles() -> dict[str, dict]:
 
 
 def _print_json(obj) -> None:
-    """Print JSON, syntax-highlighted when stdout is a TTY."""
+    """Print JSON, syntax-highlighted when stdout is a TTY (and not NO_COLOR)."""
     text = json.dumps(obj, indent=2, default=str)
-    if sys.stdout.isatty():
+    if color_enabled(sys.stdout):
         try:
             from pygments import highlight
             from pygments.formatters import Terminal256Formatter
@@ -970,7 +971,7 @@ def _register_whoami(awsut) -> None:
             _print_json(identity)
             return
 
-        colorize = sys.stdout.isatty()
+        colorize = color_enabled(sys.stdout)
         alias = _account_alias(session) if identity and not no_alias else ""
         pairs: list = []
         if identity:
@@ -1179,7 +1180,7 @@ def _register_recent_cost(awsut) -> None:
         yellow_threshold = all_values[top_10_pct_idx - 1] if all_values else 0
 
         def colorize(val, text):
-            if not sys.stdout.isatty():
+            if not color_enabled(sys.stdout):
                 return text
             if val >= max_val:
                 return f"{RED}{text}{RESET}"

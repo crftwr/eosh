@@ -65,6 +65,7 @@ from .pipeline import (
 )
 from . import hooks, notify
 from .process import ExitCallbackMixin, OutputBuffer, ProcessSlot
+from .colors import set_color_scheme
 from .prompt import get_prompt_func, set_prompt
 
 # ---------------------------------------------------------------------------
@@ -2051,6 +2052,7 @@ class Shell:
         var_registry.clear_user_vars()
         recipes.skipped_recipes.clear()
         set_prompt(None)
+        set_color_scheme(None)
         notify.reset_config()
         hooks.clear()
 

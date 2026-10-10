@@ -8,7 +8,7 @@ import unicodedata
 from typing import Callable, Generic, Sequence, TypeVar
 
 from . import terminal
-from .colors import _bg, _fg, get_color_scheme
+from .colors import get_color_scheme, paint
 from .scrollbar import render_column as _scrollbar_column
 
 T = TypeVar("T")
@@ -150,7 +150,7 @@ def _statusbar(label: str, hints: str, cols: int) -> str:
     # cells past the bar are default/empty — terminals don't reflow empty
     # cells on width shrink.
     return (
-        f"{_bg(*s.statusbar_bg)}{_fg(*s.statusbar_fg)}{inner}\033[0m\033[K"
+        f"{paint(s.statusbar_fg, s.statusbar_bg)}{inner}\033[0m\033[K"
     )
 
 
@@ -437,7 +437,7 @@ class InlinePicker(Generic[T]):
         avail = max(1, self._cols - self._col)
         text = _wcs_clip(self._empty_placeholder, avail)
         s = get_color_scheme()
-        bg = _bg(*s.picker_row_bg) + _fg(*s.picker_row_fg)
+        bg = paint(s.picker_row_fg, s.picker_row_bg)
         col_move = f"\033[{self._col}C" if self._col > 0 else ""
         width = max(self._min_width, _wcswidth(text))
         return f"\r{col_move}{bg}\033[2m{_wcs_ljust(text, min(width, avail))}\033[22m\033[0m"
@@ -536,8 +536,8 @@ class InlinePicker(Generic[T]):
         pad = " " * max(0, panel_w - content_w)
 
         s = get_color_scheme()
-        bg = _bg(*s.picker_row_bg) + _fg(*s.picker_row_fg)
-        sel = _bg(*s.picker_sel_bg) + _fg(*s.picker_sel_fg)
+        bg = paint(s.picker_row_fg, s.picker_row_bg)
+        sel = paint(s.picker_sel_fg, s.picker_sel_bg)
         col_move = f"\033[{self._col}C" if self._col > 0 else ""
         if selected:
             inner = label_disp + (f"  {meta}" if meta else "")
