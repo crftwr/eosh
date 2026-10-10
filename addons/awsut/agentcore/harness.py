@@ -7,7 +7,7 @@ you see is the raw service response rather than an SDK rendering of it.
 Read-only apart from ``delete``.  Creating and updating a harness means
 authoring the ``model`` / ``tools`` / ``skills`` structures GetHarness prints
 here, which is a file's worth of JSON rather than a line of flags — see
-``doc/enhancements.md``.
+discussion #68 (github.com/crftwr/eosh/discussions/68).
 
 Shape of the group:
 

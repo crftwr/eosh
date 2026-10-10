@@ -237,7 +237,7 @@ re-render it on `activate()`.
   nothing is marked (`TERM=xterm-kitty` / `xterm-ghostty` are the
   exception: `TERM` survives `ssh`). Add a rule to `shell_integration.TERMINALS` or force
   `var shell_integration=osc133`. Asking the terminal itself (XTVERSION,
-  as fish does) would work there too — see `doc/enhancements.md`.
+  as fish does) would work there too — see [discussion #69](https://github.com/crftwr/eosh/discussions/69).
 - **Konsole is left out on purpose.** Its default profile draws the marks
   visibly (fish disables them there for the same reason, fish#11409);
   `TERMINALS.append(("KONSOLE_VERSION", None, "osc133"))` opts in.
