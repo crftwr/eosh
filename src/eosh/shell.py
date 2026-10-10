@@ -104,6 +104,22 @@ def _cooked_output():
 _DEFAULT_CONFIG_PATH = Path(__file__).parent / "_config.py"
 
 
+def _isatty(f) -> bool:
+    try:
+        return f is not None and os.isatty(f.fileno())
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _stage_label(stage: Stage) -> str:
+    """How a stage reads in the switcher and a notification."""
+    call = stage.decorator
+    if call is None:
+        return stage.text
+    body = " | ".join(_stage_label(st) for st in call.body.stages)
+    return " ".join([f"@{call.name}", *call.flag_tokens, f"{{{body}}}"])
+
+
 def _is_continuation(line: str) -> bool:
     """Return True if *line* ends with an unescaped backslash (line continuation).
 
@@ -1566,7 +1582,12 @@ class Shell:
                 "the decorator body inherits stdio from the decorator's caller."
             )
         in_outer_pipe = getattr(_in_pipeline, "flag", False)
-        return self._execute_pipeline(pipeline, _in_outer_pipe=in_outer_pipe)
+        status = self._execute_pipeline(pipeline, _in_outer_pipe=in_outer_pipe)
+        if status == 130:
+            # The body was interrupted (Ctrl+C): so is the decorator — @watch
+            # stops, @retry doesn't retry, @time still prints on the way out.
+            raise KeyboardInterrupt
+        return status
 
     def _execute_pipeline(
         self,
@@ -1603,10 +1624,14 @@ class Shell:
         # is no second redirect path that swaps the process-global
         # ``sys.stdout`` under every other thread.  Decorator stages keep
         # the direct path — their redirects live inside the braced body.
+        # A lone decorator at the top of a line runs on a PipelineSlot when
+        # there is a terminal for one, like a pipeline, so Ctrl+] can park it.
+        can_park = _top_level and not IS_WINDOWS and _stdin_is_tty()
         if (
             single is not None
             and not _in_outer_pipe
             and (not single.redirects or single.decorator is not None)
+            and not (single.decorator is not None and can_park)
         ):
             return self._execute_stage(single)
 
@@ -1621,8 +1646,8 @@ class Shell:
         # the one of the stage thread it runs on (a decorator body).
         job: PipelineSlot | None = getattr(_job_local, "job", None)
         own_job: PipelineSlot | None = None
-        if job is None and _top_level and not IS_WINDOWS and _stdin_is_tty():
-            own_job = job = PipelineSlot(" | ".join(st.text for st in stages),
+        if job is None and can_park:
+            own_job = job = PipelineSlot(" | ".join(_stage_label(st) for st in stages),
                                          on_exit=self._slot_finished)
 
         n = len(stages)
@@ -1663,6 +1688,7 @@ class Shell:
                     stdin_fd=stdin_fd_pipe,
                     stdout_fd=stdout_fd_pipe,
                     job=job,
+                    decorator=True,
                 )
                 workers.append(worker)
                 continue
@@ -1895,6 +1921,7 @@ class Shell:
         stdout_file=None,
         stderr_dst=None,
         job: PipelineSlot | None = None,
+        decorator: bool = False,
     ) -> "_PyStageHandle":
         """Run *fn* — a Python command or a decorator — as one pipeline stage.
 
@@ -1930,7 +1957,9 @@ class Shell:
 
         err_obj = stderr_dst  # a file, subprocess.STDOUT (2>&1), or None
 
-        handle = _PyStageHandle(cmd_name=label)
+        handle = _PyStageHandle(cmd_name=label, decorator=decorator)
+        # Both ends a terminal (a slot's PTY): the stage may talk to the user.
+        on_terminal = _isatty(in_obj) and _isatty(out_obj)
         in_wrapper = io.TextIOWrapper(in_obj, encoding="utf-8", errors="replace") if in_obj is not None else None
         out_wrapper = io.TextIOWrapper(out_obj, encoding="utf-8", errors="replace", write_through=True) if out_obj is not None else None
         err_wrapper = None
@@ -1943,6 +1972,7 @@ class Shell:
 
         def _target():
             _in_pipeline.flag = True
+            _in_pipeline.on_terminal = on_terminal
             _job_local.job = job        # a decorator body joins the slot
             try:
                 if in_wrapper is not None:
@@ -1976,6 +2006,7 @@ class Shell:
                         except Exception:
                             pass
                 _in_pipeline.flag = False
+                _in_pipeline.on_terminal = False
                 _job_local.job = None
                 handle.done.set()
 

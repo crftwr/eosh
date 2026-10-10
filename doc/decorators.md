@@ -511,9 +511,14 @@ execution path runs. It exposes at least:
   (so `@time` can capture)
 - `pipeline.text` — original source text, for display
 
-`Ctrl+C` during a decorator's body interrupts the *current* pipeline
-iteration; the decorator decides whether to loop again or propagate.
-(`@watch` would propagate; `@retry` would catch and re-run.)
+`Ctrl+C` during a decorator's body interrupts the body, and then the
+decorator: when the body ends with status 130, `pipeline.run()` raises
+`KeyboardInterrupt` (`Shell._run_pipeline_from_decorator`), so one rule
+covers every decorator — `@watch` stops instead of ticking on, `@retry`
+doesn't retry an interrupt, and `@time` still prints its timing from its
+`finally`. On a `PipelineSlot` the decorator's own thread also gets a
+`KeyboardInterrupt` (at its next bytecode), for a Ctrl+C that lands while it
+sleeps between runs (discussion #76).
 
 ## Built-in decorators
 
@@ -630,7 +635,12 @@ Open questions are tracked in
    resolves the decorator, runs its argparse, calls
    `deco.func(body_pipeline, **kwargs)`. `SystemExit` propagates;
    `KeyboardInterrupt` exits 130; other exceptions print and exit 1;
-   unknown decorator name returns 127.  In a multi-stage pipeline
+   unknown decorator name returns 127.  On a POSIX terminal a lone
+   decorator stage doesn't come here: like any pipeline it runs on a
+   `PipelineSlot` (one PTY, parkable with Ctrl+]), on a stage thread whose
+   stdio is that PTY — so its body, and `ctx.input` / `ctx.choose` /
+   `ctx.run_interactive` in a Python command inside it, still have a
+   terminal (discussion #76).  In a multi-stage pipeline
    (`@deco {...} | next`) the decorator runs on a worker thread via
    `_start_decorator_stage_thread`; `_run_pipeline_from_decorator`
    detects the in-pipe context and forces the body onto the

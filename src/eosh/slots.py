@@ -105,6 +105,16 @@ class _ThreadLocalStream(io.TextIOBase):
 
     # file-like plumbing
     def fileno(self) -> int:
+        # The override's own fd when it has one (a pipe end, a redirect
+        # file, a PipelineSlot's PTY): what `subprocess.run(stdout=
+        # sys.stdout)` and a key reader (@watch's `q`) must use.  A
+        # _StdoutProxy answers with the real terminal's.
+        target = self._target
+        if target is not self._real:
+            try:
+                return target.fileno()
+            except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+                pass
         return self._real.fileno()
 
     @property
@@ -226,10 +236,14 @@ class _PyStageHandle:
     two worker types can share one wait loop.
     """
 
-    __slots__ = ("cmd_name", "thread", "done", "exit_code", "_io_objs", "interrupted")
+    __slots__ = ("cmd_name", "thread", "done", "exit_code", "_io_objs", "interrupted",
+                 "decorator")
 
-    def __init__(self, cmd_name: str) -> None:
+    def __init__(self, cmd_name: str, decorator: bool = False) -> None:
         self.cmd_name = cmd_name
+        # A decorator stage is interrupted with KeyboardInterrupt rather than
+        # by closing its stdio, so it can still report (@time's timing line).
+        self.decorator = decorator
         self.thread: threading.Thread | None = None
         self.done = threading.Event()
         self.exit_code: int | None = None
@@ -248,6 +262,13 @@ class _PyStageHandle:
             while not self.done.wait(timeout=0.1):
                 pass
         return self.exit_code or 0
+
+    def raise_keyboard_interrupt(self) -> None:
+        """Ctrl+C for a decorator stage: KeyboardInterrupt in its thread, at
+        its next bytecode — a blocked wait for its body returns first."""
+        if self.thread is not None and self.thread.is_alive():
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(self.thread.ident), ctypes.py_object(KeyboardInterrupt))
 
     def interrupt(self) -> None:
         """Best-effort interruption of the worker thread.
@@ -367,7 +388,9 @@ def _dup_threadlocal_override_fd(stream) -> int | None:
 
 
 def _refuse_in_pipeline(what: str) -> None:
-    if getattr(_in_pipeline, "flag", False):
+    # A stage whose stdin and stdout are both a terminal — a lone decorator
+    # on a PipelineSlot, and its body — can still talk to the user.
+    if getattr(_in_pipeline, "flag", False) and not getattr(_in_pipeline, "on_terminal", False):
         raise RuntimeError(
             f"{what} cannot be used inside a piped Python command "
             f"(stdin/stdout are wired to pipes, not the terminal)"
@@ -385,9 +408,17 @@ def _run_interactive(argv: list[str], **popen_kwargs) -> int:
     """
     _refuse_in_pipeline("ctx.run_interactive")
     slot = getattr(_current_slot, "slot", None)
-    if slot is None:
-        return subprocess.run(argv, **popen_kwargs).returncode
-    return slot._run_in_pty(argv, popen_kwargs)
+    if slot is not None:
+        return slot._run_in_pty(argv, popen_kwargs)
+    job = getattr(_job_local, "job", None)
+    if job is not None:
+        # A stage on a PipelineSlot's terminal (a decorator body): the
+        # program gets the slot's PTY, through its job leader.
+        proc = job.spawn(list(argv), stdin=None, stdout=None, stderr=None,
+                         env=popen_kwargs.get("env") or dict(os.environ),
+                         cwd=popen_kwargs.get("cwd") or os.getcwd())
+        return proc.wait()
+    return subprocess.run(argv, **popen_kwargs).returncode
 
 
 def _stdin_is_tty() -> bool:

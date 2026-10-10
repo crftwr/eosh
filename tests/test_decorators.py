@@ -812,3 +812,32 @@ def test_a_decorator_flag_value_completes_like_a_commands():
     completions, _, label = shell._get_completions("@_t_val -m ")
     assert [c.value for c in completions] == ["fast", "slow"]
     assert label.startswith("-m <MODE>")
+
+
+# ── an interrupted body interrupts the decorator (discussion #76) ───────────
+
+def test_an_interrupted_body_stops_retry(tmp_path):
+    from eosh.shell import Shell
+    count = tmp_path / "count"
+    sh = Shell()
+    # A pipeline body: Popen, no PTY (stdin isn't a terminal here).
+    status = sh._execute(f"@retry -n 3 {{true | sh -c 'echo x >> {count}; exit 130'}}")
+    assert status == 130
+    assert count.read_text().count("x") == 1
+
+
+def test_thread_local_fileno_follows_the_override():
+    import io
+    import os
+    from eosh.slots import _ThreadLocalStream
+
+    r, w = os.pipe()
+    try:
+        stream = _ThreadLocalStream(io.StringIO())
+        wrapper = io.TextIOWrapper(os.fdopen(w, "wb", buffering=0, closefd=False))
+        stream.set_override(wrapper)
+        assert stream.fileno() == w
+        stream.clear_override()
+    finally:
+        os.close(r)
+        os.close(w)
