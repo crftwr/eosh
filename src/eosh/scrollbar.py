@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from .colors import _bg, _fg
+from .colors import TERM_FG, Color, paint
 
 _RESET = "\033[0m"
 
@@ -75,22 +75,22 @@ def vbar_cells(h: int, pos: float, ratio: float) -> Iterator[tuple[int, str, int
 def cell_ansi(
     kind: str,
     eighths: int,
-    thumb: tuple[int, int, int],
-    track: tuple[int, int, int],
+    thumb: Color,
+    track: Color,
 ) -> str:
     """Return the ANSI-styled single-character cell for one scrollbar row."""
     if kind == "thumb":
-        return _bg(*thumb) + " " + _RESET
+        return paint(TERM_FG, thumb) + " " + _RESET   # a blank: only bg shows
     if kind == "track":
-        return _bg(*track) + " " + _RESET
+        return paint(TERM_FG, track) + " " + _RESET
     if kind == "top":
         # Thumb in the cell's lower part: a lower block of exactly that many
         # eighths, thumb-colored (fg), over the track (bg).
-        return _fg(*thumb) + _bg(*track) + _LOWER_BLOCKS[eighths] + _RESET
+        return paint(thumb, track) + _LOWER_BLOCKS[eighths] + _RESET
     # "bottom": thumb in the cell's *upper* part. Unicode has no upper-block
     # ladder, so the colors invert — a lower block of the track's remainder,
     # track-colored, over a thumb-colored cell.
-    return _fg(*track) + _bg(*thumb) + _LOWER_BLOCKS[_SUBCELL - eighths] + _RESET
+    return paint(track, thumb) + _LOWER_BLOCKS[_SUBCELL - eighths] + _RESET
 
 
 def render_column(
@@ -99,8 +99,8 @@ def render_column(
     offset: int,
     visible: int,
     total: int,
-    thumb: tuple[int, int, int],
-    track: tuple[int, int, int],
+    thumb: Color,
+    track: Color,
 ) -> list[str]:
     """Return ``height`` ANSI cell strings — one scrollbar column, top to bottom.
 

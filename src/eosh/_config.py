@@ -300,14 +300,16 @@ notify.SKIP_COMMANDS.update({"psql", "mysql", "sqlite3", "ipython"})
 
 import os
 from datetime import datetime
-from eosh import set_prompt
+from eosh import color_enabled, set_prompt
 
 def my_prompt(context_manager):
     """Replicates the built-in default prompt: [context] parent/cwd HH:MM:SS [bg:N]>."""
-    CYAN_BOLD = "\033[1m\033[38;2;0;188;212m"
-    BLUE_BOLD = "\033[1m\033[38;2;100;149;237m"
-    GREEN = "\033[38;2;80;200;100m"
-    YELLOW = "\033[38;2;229;192;123m"
+    # Colors only when NO_COLOR isn't set (https://no-color.org); bold stays.
+    color = color_enabled()
+    CYAN_BOLD = "\033[1m" + ("\033[38;2;0;188;212m" if color else "")
+    BLUE_BOLD = "\033[1m" + ("\033[38;2;100;149;237m" if color else "")
+    GREEN = "\033[38;2;80;200;100m" if color else ""
+    YELLOW = "\033[38;2;229;192;123m" if color else ""
     RESET = "\033[0m"
 
     parts = []
@@ -354,20 +356,24 @@ set_prompt(my_prompt)
 # ── Color scheme ──────────────────────────────────────────────────────────────
 #
 # Choose a built-in scheme or define a fully custom one.
-# Applies to TUI widgets — inline pickers and @watch's framing chrome
-# (header / footer / scrollbar).  Prompt colors are deliberately not part
-# of the scheme: customize the prompt by passing a function to set_prompt().
-# Built-in schemes: "dark" (default), "light".
+# Applies to TUI widgets — inline pickers (rows / status bar / scrollbar).
+# Prompt colors are deliberately not part of the scheme: customize the
+# prompt by passing a function to set_prompt().
+# Built-in schemes: "dark", "light", "mono" (no color, reverse video).
+# Without a choice here, "mono" is used when NO_COLOR is set, else "dark";
+# a scheme chosen here wins over NO_COLOR.
 #
 # Uncomment one of the examples below:
 
-from eosh import set_color_scheme, ColorScheme
+from eosh import set_color_scheme, ColorScheme, TERM_FG, TERM_BG
 
 # Built-in schemes (for light- or dark-background terminals):
 # set_color_scheme("dark")   # default
 # set_color_scheme("light")
+# set_color_scheme("mono")
 
-# Fully custom scheme — specify any subset of colors as (R, G, B) tuples:
+# Fully custom scheme — specify any subset of colors as (R, G, B) tuples, or
+# TERM_FG / TERM_BG for the terminal's own colors:
 # set_color_scheme(ColorScheme(
 #     picker_row_bg=(50, 50, 60),          # non-selected picker row background
 #     picker_row_fg=(220, 220, 220),       # non-selected picker row foreground

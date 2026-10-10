@@ -58,7 +58,7 @@
 │  └── Default + user-overrideable prompt function   │
 ├─────────────────────────────────────────────────────┤
 │  Colors (colors.py)                                 │
-│  └── ColorScheme + set_color_scheme (dark/light)   │
+│  └── ColorScheme: dark / light / mono (NO_COLOR)    │
 ├─────────────────────────────────────────────────────┤
 │  Recipes (recipes/)                                 │
 │  └── Completion recipes for external commands      │
@@ -167,7 +167,7 @@ One decorator per event (`on_startup`, `on_exit`, `on_directory_changed`, `on_co
 
 ### colors.py — Color Schemes
 
-`ColorScheme` dataclass holding ANSI colour codes used by the prompt and TUI widgets, with `dark` and `light` schemes shipped. `set_color_scheme(scheme)` swaps the active scheme; users override colours from `~/.eosh/config.py`.
+`ColorScheme` dataclass holding the colours of the TUI widgets (picker rows, status bar, scrollbar), with `dark`, `light` and `mono` schemes shipped. A colour is an RGB triple or `TERM_FG` / `TERM_BG` (the terminal's own colours); `paint(fg, bg)` turns a pair into SGR, drawing text in `TERM_BG` on `TERM_FG` as reverse video — which is all `mono` uses, so it emits no colour. `set_color_scheme(scheme)` picks a scheme from `~/.eosh/config.py` (`reload` resets it); with none picked, `get_color_scheme()` returns `mono` when `NO_COLOR` is set ([no-color.org](https://no-color.org)) and `dark` otherwise. There is no separate no-colour mode. A command's own output (awsut's tables, the starter config's prompt) asks `color_enabled(stream)`: no `NO_COLOR`, and a terminal.
 
 ### terminal.py — Cross-Platform Terminal Layer
 
@@ -284,7 +284,7 @@ eosh/
 │       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run()
 │       ├── process.py          # PTY subprocess slots, output buffering, terminal-mode tracking
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
-│       ├── colors.py           # ColorScheme + set_color_scheme (dark/light)
+│       ├── colors.py           # ColorScheme + set_color_scheme (dark/light/mono), NO_COLOR
 │       ├── terminal.py         # cross-platform raw-mode + key reading
 │       ├── tui.py              # InlinePicker, InlineArgPrompt
 │       ├── recipes/            # external-command completion recipes (28+ files)

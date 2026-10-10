@@ -1,7 +1,7 @@
 """Eolith Shell — a lightweight but powerful terminal shell environment."""
 
 from . import hooks, notify
-from .colors import ColorScheme, set_color_scheme
+from .colors import TERM_BG, TERM_FG, ColorScheme, color_enabled, set_color_scheme
 from .commands import arg, CmdParser, registry as command_registry
 from .prompt import set_prompt
 from .command_context import CommandContext, ShellView
@@ -15,9 +15,12 @@ __all__ = [
     "arg",
     "CmdParser",
     "ColorScheme",
+    "color_enabled",
     "hooks",
     "notify",
     "set_color_scheme",
+    "TERM_FG",
+    "TERM_BG",
     "set_prompt",
     "Var",
     "EnvVar",

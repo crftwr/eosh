@@ -523,6 +523,7 @@ No alternate screen; all rendering anchored with DECSC/DECRC (`ESC 7` / `ESC 8`)
 
 - **`InlinePicker`** — single-select list rendered inline below the current line. Supports narrowing by typing, TAB-extend common prefix (via `value_fn` + `completion_prefix`), an initial `typed` query (Ctrl+R starts from the buffer), a `key_source` replacing terminal reads (a command's slot), scrollbar, optional `meta_fn` for the labels beside each row (returning either one string or a sequence of cells, which the picker lays out as columns aligned across rows). `select_first=False` (used by the completion pickers) opens with no row highlighted, so Enter returns `None`; `closed_empty` signals "narrowing left zero candidates, I closed myself"; `typed` exposes the characters the picker echoed so the caller can commit them to its buffer.
 - **`InlineArgPrompt`** — single-line text prompt (used by the context-switch picker to name or rename a context). Shows an optional description line above.
+- **Colors** come from `colors.get_color_scheme()` (`dark` / `light` / `mono`), painted with `colors.paint(fg, bg)`. A color is RGB or `TERM_FG` / `TERM_BG`; `TERM_BG` text on `TERM_FG` is reverse video. `NO_COLOR` is not a mode — with no `set_color_scheme()` in the config it just selects `mono`. Output outside the widgets checks `eosh.color_enabled(stream)`.
 
 ### process.py — PTY Process Slots (POSIX only)
 
@@ -1017,6 +1018,7 @@ eosh/
 │       │                       # tracking, ExitCallbackMixin (one-shot slot-done hook)
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
 │       ├── tui.py              # InlinePicker, InlineArgPrompt
+│       ├── colors.py           # ColorScheme (dark/light/mono), paint(), NO_COLOR
 │       ├── recipes/
 │       │   ├── __init__.py     # enable(*names) helper
 │       │   ├── aws.py

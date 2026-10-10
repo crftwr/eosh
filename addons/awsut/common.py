@@ -66,6 +66,8 @@ from datetime import datetime, timedelta, timezone
 import botocore.exceptions
 import botocore.session
 
+from eosh import color_enabled
+
 RESET = "\033[0m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -190,7 +192,7 @@ def print_table(header, rows, note=None, colorize=None) -> None:
 
     ``colorize(col_index, value)`` may return an ANSI colour for a cell (a
     severity column, typically).  It is applied *after* padding and only on a
-    TTY, so the escape bytes can never throw the alignment off or land in a
+    TTY without NO_COLOR, so the escape bytes can never throw the alignment off or land in a
     file.
 
     No rows draws no table — the header line above it already said "zero" — but
@@ -203,7 +205,7 @@ def print_table(header, rows, note=None, colorize=None) -> None:
         return
     widths = [max([len(h)] + [len(r[i]) for r in rows])
               for i, h in enumerate(header)]
-    tty = colorize is not None and sys.stdout.isatty()
+    tty = colorize is not None and color_enabled(sys.stdout)
 
     def line(cells, paint=False):
         out = []
