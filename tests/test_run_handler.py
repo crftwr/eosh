@@ -11,7 +11,8 @@ import pytest
 
 from eosh.commands import CommandRegistry, arg
 from eosh.pipeline import parse_line
-from eosh.shell import Shell, run_handler
+from eosh.shell import Shell
+from eosh.slots import run_handler
 
 
 def test_a_returned_int_is_the_exit_status():
@@ -96,7 +97,7 @@ def test_exit_requests_the_shell_end_instead_of_raising():
 
 
 def test_exit_in_a_pipeline_stage_is_a_subshell_exit():
-    from eosh.shell import _in_pipeline
+    from eosh.slots import _in_pipeline
 
     sh = Shell()
     _in_pipeline.flag = True

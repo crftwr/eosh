@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Sequence
 
+from . import slots
 from .variables import EnvVar, PyVar, registry as var_registry
 
 if TYPE_CHECKING:
@@ -94,15 +95,13 @@ class CommandContext(ShellView):
         ``EOFError``, as :func:`input` would.  Keys typed before the question
         was asked are dropped, so a stray ``y`` can't answer it.
         """
-        from .shell import _read_from_user
-        return _read_from_user(prompt, block=False, what="ctx.input")
+        return slots._read_from_user(prompt, block=False, what="ctx.input")
 
     def input_block(self, prompt: str = "") -> str:
         """Read lines until a blank line or Ctrl+D, joined by ``\\n`` — for
         a pasted block (``export KEY=…`` lines, a policy document).  No line
         length limit (cooked mode would cap a line at 1024 bytes on macOS)."""
-        from .shell import _read_from_user
-        return _read_from_user(prompt, block=True, what="ctx.input_block")
+        return slots._read_from_user(prompt, block=True, what="ctx.input_block")
 
     def confirm(self, prompt: str, *, default: bool = False) -> bool:
         """Ask a yes/no question.  ``[y/N]`` (or ``[Y/n]`` when *default*)
@@ -119,8 +118,7 @@ class CommandContext(ShellView):
         the picker is dismissed with Esc; Ctrl+C raises
         ``KeyboardInterrupt``.  *title* labels the picker and, once chosen,
         the line that records the choice."""
-        from .shell import _choose
-        return _choose(list(items), title)
+        return slots._choose(list(items), title)
 
     def run_interactive(self, argv: Sequence[str], **popen_kwargs) -> int:
         """Run a program that talks to the user (``ssh``, an MFA prompt, a
@@ -132,8 +130,7 @@ class CommandContext(ShellView):
         contexts and Ctrl+C reaches the child.  *popen_kwargs* go to
         :class:`subprocess.Popen`.
         """
-        from .shell import _run_interactive
-        return _run_interactive(list(argv), **popen_kwargs)
+        return slots._run_interactive(list(argv), **popen_kwargs)
 
     # ── Variables ───────────────────────────────────────────────────────
 

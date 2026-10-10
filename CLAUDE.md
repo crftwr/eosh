@@ -36,6 +36,7 @@ is a deliberate non-goal — see issue #13.
 │  ├── Line parsing / pipeline execution              │
 │  ├── Command dispatch                              │
 │  ├── PTY process multiplexing (process.py)         │
+│  ├── Python-command slots (slots.py)               │
 │  └── Context switch TUI (tui.py)                   │
 ├─────────────────────────────────────────────────────┤
 │  Command Registry (commands.py)                     │
@@ -191,7 +192,7 @@ Methods:
 - `node.command(name, ...)` — the same two forms one level down (see [doc/subcommands.md](doc/subcommands.md)). A node's flags are **its own** and are never inherited from ancestors; a flag shared by several commands is one `arg(...)` listed on each. A node never has both a handler and children: either order raises `ValueError`. A flat command is a root with no children, so completion, the status bar and dispatch all follow the same per-node rules, through `shell._resolve_slot`.
 - `pass_context=True` (on `registry.command` or `node.command`) makes the handler receive a `CommandContext` as its first argument — see **command_context.py** below.
 - `sync=True` (on `registry.command`) runs the command on the main thread instead of a backgroundable `PythonCommandSlot` — for commands that finish at once or change shell state; every built-in sets it.
-- **A handler's return value is its exit status** — an `int` is the status, anything else (usually `None`) is 0, so `my_cmd && next` sees a failure the handler reports. A `SystemExit` is only a status too (it never ends the shell; `exit` sets `Shell._exit_requested` instead), `KeyboardInterrupt` is 130, an exception is 1 with the traceback on stderr, and an argparse usage error is 2. Every execution path — foreground slot, pipeline stage, decorator, main-thread run — goes through one function, `shell.run_handler`.
+- **A handler's return value is its exit status** — an `int` is the status, anything else (usually `None`) is 0, so `my_cmd && next` sees a failure the handler reports. A `SystemExit` is only a status too (it never ends the shell; `exit` sets `Shell._exit_requested` instead), `KeyboardInterrupt` is 130, an exception is 1 with the traceback on stderr, and an argparse usage error is 2. Every execution path — foreground slot, pipeline stage, decorator, main-thread run — goes through one function, `slots.run_handler`.
 - `defining_builtins()` — context manager the shell registers its own commands in; exactly what is registered inside it is the built-in set. Afterwards, registering a built-in name without `override=True` prints a `config warning:` and keeps the built-in (the decorator form gets a detached node, so the config runs on). `is_builtin(name)` is false for an override, which `help` lists under "Commands from your config". `mark_builtins()` snapshots everything (for hand-built test registries).
 - `clear_user_commands()` — back to the built-in set: drops config commands and aliases and restores any built-in a config overrode
 
@@ -559,6 +560,23 @@ No alternate screen; all rendering anchored with DECSC/DECRC (`ESC 7` / `ESC 8`)
 - `suspend_terminal_modes() / restore_terminal_modes()` — generate escape sequences to undo/redo DEC private modes (alt screen, mouse, app cursor keys) tracked across switches
 - `kill()` — send SIGTERM
 
+### slots.py — Python Commands on Threads
+
+The Python-command peer of `process.py`, kept out of `shell.py` so it can be
+tested on its own; it imports nothing of the shell.
+
+- `PythonCommandSlot` — a Python command on a thread, with `ProcessSlot`'s
+  runtime interface (`is_alive` / `write_stdin` / `resize` / `activate` /
+  `kill` …) so the shell parks and resumes either; `_PyStageHandle` — a
+  Python pipeline stage.
+- `_ThreadLocalStream` (installed over `sys.std*` by `install_stdio_routers`)
+  and `_StdoutProxy` — per-thread stdio, and a slot's output buffered while
+  its context is in the background.
+- `run_handler` — a handler's end as an exit status, for every path.
+- `_run_interactive` / `_read_from_user` / `_choose` — the bodies of
+  `CommandContext`'s methods (below), reaching the user through the current
+  slot (`_current_slot`) or the terminal.
+
 ### command_context.py — What user code sees of the shell
 
 Two objects, so user code never holds a live internal (`Context`, a slot, the
@@ -586,7 +604,7 @@ def deploy(ctx, env):
 
 There are no free functions for this: `passthrough_run` / `passthrough_input`
 / `passthrough_input_block` were replaced by the methods (discussion #30). The
-implementations stay private in `shell.py` (`_run_interactive`,
+implementations stay private in `slots.py` (`_run_interactive`,
 `_read_from_user`, `_choose`), which built-ins such as `source-bash` and
 `config edit` call directly.
 
@@ -609,7 +627,7 @@ A Python `@registry.command` runs in a background thread inside a `PythonCommand
 External commands typed at the prompt (e.g. plain `aws ssm start-session`) don't have this problem because they're routed through `ProcessSlot`, which gives them a dedicated PTY pair. The main thread is the *only* reader of real stdin; it copies bytes into the PTY master.
 
 - **`ctx.run_interactive(argv)`** is the same shape for a Python command: it allocates a PTY on the enclosing `PythonCommandSlot`, starts the subprocess against the slave, and spawns a reader thread that copies output to stdout (or buffers it while the context is backgrounded). The main thread keeps reading real stdin in raw mode, intercepts Ctrl+] for context switching, and forwards every other byte to `slot.write_stdin` — which now writes to the PTY master. Ctrl+C is delivered to the subprocess (not the Python thread) while it is active. Window resizes propagate via `slot.resize()` → `TIOCSWINSZ` + `SIGWINCH` on the child's process group. On the main thread (a `sync` command) there is no slot and no competing reader, so it is plain `subprocess.run`.
-- **`ctx.input` / `ctx.input_block`** read the **raw key stream**: on a slot, the keys the forwarding loop already feeds it (`slot.poll_key`); on the main thread, the terminal itself in raw-input / cooked-output mode. `shell._read_typed` does the echo, Backspace / Ctrl+U / Ctrl+W editing, CRLF folding and blank-line detection for both. Ctrl+C raises `KeyboardInterrupt` in the command (the forwarding loop sees `slot._reading_input` and hands Ctrl+C to the reader instead of interrupting), and Ctrl+D on an empty line `EOFError`. Nothing goes through cooked mode, whose canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. A single-line read drops keys typed before the question was asked, so a stray `y` can't answer a delete prompt; a block keeps a paste that landed before its first poll. Without a terminal (and on Windows) both fall back to `input()`.
+- **`ctx.input` / `ctx.input_block`** read the **raw key stream**: on a slot, the keys the forwarding loop already feeds it (`slot.poll_key`); on the main thread, the terminal itself in raw-input / cooked-output mode. `slots._read_typed` does the echo, Backspace / Ctrl+U / Ctrl+W editing, CRLF folding and blank-line detection for both. Ctrl+C raises `KeyboardInterrupt` in the command (the forwarding loop sees `slot._reading_input` and hands Ctrl+C to the reader instead of interrupting), and Ctrl+D on an empty line `EOFError`. Nothing goes through cooked mode, whose canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. A single-line read drops keys typed before the question was asked, so a stray `y` can't answer a delete prompt; a block keeps a paste that landed before its first poll. Without a terminal (and on Windows) both fall back to `input()`.
 - **`ctx.choose`** runs an `InlinePicker`. On a slot it passes `key_source=slot.poll_key`; the picker then also leaves the terminal mode alone, because the forwarding loop owns it, and a save/restore from the command's thread would race the loop's own save/restore and could leave the terminal raw. Ctrl+C sets `picker.interrupted` and becomes `KeyboardInterrupt`. Esc returns `None`. Without a terminal it falls back to a numbered list.
 - All of them raise `RuntimeError` in a pipeline stage, whose stdin/stdout are pipes.
 
@@ -1109,6 +1127,8 @@ eosh/
 │       ├── user_errors.py      # traceback of a config/recipe error, eosh
 │       │                       # frames stripped
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
+│       ├── slots.py            # PythonCommandSlot, thread-local stdio, run_handler,
+│       │                       # the CommandContext I/O implementations
 │       ├── commands.py         # command registry, @command decorator
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
 │       ├── completion.py       # Completer ABC, CompletionContext, built-in completers
@@ -1238,7 +1258,7 @@ Two execution modes in `shell.py`:
 
 A redirected single stage goes through the same loop as a multi-stage pipeline (`_execute_pipeline`). There is no separate redirect path, so the process-global `sys.stdout` is never reassigned, and a background thread printing at the same time can't leak into the redirect target. `_execute_stage` only handles a lone stage with no redirects, which gets the terminal.
 
-The thread-local routing (`_ThreadLocalStdin` / `_ThreadLocalStdout` / `_ThreadLocalStderr` in `shell.py`) is what lets multiple Python pipeline stages run concurrently without trampling each other or the main thread's terminal. Caveats — most importantly that nested `subprocess` from inside a piped Python command bypasses the thread-local rebinding because it reads the real fd 1 — are documented in `doc/limitations.md` under "Python commands in pipelines — caveats of the in-process model."
+The thread-local routing (one `_ThreadLocalStream` per `sys.std*`, in `slots.py`, installed by `install_stdio_routers` from `Shell.__init__`) is what lets multiple Python pipeline stages run concurrently without trampling each other or the main thread's terminal. Caveats — most importantly that nested `subprocess` from inside a piped Python command bypasses the thread-local rebinding because it reads the real fd 1 — are documented in `doc/limitations.md` under "Python commands in pipelines — caveats of the in-process model."
 
 ## Packaging & Release
 

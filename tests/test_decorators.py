@@ -524,7 +524,7 @@ def test_stdout_isatty_visible_to_decorator_body():
     False unconditionally.
     """
     import sys as _sys
-    from eosh.shell import _StdoutProxy
+    from eosh.slots import _StdoutProxy
 
     proxy = _StdoutProxy(_sys.__stdout__)
     assert proxy.isatty() == _sys.__stdout__.isatty()
@@ -582,7 +582,7 @@ def test_python_command_slot_poll_key_returns_buffered_bytes():
     """The slot's stdin keybuf collects bytes the main forwarding loop
     received while no PTY subprocess is active, so a Python command body
     can poll for keystrokes (e.g. ``q`` to quit ``@watch``)."""
-    from eosh.shell import PythonCommandSlot
+    from eosh.slots import PythonCommandSlot
 
     class _DummyCmd:
         name = "_dummy"
@@ -607,7 +607,7 @@ def test_thread_local_stdout_isatty_falls_through(monkeypatch):
     real stream (no override) or the thread-local override — not return
     the io.TextIOBase default of ``False``."""
     import sys as _sys
-    from eosh.shell import _ThreadLocalStream, _StdoutProxy
+    from eosh.slots import _ThreadLocalStream, _StdoutProxy
 
     tls = _ThreadLocalStream(_sys.__stdout__)
     # No override: reflect the real stream.

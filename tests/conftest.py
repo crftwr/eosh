@@ -89,7 +89,7 @@ def pytest_pyfunc_call(pyfuncitem):
         yield
         return
     import sys
-    from eosh.shell import _ThreadLocalStream
+    from eosh.slots import _ThreadLocalStream
 
     capman.suspend_global_capture(in_=True)
     saved = (sys.stdin, sys.stdout, sys.stderr)

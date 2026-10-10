@@ -12,7 +12,8 @@ import time
 
 import pytest
 
-from eosh.shell import PythonCommandSlot, Shell
+from eosh.shell import Shell
+from eosh.slots import PythonCommandSlot
 
 pty = pytest.importorskip("pty")
 termios = pytest.importorskip("termios")

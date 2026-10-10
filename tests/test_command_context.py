@@ -188,7 +188,7 @@ def test_a_globalvar_is_one_value_everywhere(sh):
 ])
 def test_confirm(monkeypatch, answer, default, expected):
     asked = []
-    monkeypatch.setattr("eosh.shell._read_from_user",
+    monkeypatch.setattr("eosh.slots._read_from_user",
                         lambda prompt, **kw: asked.append(prompt) or answer)
     ctx = CommandContext(None, None, None)
     assert ctx.confirm("Delete it?", default=default) is expected

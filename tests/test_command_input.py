@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from eosh.shell import (
+from eosh.slots import (
     PythonCommandSlot, _read_from_user, _read_typed,
 )
 
@@ -183,9 +183,9 @@ def test_block_falls_back_to_input_without_a_terminal(monkeypatch):
 
 def test_block_falls_back_to_input_in_a_slot_when_stdin_is_not_a_terminal(monkeypatch):
     slot = _slot()
-    monkeypatch.setattr("eosh.shell._current_slot",
+    monkeypatch.setattr("eosh.slots._current_slot",
                         types.SimpleNamespace(slot=slot))
-    monkeypatch.setattr("eosh.shell._stdin_is_tty", lambda: False)
+    monkeypatch.setattr("eosh.slots._stdin_is_tty", lambda: False)
     lines = iter(["export A=1", ""])
     monkeypatch.setattr("builtins.input", lambda *a: next(lines))
     assert _read_from_user("", block=True) == "export A=1"
