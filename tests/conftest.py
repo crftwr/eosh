@@ -101,3 +101,13 @@ def pytest_pyfunc_call(pyfuncitem):
     finally:
         sys.stdin, sys.stdout, sys.stderr = saved
         capman.resume_global_capture()
+
+
+@pytest.fixture(autouse=True)
+def _reset_key_bindings():
+    """Key bindings are process-global; a test that binds keys or defines a
+    key action must not leak it into the next one."""
+    from eosh import keys
+    keys.reset()
+    yield
+    keys.reset()

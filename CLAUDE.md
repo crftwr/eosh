@@ -80,6 +80,10 @@ change.
 │  Event Hooks (hooks.py)                             │
 │  └── @hooks.on_directory_changed, … from config    │
 ├─────────────────────────────────────────────────────┤
+│  Key Bindings (keys.py)                             │
+│  ├── prompt.* / picker.* / switcher.* action table │
+│  └── keys.bind(), @keys.action() from config       │
+├─────────────────────────────────────────────────────┤
 │  Recipes (recipes/)                                 │
 │  └── Completion recipes for external commands      │
 ├─────────────────────────────────────────────────────┤
@@ -119,7 +123,7 @@ Entry point. Reads input, parses lines, dispatches commands.
 - Runs external commands in PTY-backed subprocess slots (`process.py`)
 - Executes pipelines (`|`), sequences (`;`, `&&`, `||`), and redirections (`>`, `>>`, `<`, `2>`, `2>&1`)
 
-**Built-in commands:** `cd`, `exit`, `reload`, `config` (`config edit`), `var`, `alias`, `unalias`, `source-bash`, `help`, `context`, `history`
+**Built-in commands:** `cd`, `exit`, `reload`, `config` (`config edit`), `var`, `alias`, `unalias`, `source-bash`, `help` (`help keys` lists the key bindings), `context`, `history`
 (`var NAME=` unsets; there is no separate `unset`.)
 
 **`reload` is one sweep.** `Shell._clear_user_config` puts every registry a
@@ -493,7 +497,7 @@ class EC2InstanceCompleter(Completer):
 DIY raw-mode line editor. No prompt_toolkit or readline.
 
 - `LineEditor.prompt()` — read one line; returns the line string (not added to history — the shell joins continuation lines and records the result), `CONTEXT_CHANGED_SENTINEL` when a `Ctrl+]` switch needs the new context's process resumed, raises `EOFError` (Ctrl+D on empty) or `KeyboardInterrupt` (Ctrl+C)
-- Key bindings: `Ctrl+A/E`, `Ctrl+B/F`, `Alt+B/F`, `Ctrl+W`, `Ctrl+K`, `Ctrl+U`, `Ctrl+L`, arrow keys, `Ctrl+P/N`, `Ctrl+R`
+- Key bindings come from `keys.py`: `_handle_key` looks the key up as a `prompt.*` action (`keys.lookup`) and `run_action` runs a user action first, then the built-in from `_builtin_actions` (defaults: `Ctrl+A/E`, `Ctrl+B/F`, `Alt+B/F`, `Ctrl+W`, `Ctrl+K`, `Ctrl+U`, `Ctrl+L`, `Delete`, arrow keys, `Ctrl+P/N`, `Ctrl+R`). Printable keys are never bindable — typing is not an action
 - TAB opens an `InlinePicker` (flags included — one row each) with **no candidate pre-selected**, so Enter dismisses the list instead of inserting the first item; only Down/Up make a selection; typing narrows the list; TAB inside the picker extends the common prefix and never moves the selection; Backspace can close the picker; narrowing to zero candidates closes it (a zero-row picker would be invisible but still eat keys). Characters typed inside a picker are committed to the buffer on every exit path.
 - **Ghost suggestion** (fish-style): with the caret at the end of a non-empty line, `suggest_fn(buffer)` (the shell's `_suggest`) names a past line that extends it, and `_redraw` draws the rest dimmed after the caret — cut to what fits on the buffer's last row, so it never wraps and the row bookkeeping stays about the buffer. `→` / `Ctrl+F` / `Ctrl+E` / End at the end of the line accept the whole line, `Alt+F` one word. It is off on continuation (`> `) prompts and on the final redraw of a submitted line, and `_erase_ghost` wipes it before a picker opens or on Ctrl+C. TAB never offers past lines.
 - History search (`Ctrl+R`) opens a filterable picker over every distinct line in the shared store (`HistoryStore.distinct`), with where / how long ago / failed-status columns. It starts filtered by the buffer (`InlinePicker(typed=...)`) when that fits on the prompt row.
@@ -691,6 +695,56 @@ keyboard, not to the AWS account they're pointing at.
 See [doc/notifications.md](doc/notifications.md) for the full design, and
 `doc/limitations.md` for the skip-list heuristic's known misses and the
 best-effort nature of delivery.
+
+### keys.py — Key Bindings
+
+One action→keys table for every surface, in XeFM's shape: dotted names
+(`prompt.history_search`, `picker.next`, `switcher.new`), one namespace,
+`[]` to unbind, user actions bound by name like built-ins (discussion #29).
+
+```python
+from eosh import keys
+
+keys.bind("prompt.history_search", "Ctrl-S")   # replaces its keys; [] unbinds
+keys.bind("insert_last_arg", "Alt-.")         # before or after the definition
+
+@keys.action("insert_last_arg")
+def insert_last_arg(ctx):                     # ctx: lineedit.EditorContext
+    ctx.insert(ctx.history[-1].split()[-1])
+```
+
+- **Where the behaviour lives.** `keys.py` holds names, descriptions and default
+  keys only. Behaviour stays on each surface: `LineEditor._builtin_actions`,
+  `InlinePicker._ACTIONS`, and `Shell._show_switch_menu` (its `key_actions`
+  come from `keys.sequences("switcher.*")` and are checked before `picker.*`).
+  The foreground forwarding loops find `prompt.switch_context` in raw input
+  with `shell._find_switch_key`.
+- **Names in `bind`.** A bare name (`"accept"`) binds that action on every
+  surface that has one (`prompt.accept` and `picker.accept`). A dotted name
+  binds one surface and wins there over the bare entry, whatever the call
+  order, as in XeFM. `@keys.action` and `ctx.invoke` read a bare name as
+  `prompt.`.
+- **Defining and binding are separate** (XeFM's `ACTIONS` / `KEY_BINDINGS`).
+  `@keys.action` takes no keys; `bind` only records the name, so it may
+  precede the definition. `_load_user_config` calls `keys.check_bindings()`
+  after the config runs, which warns about and drops names that don't exist.
+- **Which binding wins.** Defaults first, then every `bind()` in call order;
+  each later one takes the key. An `override=True` action keeps the
+  built-in's keys.
+- **Errors.** Unknown action names, unparseable key names, chords the terminal
+  can't send and printable keys are each a `config warning:`. An unknown
+  modifier is refused, never dropped. `reload` → `keys.reset()`.
+- **`EditorContext`** has `buffer`, `cursor` (both read-write), `history`,
+  `insert`, `replace`, `invoke(name)` and `choose(items, title)`. `invoke` skips
+  a user action that is already running (XeFM's re-entry guard), so an
+  `override=True` action reaches its built-in by its own name.
+  `invoke("accept")` finishes the line. A raising action is reported below
+  the line and editing goes on. Only `prompt.*` actions can be user-defined.
+- **Key names** (`Ctrl-R`, `Alt-.`, `Alt-Shift-B`, `Shift-Tab`, `Ctrl-Left`,
+  `F5`) parse to the bytes `terminal.read_key` returns. There are no
+  multi-stroke keys. `help keys` lists the table (`Shell._print_key_bindings`).
+
+See [doc/keys.md](doc/keys.md); gaps are in `doc/limitations.md`.
 
 ### hooks.py — Event Hooks
 
@@ -1009,6 +1063,7 @@ eosh/
 │       ├── lineedit.py         # DIY raw-mode line editor, ghost suggestion, TAB completion glue
 │       ├── command_context.py  # CommandContext / ShellView: what user code sees
 │       ├── hooks.py            # event hooks: @hooks.on_directory_changed, …
+│       ├── keys.py             # key bindings: action table, keys.bind, @keys.action
 │       ├── notify.py           # OS notification when a slow command finishes;
 │       │                       # native backends, skip list, `notify` +
 │       │                       # `notify_threshold` Vars
@@ -1060,6 +1115,7 @@ eosh/
     ├── test_decorators.py
     ├── test_history.py
     ├── test_hooks.py
+    ├── test_keys.py
     ├── test_notify.py
     ├── test_parsing.py
     ├── test_pipeline.py

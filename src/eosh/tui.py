@@ -7,9 +7,13 @@ import sys
 import unicodedata
 from typing import Callable, Generic, Sequence, TypeVar
 
-from . import terminal
+from . import keys, terminal
 from .colors import get_color_scheme, paint
 from .scrollbar import render_column as _scrollbar_column
+
+#: What _read_key returns once a resize cancelled the picker — not a key, so
+#: no binding can shadow it.
+_CANCELLED = b"\x00cancelled"
 
 T = TypeVar("T")
 
@@ -309,8 +313,8 @@ class InlinePicker(Generic[T]):
                     # the user never selected.
                     result = self._current()
                     break
-                if action == "cancel":
-                    self.interrupted = key_bytes == b"\x03"
+                if action in ("cancel", "interrupt"):
+                    self.interrupted = action == "interrupt"
                     break
                 if action == "up":
                     self._move(-1)
@@ -665,7 +669,7 @@ class InlinePicker(Generic[T]):
     def _read_key(self) -> bytes:
         while True:
             if self._cancelled:
-                return b"\x1b"  # triggers "cancel" in _dispatch
+                return _CANCELLED  # triggers "cancel" in _dispatch
             if self._key_source is not None:
                 key = self._key_source(0.1)
                 if key:
@@ -678,19 +682,23 @@ class InlinePicker(Generic[T]):
             if terminal.terminal_size() != self._last_size:
                 self._cancelled = True
 
+    # picker.* action → what run() acts on.
+    _ACTIONS = {
+        "picker.accept": "accept",
+        "picker.cancel": "cancel",
+        "picker.interrupt": "interrupt",
+        "picker.previous": "up",
+        "picker.next": "down",
+        "picker.complete": "tab_complete",
+        "picker.backward_delete_char": "backspace",
+    }
+
     def _dispatch(self, key: bytes) -> str:
-        if key in (b"\r", b"\n"):
-            return "accept"
-        if key in (b"\x1b", b"\x03"):
+        if key == _CANCELLED:
             return "cancel"
-        if key in (b"\x1b[A", b"\x1bOA", b"\x10"):   # up arrow (normal/app mode), Ctrl+P
-            return "up"
-        if key in (b"\x1b[B", b"\x1bOB", b"\x0e"):  # down arrow (normal/app mode), Ctrl+N
-            return "down"
-        if key == b"\t":
-            return "tab_complete"
-        if key in (b"\x7f", b"\x08"):            # Backspace, Ctrl+H
-            return "backspace"
+        action = keys.lookup("picker", key)
+        if action is not None:
+            return self._ACTIONS[action]
         if len(key) == 1 and 0x20 <= key[0] < 0x7F:
             return key.decode()
         return "noop"

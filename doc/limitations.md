@@ -230,6 +230,26 @@ re-render it on `activate()`.
 - **Ctrl+R starts empty when the line is too long to fit on the prompt row**
   next to the prompt.
 
+## Key bindings
+
+- **Native Windows delivers fewer chords.** `msvcrt` reports only the
+  arrows, Home/End, Insert/Delete and PageUp/PageDown as special keys. Ctrl- or
+  Alt-modified special keys, F-keys and Alt-letters never arrive, so a binding
+  to them never fires there. Ctrl-letters work everywhere.
+- **Some chords share bytes.** A terminal sends the same byte for Ctrl-I and
+  Tab, Ctrl-M and Enter, Ctrl-H and Backspace, and Ctrl-[ and Esc. Binding one
+  binds the other. Ctrl-Shift-letter, Ctrl-Tab and Ctrl-Enter have no code at
+  all and are refused.
+- **Only `prompt.*` actions can be user-defined.** A user action can't yet
+  run on a picker (for example a key in the TAB picker that inserts every
+  candidate).
+- **The context-name prompt is not configurable.** The `InlineArgPrompt` that
+  names or renames a context keeps Enter, Esc, Ctrl-C and Backspace.
+- **Binding `prompt.switch_context` to an escape-sequence key** (Alt-x, an
+  arrow) works at the prompt, but while a command runs the shell finds it by
+  scanning raw input chunks. Bound to Esc itself, it would fire on every
+  escape sequence the program receives.
+
 ## Event hooks — what they don't see
 
 - **A backgrounded line's `on_command_finished` runs on a background

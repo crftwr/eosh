@@ -64,6 +64,7 @@ from .pipeline import (
     _split_on_operators,
 )
 from . import hooks, notify
+from . import keys as keymap
 from .process import ExitCallbackMixin, OutputBuffer, ProcessSlot
 from .colors import set_color_scheme
 from .prompt import get_prompt_func, set_prompt
@@ -486,6 +487,14 @@ def _choose(items: list[str], title: str) -> str | None:
         sys.stdout.write(f"\x1b[1A\r\x1b[K{title} {choice}\n")
         sys.stdout.flush()
     return choice
+
+
+def _find_switch_key(data: bytes) -> int:
+    """Where the first context-switch key (``prompt.switch_context``) starts
+    in a chunk of raw input, or -1."""
+    hits = [i for i in (data.find(seq) for seq in keymap.sequences("prompt.switch_context"))
+            if i >= 0]
+    return min(hits) if hits else -1
 
 
 def _choose_by_number(items: list[str], title: str) -> str | None:
@@ -1847,12 +1856,21 @@ class Shell:
         @self.registry.command(
             name="help",
             sync=True,
-            help="Show help for a command, or list all commands.",
+            help=(
+                "Show help for a command, or list all commands.\n\n"
+                "  help          every command\n"
+                "  help NAME     one command\n"
+                "  help keys     the key bindings: every action, its keys, what it does"
+            ),
             params=[arg("command_name", nargs="?", default="",
-                        completer=CallbackCompleter(lambda: sorted(self.registry.list_commands())))],
+                        completer=CallbackCompleter(
+                            lambda: sorted({*self.registry.list_commands(), "keys"})))],
         )
         def help_cmd(command_name: str = ""):
-            if command_name:
+            if command_name == "keys":
+                # A topic, not a command: it wins over a command named keys.
+                self._print_key_bindings()
+            elif command_name:
                 cmd = self.registry.get(command_name)
                 if cmd:
                     print(f"{cmd.name}: {cmd.help_text or 'No help available.'}")
@@ -1875,6 +1893,7 @@ class Shell:
                         cmd = self.registry.get(name)
                         desc = cmd.help_text.split("\n")[0] if cmd.help_text else ""
                         print(f"  {name:20s} {desc}")
+                print("\n`help keys` lists the key bindings.")
 
         @self.registry.command(
             name="history",
@@ -2040,6 +2059,22 @@ class Shell:
         self._load_user_config()
         print("Config reloaded.")
 
+    def _print_key_bindings(self) -> None:
+        """``help keys``: every action by surface, its keys and what it does;
+        actions from the config are marked ``*``."""
+        shown = None
+        rows = keymap.listing()
+        for action, names in rows:
+            if action.context != shown:
+                if shown is not None:
+                    print()
+                print(f"{action.context}:")
+                shown = action.context
+            label = action.short_name + (" *" if action.is_user else "")
+            print(f"  {label:24s} {', '.join(names) or '-':18s} {action.description}")
+        if any(a.is_user for a, _ in rows):
+            print("\n* from your config")
+
     def _clear_user_config(self) -> None:
         """Put every registry a config writes to back to its built-in state.
 
@@ -2053,6 +2088,7 @@ class Shell:
         recipes.skipped_recipes.clear()
         set_prompt(None)
         set_color_scheme(None)
+        keymap.reset()
         notify.reset_config()
         hooks.clear()
 
@@ -2120,6 +2156,9 @@ class Shell:
                 from .user_errors import format_user_exception
                 print(f"Error loading config ({config_path}):", file=sys.stderr)
                 print(format_user_exception(e), file=sys.stderr, end="")
+            # A keys.bind() may precede the action it names; check the
+            # names now that the whole config has run.
+            keymap.check_bindings()
 
     _ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)")
 
@@ -2977,8 +3016,8 @@ class Shell:
                     data = os.read(fd, 1024)
                     if not data:
                         break
-                    if b"\x1d" in data:
-                        idx = data.index(b"\x1d")
+                    idx = _find_switch_key(data)
+                    if idx >= 0:
                         if idx > 0:
                             slot.write_stdin(data[:idx])
                         result = "switched"
@@ -3000,7 +3039,8 @@ class Shell:
 
         Sets the terminal to raw mode, activates the slot's stdout proxy
         (replaying any buffered output), then loops:
-          • Ctrl+] (\\x1d) — return 'switched' so caller can store the slot
+          • the switch key (prompt.switch_context, Ctrl+] by default) — return
+            'switched' so caller can store the slot
           • Ctrl+C (\\x03) — forwarded to a ctx.run_interactive() subprocess if
             one is active (so e.g. SSH/SSM see the interrupt); otherwise
             inject KeyboardInterrupt into the command thread.
@@ -3044,7 +3084,7 @@ class Shell:
                     data = os.read(fd, 1024)
                     if not data:
                         break
-                    if b"\x1d" in data:
+                    if _find_switch_key(data) >= 0:
                         result = "switched"
                         break
                     if (b"\x03" in data and not slot._pty_active
@@ -3068,14 +3108,11 @@ class Shell:
             signal.signal(signal.SIGWINCH, old_sigwinch)
 
     _PREVIEW_HEIGHT = 3
-    # Action key bindings:  (key bytes, action name, hint label).
-    # Ctrl+N overrides the picker's default "down" alias for the duration of
-    # the context-switch picker; users can still navigate with the arrow keys
-    # (down arrow + Ctrl+P up).
-    _SWITCH_KEY_ACTIONS: tuple[tuple[bytes, str, str], ...] = (
-        (b"\x0e",  "new",    "^N new"),
-        (b"\x04",  "delete", "^D delete"),
-        (b"\x12",  "rename", "^R rename"),
+    # switcher.* actions → the hint shown for each in the status bar.
+    _SWITCH_ACTIONS: tuple[tuple[str, str], ...] = (
+        ("new", "new"),
+        ("delete", "delete"),
+        ("rename", "rename"),
     )
 
     def _show_switch_menu(self) -> tuple[str, bool] | None:
@@ -3114,8 +3151,13 @@ class Shell:
                     return []
             return []
 
-        key_actions = {kb: name for kb, name, _ in self._SWITCH_KEY_ACTIONS}
-        hints = "  ".join(label for _, _, label in self._SWITCH_KEY_ACTIONS)
+        # switcher.* keys are checked before picker.* ones, so its default
+        # Ctrl+N means "new" here, not "down" (Down / Ctrl+P still move).
+        key_actions = {seq: action
+                       for action, _ in self._SWITCH_ACTIONS
+                       for seq in keymap.sequences(f"switcher.{action}")}
+        hints = "  ".join(filter(None, (keymap.hint(f"switcher.{action}", label)
+                                        for action, label in self._SWITCH_ACTIONS)))
 
         # Selection persists across re-openings (after delete/rename).
         selected_name: str | None = self.context_manager.current_name
