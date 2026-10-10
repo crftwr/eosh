@@ -160,8 +160,10 @@ def test_register_installs_delegate_completer(_clean_aws_registration):
     aws_recipe.register()
     cmd = command_registry.get("aws")
     assert cmd is not None
-    # delegate=AwsCompleter() answers every slot — flags and positionals.
-    assert isinstance(cmd.delegate, AwsCompleter)
+    # AwsCompleter answers every slot; S3 and local paths are overlaid on it.
+    from eosh.completion import OverlayCompleter
+    assert isinstance(cmd.delegate, OverlayCompleter)
+    assert isinstance(cmd.delegate._parts[0], AwsCompleter)
 
 
 def test_register_preserves_aws_region_var(_clean_aws_registration):

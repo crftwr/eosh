@@ -360,7 +360,16 @@ class OptionsCompleter(Completer):         # flags, one picker row each; value-t
     def __init__(self, options: dict[str, str],
                  args: dict[str, str | tuple[str, Completer]] | None = None): ...
     def __init__(self, mapping: dict[tuple, Completer]): ...
+class OverlayCompleter(Completer):         # base's candidates + each active extra's (deduped)
+    def __init__(self, base: Completer, *extras: Completer): ...
 ```
+
+`OverlayCompleter` is how the `aws` recipe adds what `aws_completer` doesn't
+answer — path arguments — without replacing it: `eosh.recipes.aws.S3PathCompleter`
+(`s3://bucket/key`, one level per listing through the `aws` CLI, cached per
+account) and the filesystem, each gated to the path arguments of
+`aws s3 <op>`. `S3PathCompleter` is public for your own commands' arguments;
+it is never applied by scheme to every command (discussion #33).
 
 #### Per-Argument Completer Binding
 

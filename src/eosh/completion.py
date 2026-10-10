@@ -412,6 +412,38 @@ _COBRA_FILTER_FILE_EXT = 8
 _COBRA_FILTER_DIRS = 16
 
 
+class OverlayCompleter(Completer):
+    """*base*'s candidates, plus those of each extra completer that activates.
+
+    For a tool with its own completion protocol (a ``delegate`` such as
+    ``aws_completer``) that leaves some slots unanswered — paths, say.  The
+    extras add to its answer rather than replace it, so they keep working
+    if the tool starts answering there too.  An extra's ``should_activate``
+    decides where it applies; a value already offered keeps its first entry.
+    """
+
+    def __init__(self, base: Completer, *extras: Completer):
+        self._parts = (base, *extras)
+
+    def should_activate(self, ctx: CompletionContext) -> bool:
+        return any(part.should_activate(ctx) for part in self._parts)
+
+    def complete(self, ctx: CompletionContext) -> list[Completion]:
+        out: list[Completion] = []
+        seen: set[str] = set()
+        for part in self._parts:
+            if not part.should_activate(ctx):
+                continue
+            for c in part.complete(ctx):
+                if c.value not in seen:
+                    seen.add(c.value)
+                    out.append(c)
+        return out
+
+    def describe_slot(self, args: list[str], pos_idx: int) -> str | None:
+        return self._parts[0].describe_slot(args, pos_idx)
+
+
 class CobraCompleter(Completer):
     """Completer for a cobra-based CLI, driving its ``__complete`` subcommand.
 
