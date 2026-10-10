@@ -33,6 +33,10 @@ the thread-local router rebinds. Workaround: pass `stdout=sys.stdout`
 shelling out from a piped Python command. The same caveat applies to
 a redirected single stage, which runs as a one-stage pipeline:
 `my_cmd > out.txt` redirects `print` but not nested `subprocess` output.
+On a terminal the pipeline runs on a `PipelineSlot` (its own PTY, parkable
+with Ctrl+]), and such a nested `subprocess` still writes to eosh's real
+fd 1 — past the slot, so it isn't buffered while the line is parked and
+lands in whichever context is in front.
 
 **Stateful built-ins mutate the parent in pipelines.**
 

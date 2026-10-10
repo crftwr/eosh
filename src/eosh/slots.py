@@ -327,6 +327,11 @@ _current_slot = threading.local()
 # since stdin and stdout are wired to pipe ends, not the terminal.
 _in_pipeline = threading.local()
 
+# Set on a pipeline stage's thread when the pipeline runs on a
+# PipelineSlot: a decorator body re-entering the executor there joins that
+# slot (its job leader, its PTY) instead of taking the terminal.
+_job_local = threading.local()
+
 
 def _dup_threadlocal_override_fd(stream) -> int | None:
     """Duplicate the underlying pipe fd of a thread-local stdio override.

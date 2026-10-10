@@ -150,12 +150,21 @@ def _opposite(action: bytes) -> bytes:
     return b"l" if action == b"h" else b"h"
 
 
-class ProcessSlot(ExitCallbackMixin):
-    """Manages a single PTY subprocess with output buffering for context switching."""
+class PtySlot(ExitCallbackMixin):
+    """Work whose terminal is a PTY eosh owns: the master end's output is
+    copied to the real terminal while the slot is in front and buffered while
+    it isn't, keys go in through :meth:`write_stdin`, and DEC private modes
+    (alternate screen, mouse, …) are tracked so a switch can undo and redo
+    them.
+
+    A subclass starts the work on the slave end, then calls
+    :meth:`_start_reader`, and supplies :meth:`_reap` (the exit status, once
+    the master reports EOF — every slave end closed), :meth:`_pgid` (where
+    SIGWINCH goes) and :meth:`kill`.
+    """
 
     def __init__(self, on_exit=None):
         self._init_exit_callback(on_exit)
-        self.pid: int = -1
         self.master_fd: int = -1
         self.argv: list[str] = []
         # Full history — replayed for alt-screen TUIs (idempotent paints).
@@ -178,81 +187,28 @@ class ProcessSlot(ExitCallbackMixin):
             name: False for name, _ in _TRACKED_MODES.values()
         }
 
-    def start(self, argv: list[str], env: dict[str, str], cwd: str) -> None:
-        self.argv = argv
-        self.mark_started()
-        master_fd, slave_fd = pty.openpty()
+    # --- what a subclass supplies ---------------------------------------------
 
-        # Set PTY size before fork so child sees correct dimensions immediately.
-        # Don't set LINES/COLUMNS in env: ncurses honors those over TIOCGWINSZ
-        # and then ignores SIGWINCH-driven resize (KEY_RESIZE never fires).
-        rows, cols = self._get_real_terminal_size()
-        if rows and cols:
-            winsize = struct.pack("HHHH", rows, cols, 0, 0)
-            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+    def _reap(self) -> int:
+        """The work's exit status, once its output has ended."""
+        raise NotImplementedError
 
-        # Pipe for the child to report exec failure to the parent. CLOEXEC
-        # on the write end means a successful exec auto-closes it and the
-        # parent reads EOF. On exec failure the child writes the errno and
-        # exits, so the parent can surface a real FileNotFoundError instead
-        # of leaving a dead PTY slot registered with the failed argv.
-        err_r, err_w = os.pipe()
-        flags = fcntl.fcntl(err_w, fcntl.F_GETFD)
-        fcntl.fcntl(err_w, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+    def _pgid(self) -> int | None:
+        """The process group that gets SIGWINCH on a resize, or None."""
+        return None
 
-        pid = os.fork()
-        if pid == 0:
-            # Child process
-            try:
-                os.close(master_fd)
-                os.close(err_r)
-                os.setsid()
-                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-                os.dup2(slave_fd, 0)
-                os.dup2(slave_fd, 1)
-                os.dup2(slave_fd, 2)
-                if slave_fd > 2:
-                    os.close(slave_fd)
-                os.chdir(cwd)
-                os.execvpe(argv[0], argv, env)
-            except BaseException as e:
-                errno_val = getattr(e, "errno", 0) or 0
-                try:
-                    os.write(err_w, errno_val.to_bytes(4, "little", signed=True))
-                except OSError:
-                    pass
-            os._exit(127)
-        else:
-            # Parent process
-            os.close(slave_fd)
-            os.close(err_w)
-            try:
-                err_data = b""
-                while len(err_data) < 4:
-                    chunk = os.read(err_r, 4 - len(err_data))
-                    if not chunk:
-                        break
-                    err_data += chunk
-            finally:
-                os.close(err_r)
-            if err_data:
-                # Child reported exec failure — reap it and raise.
-                try:
-                    os.waitpid(pid, 0)
-                except ChildProcessError:
-                    pass
-                try:
-                    os.close(master_fd)
-                except OSError:
-                    pass
-                errno_val = int.from_bytes(err_data.ljust(4, b"\x00"), "little", signed=True)
-                raise OSError(errno_val, os.strerror(errno_val) if errno_val else "exec failed", argv[0])
-            self.pid = pid
-            self.master_fd = master_fd
-            self._reader_thread = threading.Thread(
-                target=self._reader_loop, daemon=True
-            )
-            self._reader_thread.start()
+    def kill(self) -> None:
+        raise NotImplementedError
+
+    def take_unread(self) -> bytes:
+        """Keys sent to the slot that nothing read, for the next prompt."""
+        return b""
+
+    # --- the PTY ----------------------------------------------------------------
+
+    def _start_reader(self) -> None:
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
 
     @staticmethod
     def _get_real_terminal_size() -> tuple[int, int]:
@@ -293,14 +249,7 @@ class ProcessSlot(ExitCallbackMixin):
                 else:
                     self.missed.append(data)
         finally:
-            try:
-                _, status = os.waitpid(self.pid, 0)
-                if os.WIFEXITED(status):
-                    self.exit_code = os.WEXITSTATUS(status)
-                else:
-                    self.exit_code = -1
-            except ChildProcessError:
-                self.exit_code = -1
+            self.exit_code = self._reap()
             self._exit_event.set()
             try:
                 os.close(self.master_fd)
@@ -404,7 +353,9 @@ class ProcessSlot(ExitCallbackMixin):
         # On macOS, TIOCSWINSZ on master doesn't auto-deliver SIGWINCH.
         # Send to the child's process group so all foreground processes see it.
         try:
-            os.killpg(os.getpgid(self.pid), sig.SIGWINCH)
+            pgid = self._pgid()
+            if pgid is not None:
+                os.killpg(pgid, sig.SIGWINCH)
         except (OSError, ProcessLookupError):
             pass
 
@@ -414,6 +365,102 @@ class ProcessSlot(ExitCallbackMixin):
     def wait(self, timeout: float | None = None) -> bool:
         return self._exit_event.wait(timeout)
 
+    def tail_lines(self, n: int) -> list[str]:
+        """Return up to *n* most recent output lines from the buffer (non-destructive)."""
+        return _tail_lines_from_bytes(self.buffer.peek(), n)
+
+
+class ProcessSlot(PtySlot):
+    """One external command on a PTY of its own: the session leader of a new
+    session, with the PTY as its controlling terminal."""
+
+    def __init__(self, on_exit=None):
+        super().__init__(on_exit)
+        self.pid: int = -1
+
+    def start(self, argv: list[str], env: dict[str, str], cwd: str) -> None:
+        self.argv = argv
+        self.mark_started()
+        master_fd, slave_fd = pty.openpty()
+
+        # Set PTY size before fork so child sees correct dimensions immediately.
+        # Don't set LINES/COLUMNS in env: ncurses honors those over TIOCGWINSZ
+        # and then ignores SIGWINCH-driven resize (KEY_RESIZE never fires).
+        rows, cols = self._get_real_terminal_size()
+        if rows and cols:
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+
+        # Pipe for the child to report exec failure to the parent. CLOEXEC
+        # on the write end means a successful exec auto-closes it and the
+        # parent reads EOF. On exec failure the child writes the errno and
+        # exits, so the parent can surface a real FileNotFoundError instead
+        # of leaving a dead PTY slot registered with the failed argv.
+        err_r, err_w = os.pipe()
+        flags = fcntl.fcntl(err_w, fcntl.F_GETFD)
+        fcntl.fcntl(err_w, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+
+        pid = os.fork()
+        if pid == 0:
+            # Child process
+            try:
+                os.close(master_fd)
+                os.close(err_r)
+                os.setsid()
+                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+                os.dup2(slave_fd, 0)
+                os.dup2(slave_fd, 1)
+                os.dup2(slave_fd, 2)
+                if slave_fd > 2:
+                    os.close(slave_fd)
+                os.chdir(cwd)
+                os.execvpe(argv[0], argv, env)
+            except BaseException as e:
+                errno_val = getattr(e, "errno", 0) or 0
+                try:
+                    os.write(err_w, errno_val.to_bytes(4, "little", signed=True))
+                except OSError:
+                    pass
+            os._exit(127)
+        else:
+            # Parent process
+            os.close(slave_fd)
+            os.close(err_w)
+            try:
+                err_data = b""
+                while len(err_data) < 4:
+                    chunk = os.read(err_r, 4 - len(err_data))
+                    if not chunk:
+                        break
+                    err_data += chunk
+            finally:
+                os.close(err_r)
+            if err_data:
+                # Child reported exec failure — reap it and raise.
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    pass
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
+                errno_val = int.from_bytes(err_data.ljust(4, b"\x00"), "little", signed=True)
+                raise OSError(errno_val, os.strerror(errno_val) if errno_val else "exec failed", argv[0])
+            self.pid = pid
+            self.master_fd = master_fd
+            self._start_reader()
+
+    def _reap(self) -> int:
+        try:
+            _, status = os.waitpid(self.pid, 0)
+        except ChildProcessError:
+            return -1
+        return os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
+
+    def _pgid(self) -> int | None:
+        return os.getpgid(self.pid)
+
     def kill(self) -> None:
         import signal as sig
 
@@ -422,10 +469,6 @@ class ProcessSlot(ExitCallbackMixin):
                 os.kill(self.pid, sig.SIGTERM)
             except ProcessLookupError:
                 pass
-
-    def tail_lines(self, n: int) -> list[str]:
-        """Return up to *n* most recent output lines from the buffer (non-destructive)."""
-        return _tail_lines_from_bytes(self.buffer.peek(), n)
 
 
 def _tail_lines_from_bytes(data: bytes, n: int) -> list[str]:

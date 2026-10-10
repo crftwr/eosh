@@ -37,6 +37,7 @@ is a deliberate non-goal — see issue #13.
 │  ├── Command dispatch                              │
 │  ├── PTY process multiplexing (process.py)         │
 │  ├── Python-command slots (slots.py)               │
+│  ├── Pipeline slots + job leader (job.py)          │
 │  └── Context switch TUI (tui.py)                   │
 ├─────────────────────────────────────────────────────┤
 │  Command Registry (commands.py)                     │
@@ -551,7 +552,7 @@ No alternate screen; all rendering anchored with DECSC/DECRC (`ESC 7` / `ESC 8`)
 
 ### process.py — PTY Process Slots (POSIX only)
 
-`ProcessSlot` manages a single PTY-backed subprocess with output buffering, enabling context multiplexing. It depends on `pty`/`fcntl`/`termios` and is never instantiated on Windows (the module still imports cleanly there — the Unix-only imports are guarded — but `_execute_external` takes the inherited-stdio path instead). See the Platform support note under `terminal.py`.
+`PtySlot` is work on a PTY eosh owns — the reader thread, output buffering and replay, DEC-mode tracking, `write_stdin` / `resize`; a subclass supplies `_reap`, `_pgid` and `kill`. `ProcessSlot` is one external command on it; `job.PipelineSlot` a whole pipeline. `ProcessSlot` manages a single PTY-backed subprocess with output buffering, enabling context multiplexing. It depends on `pty`/`fcntl`/`termios` and is never instantiated on Windows (the module still imports cleanly there — the Unix-only imports are guarded — but `_execute_external` takes the inherited-stdio path instead). See the Platform support note under `terminal.py`.
 
 - `start(argv, env, cwd)` — fork + exec in a new PTY; spawns a reader thread
 - `activate() / deactivate()` — controls whether output is written to stdout
@@ -1012,7 +1013,7 @@ def watch(pipeline, *, interval, no_clear):
 
 The decorator function receives a `Pipeline` (the parsed AST of the wrapped body) and the parsed flag namespace as kwargs. `pipeline.run()` re-enters `Shell._execute_pipeline` so redirects, pipes, and Python-stage routing all work the same as at the top level.
 
-**Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet` (each in its own `eosh/decorators/<name>.py`). There is no `@bg` (removed in discussion #39): to background something, run it and press `Ctrl+]` — a whole pipeline goes with it.
+**Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet` (each in its own `eosh/decorators/<name>.py`). There is no `@bg` (removed in discussion #39): to background something, run it and press `Ctrl+]` — a whole pipeline goes with it (`PipelineSlot`). A lone decorator stage still runs on the main thread and can't be parked yet (discussion #76).
 
 **Loading:** `Shell._register_builtins` calls `eosh.decorators.register_builtins()` inside `defining_builtins()`, so the built-ins survive `reload` and a config needs `override=True` to replace one. There is no decorator search path; your own are defined in `config.py` (or a module it imports), like a recipe.
 
@@ -1148,6 +1149,8 @@ eosh/
 │       │                       # `notify_threshold` Vars
 │       ├── parsing.py          # line tokenization, quote handling, var expansion
 │       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run()
+│       ├── job.py              # PipelineSlot: a line's pipeline on one PTY + job leader client
+│       ├── _job_leader.py      # the job leader: session leader that starts external stages
 │       ├── process.py          # PTY subprocess slots, output buffering, terminal-mode
 │       │                       # tracking, ExitCallbackMixin (one-shot slot-done hook)
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
@@ -1254,10 +1257,26 @@ Two execution modes in `shell.py`:
 | Situation | Execution path |
 |-----------|---------------|
 | Standalone external command (no pipe, no redirect) | PTY via `ProcessSlot` |
-| External command in a pipeline | `subprocess.Popen` with plain fds |
-| External command with redirect (no pipe) | one-stage pipeline: `subprocess.Popen` with file fds |
-| Python `@registry.command` in a pipeline | worker thread per stage; thread-local `sys.stdin`/`sys.stdout`/`sys.stderr` rebound to pipe ends |
+| External command in a pipeline | started by the line's job leader on its `PipelineSlot` PTY (`subprocess.Popen` with plain fds when stdin isn't a terminal, and on Windows) |
+| External command with redirect (no pipe) | one-stage pipeline, as above, with file fds |
+| Python `@registry.command` in a pipeline | worker thread per stage; thread-local `sys.stdin`/`sys.stdout`/`sys.stderr` rebound to pipe ends (and the slot's PTY at the terminal-facing ends) |
 | Python `@registry.command` with redirect (no pipe) | one-stage pipeline: worker thread, thread-local `sys.std*` rebound to the redirect files |
+
+**A line's pipeline is one slot** (`job.py`). On a POSIX terminal,
+`_execute_pipeline(_top_level=True)` gives every pipeline and redirected
+command a `PipelineSlot`: one PTY whose slave is every terminal-facing end,
+read and buffered like `ProcessSlot`'s, so Ctrl+] parks and resumes it the same
+way (discussion #76). The external stages are started by a **job leader**
+(`_job_leader.py`, run as `python -I -S`, only when the line has one): the
+session leader with the PTY as its controlling terminal, so the stages share
+its session and process group — `/dev/tty` works for `| less` / `| sudo` /
+`| fzf`, Ctrl+C reaches them through the line discipline, SIGWINCH goes to the
+group. eosh can't be that leader: its children are in its own session. It
+costs ~30 ms per line that has an external stage in a pipeline. Ctrl+C also
+interrupts the Python stages (`interrupt_python_stages`) unless a stage turned
+ISIG off. A decorator body on a stage thread joins the slot (`_job_local`).
+Keys typed ahead that no stage read are drained from the PTY before the leader
+exits and handed back to the prompt (`take_unread` → `terminal.unread`).
 
 A redirected single stage goes through the same loop as a multi-stage pipeline (`_execute_pipeline`). There is no separate redirect path, so the process-global `sys.stdout` is never reassigned, and a background thread printing at the same time can't leak into the redirect target. `_execute_stage` only handles a lone stage with no redirects, which gets the terminal.
 

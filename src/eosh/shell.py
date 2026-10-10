@@ -25,7 +25,6 @@ from typing import Callable
 IS_WINDOWS = os.name == "nt"
 if not IS_WINDOWS:
     import termios
-    import tty
 
 from . import terminal
 from .commands import (
@@ -60,6 +59,7 @@ from .pipeline import (
 from . import hooks, notify, shell_integration
 from . import keys as keymap
 from .process import ProcessSlot
+from .job import PipelineSlot
 from .colors import set_color_scheme
 from .prompt import get_prompt_func, set_prompt
 from .slots import (
@@ -67,6 +67,7 @@ from .slots import (
     _PyStageHandle,
     _dup_threadlocal_override_fd,
     _in_pipeline,
+    _job_local,
     _read_from_user,
     _run_interactive,
     _stdin_is_tty,
@@ -1426,7 +1427,7 @@ class Shell:
                     continue
                 if op == "||" and last_exit == 0:
                     continue
-                last_exit = self._execute_pipeline(pipeline)
+                last_exit = self._execute_pipeline(pipeline, _top_level=True)
                 # `cd proj && make`: the move is reported before make runs.
                 self._notice_state_change()
         finally:
@@ -1572,8 +1573,17 @@ class Shell:
         pipeline: Pipeline,
         *,
         _in_outer_pipe: bool = False,
+        _top_level: bool = False,
     ) -> int:
         """Execute a pipeline; return exit code of last stage.
+
+        ``_top_level`` is a pipeline of the line the user typed (not a
+        decorator body).  On a terminal (POSIX) it runs on a
+        :class:`~eosh.job.PipelineSlot` — one PTY for the whole pipeline — so
+        Ctrl+] can park it like a single command.  Inside that slot (a
+        decorator body on one of its stage threads) the pipeline joins it:
+        external stages go through its job leader, terminal-facing ends to
+        its PTY.
 
         ``_in_outer_pipe`` is set when this call is the body of a
         decorator that is itself a stage of an outer pipeline
@@ -1606,6 +1616,14 @@ class Shell:
         # Python commands run in worker threads that rebind
         # sys.stdin/stdout/stderr to the pipe ends (or redirect files) via
         # the thread-local routers installed in __init__.
+
+        # The slot this pipeline runs on, if any — its own (top level) or
+        # the one of the stage thread it runs on (a decorator body).
+        job: PipelineSlot | None = getattr(_job_local, "job", None)
+        own_job: PipelineSlot | None = None
+        if job is None and _top_level and not IS_WINDOWS and _stdin_is_tty():
+            own_job = job = PipelineSlot(" | ".join(st.text for st in stages),
+                                         on_exit=self._slot_finished)
 
         n = len(stages)
         pipe_fds: list[tuple[int, int]] = []
@@ -1644,6 +1662,7 @@ class Shell:
                     fn=lambda call=call: self._invoke_decorator(call),
                     stdin_fd=stdin_fd_pipe,
                     stdout_fd=stdout_fd_pipe,
+                    job=job,
                 )
                 workers.append(worker)
                 continue
@@ -1722,19 +1741,32 @@ class Shell:
                     stdin_file=stdin_file,
                     stdout_file=stdout_file,
                     stderr_dst=stderr_dst,
+                    job=job,
                 )
             else:
                 stdin_arg = stdin_file if stdin_file else stdin_fd_pipe
                 stdout_arg = stdout_file if stdout_file else stdout_fd_pipe
                 try:
-                    worker = subprocess.Popen(
-                        tokens,
-                        stdin=stdin_arg,
-                        stdout=stdout_arg,
-                        stderr=stderr_dst,
-                        env=self._merged_env(env_prefix),
-                        cwd=os.getcwd(),
-                    )
+                    if job is not None:
+                        # On the slot's PTY, through its job leader: None is
+                        # the PTY, and 2>&1 follows wherever stdout goes.
+                        worker = job.spawn(
+                            tokens,
+                            stdin=stdin_arg,
+                            stdout=stdout_arg,
+                            stderr=stdout_arg if stderr_dst is subprocess.STDOUT else stderr_dst,
+                            env=self._merged_env(env_prefix),
+                            cwd=os.getcwd(),
+                        )
+                    else:
+                        worker = subprocess.Popen(
+                            tokens,
+                            stdin=stdin_arg,
+                            stdout=stdout_arg,
+                            stderr=stderr_dst,
+                            env=self._merged_env(env_prefix),
+                            cwd=os.getcwd(),
+                        )
                 except FileNotFoundError:
                     print(f"eosh: command not found: {tokens[0]}")
                 except OSError as e:
@@ -1797,6 +1829,32 @@ class Shell:
                     except Exception:
                         pass
 
+        if own_job is not None:
+            return self._run_pipeline_slot(own_job, workers)
+        return self._wait_for_stages(workers)
+
+    def _run_pipeline_slot(self, slot: PipelineSlot, workers: list) -> int:
+        """Give the terminal to a pipeline's slot until it ends or Ctrl+]
+        parks it — what :meth:`_execute_external` does for one command."""
+        slot.start(workers)
+        if not workers:
+            slot.wait()
+            return 0
+        ctx = self.context_manager.current()
+        slot.activate(replay_missed=True)
+        result = self._forward(slot)
+        if result == "switched":
+            self._park(slot, ctx or self.context_manager.current())
+            slot.deactivate()
+            self._handle_switch()
+            return 0
+        slot.deactivate()
+        return slot.exit_code or 0
+
+    @staticmethod
+    def _wait_for_stages(workers: list) -> int:
+        """Wait for a pipeline's stages on this thread; the last one's status.
+        Ctrl+C (KeyboardInterrupt) stops them all: 130."""
         exit_code = 0
         try:
             for w in workers:
@@ -1836,6 +1894,7 @@ class Shell:
         stdin_file=None,
         stdout_file=None,
         stderr_dst=None,
+        job: PipelineSlot | None = None,
     ) -> "_PyStageHandle":
         """Run *fn* — a Python command or a decorator — as one pipeline stage.
 
@@ -1848,7 +1907,15 @@ class Shell:
         the next stage.  The exit status comes from :func:`run_handler`.
         """
         # Exactly one of (stdin_fd, stdin_file) is set when this stage has
-        # any stdin source, and similarly for stdout.
+        # any stdin source, and similarly for stdout.  Neither means the
+        # terminal: the real one (no override), or a slot's PTY.
+        if job is not None:
+            if stdin_fd is None and stdin_file is None:
+                stdin_fd = job.terminal_fd()
+            if stdout_fd is None and stdout_file is None:
+                stdout_fd = job.terminal_fd()
+            if stderr_dst is None:
+                stderr_dst = os.fdopen(job.terminal_fd(), "wb", buffering=0)
         in_obj = None
         if stdin_file is not None:
             in_obj = stdin_file
@@ -1876,6 +1943,7 @@ class Shell:
 
         def _target():
             _in_pipeline.flag = True
+            _job_local.job = job        # a decorator body joins the slot
             try:
                 if in_wrapper is not None:
                     sys.stdin.set_override(in_wrapper)
@@ -1908,6 +1976,7 @@ class Shell:
                         except Exception:
                             pass
                 _in_pipeline.flag = False
+                _job_local.job = None
                 handle.done.set()
 
         t = threading.Thread(target=_target, name=f"pipe-{label}", daemon=True)
@@ -2125,7 +2194,7 @@ class Shell:
             if python:
                 terminal.set_raw_input_cooked_output(fd)
             else:
-                tty.setraw(fd)
+                terminal.set_raw(fd)        # TCSADRAIN: keep keys typed ahead
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGWINCH, on_resize)
             if python:
@@ -2153,9 +2222,14 @@ class Shell:
                     result = "interrupted"
                     break
                 slot.write_stdin(data)
-            if python and result == "exited":
+                if (isinstance(slot, PipelineSlot) and b"\x03" in data
+                        and slot.ctrl_c_interrupts()):
+                    # The PTY sends SIGINT to the external stages; the
+                    # Python ones are threads of ours.
+                    slot.interrupt_python_stages()
+            if result == "exited":
                 # Typed ahead of the next prompt (a pasted `cd x` + `ls`):
-                # the command never read it, so the line editor gets it.
+                # nothing read it, so the line editor gets it.
                 terminal.unread(slot.take_unread())
             return result
         finally:
