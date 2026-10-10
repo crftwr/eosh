@@ -776,7 +776,7 @@ starts) sees `zsh% eosh` as one command whose output is the whole session
 
 ```
 osc633:  A <prompt> B <line> [F "> " G …]  E;<line> C <output> D;<status> P;Cwd=…
-osc133:  A <prompt> B <line>                        C <output> D;<status>
+osc133:  A <prompt> B <line>                        C <output> D;<status> OSC 7 file://host/cwd
 ```
 
 - `prompt_marks(continuation)` — `LineEditor.prompt` takes them once and
@@ -787,6 +787,10 @@ osc133:  A <prompt> B <line>                        C <output> D;<status>
   `None` when Ctrl+] parked it). A line that ran nothing (empty, Ctrl+C, a
   switch) is closed at the top of the next iteration, as zsh does: `C` and a
   `D` without a status. Marks are closed in the dialect they were opened in.
+- **The cwd** follows every `D`, and `startup()` sends it before the first
+  prompt, so a new tab or split opens in eosh's directory: `P;Cwd` in VS
+  Code, `OSC 7` (`file_url`: host + percent-encoded path) for the OSC 133
+  terminals, plus Windows Terminal's `OSC 9;9` on native Windows.
 - **Allowlist, not opt-out.** Nushell and fish send `OSC 133` everywhere;
   fish printed garbage in Termux / Guacamole / noVNC that way (fish#11749),
   and here a stray mark would also break the caret math. `TERMINALS` is a

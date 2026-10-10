@@ -238,6 +238,10 @@ re-render it on `activate()`.
   exception: `TERM` survives `ssh`). Add a rule to `shell_integration.TERMINALS` or force
   `var shell_integration=osc133`. Asking the terminal itself (XTVERSION,
   as fish does) would work there too — see [discussion #69](https://github.com/crftwr/eosh/discussions/69).
+- **Windows Terminal under WSL gets no cwd it reads.** Windows Terminal
+  takes the directory from `OSC 9;9` with a *Windows* path, which eosh
+  sends on native Windows only; under WSL it would need `wslpath -w` on
+  every prompt. eosh sends `OSC 7` there, as everywhere else.
 - **Konsole is left out on purpose.** Its default profile draws the marks
   visibly (fish disables them there for the same reason, fish#11409);
   `TERMINALS.append(("KONSOLE_VERSION", None, "osc133"))` opts in.
