@@ -208,6 +208,15 @@ spent in front of the user. Distinguishing "resumed and then finished" from
 "finished unobserved" needs the slot to record when it was last activated,
 which is more bookkeeping than the noise warrants today.
 
+## Ctrl+] parks one part of a line, and drops the rest
+
+`make && ./run` with `make` sent to the background by Ctrl+] does not run
+`./run` — not when `make` finishes either. `make`'s status isn't known when
+the line returns to the prompt, and running the rest at once would start it
+in the context just switched to. eosh says `the rest of the line was not
+run`. Sending the whole line along is part of
+[discussion #76](https://github.com/crftwr/eosh/discussions/76).
+
 ## A question left open by Ctrl+] is not redrawn on return
 
 If you press Ctrl+] while a command is waiting in `ctx.input` or `ctx.choose`,

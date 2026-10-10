@@ -1415,6 +1415,13 @@ class Shell:
         hooks.fire("on_command_starting", line)
         try:
             for op, pipeline in seq.items:
+                if self._backgrounded:
+                    # Ctrl+] parked an earlier part.  Its status isn't known
+                    # yet, and the rest would run now, in the context just
+                    # switched to — so it doesn't run at all.
+                    print("eosh: the rest of the line was not run: "
+                          "its first part went to the background", file=sys.stderr)
+                    break
                 if op == "&&" and last_exit != 0:
                     continue
                 if op == "||" and last_exit == 0:
