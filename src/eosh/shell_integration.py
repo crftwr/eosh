@@ -12,16 +12,19 @@ output is the whole eosh session (issue #26).
 One line, in the order VS Code's zsh script emits it::
 
     osc633:  A <prompt> B <line> [F "> " G …]  E;<line> C <output> D;<status> P;Cwd=…
-    osc133:  A <prompt> B <line>                        C <output> D;<status>
+    osc133:  A <prompt> B <line>                        C <output> D;<status> OSC 7
 
 * ``A`` / ``B`` (``F`` / ``G``) — :func:`prompt_marks`, written by the line
   editor around the prompt on every redraw (outside the prompt string, so
   its width stays the prompt's own).
 * ``E`` / ``C`` — :func:`command_started`, from the shell loop before it
   runs the line.
-* ``D`` / ``P;Cwd`` — :func:`command_finished`.  A line that ran nothing
+* ``D`` and the cwd — :func:`command_finished`.  A line that ran nothing
   (empty, Ctrl+C, a Ctrl+] switch) is closed the way zsh closes it, with a
-  ``D`` without a status.
+  ``D`` without a status.  The cwd is what makes a new tab or split open in
+  the same directory: ``P;Cwd`` in VS Code, ``OSC 7`` (a ``file://`` URL)
+  for the OSC 133 terminals, plus ``OSC 9;9`` on native Windows, which is
+  what Windows Terminal reads.
 
 **Only to terminals known to read them.**  Nushell and fish write OSC 133
 everywhere and let the user turn it off; fish 4.0 printed ``;special_key=1``
@@ -37,7 +40,9 @@ allowlist, matched on the environment.  ``var shell_integration=osc133``
 from __future__ import annotations
 
 import os
+import socket
 import sys
+from urllib.parse import quote
 
 OSC633 = "osc633"
 OSC133 = "osc133"
@@ -129,6 +134,28 @@ def _osc(kind: str, body: str) -> str:
     return f"\x1b]{633 if kind == OSC633 else 133};{body}\x07"
 
 
+def file_url(path: str) -> str:
+    """*path* as the ``file://host/path`` URL ``OSC 7`` carries: the host
+    names the machine (a shell over ``ssh`` reports a remote directory), the
+    path is percent-encoded."""
+    if os.name == "nt":
+        path = path.replace("\\", "/")
+    if not path.startswith("/"):
+        path = "/" + path                 # C:/Users → /C:/Users
+    return f"file://{socket.gethostname()}{quote(path, safe='/:')}"
+
+
+def _cwd_report(kind: str) -> str:
+    """Tell the terminal the current directory, in *kind*'s dialect."""
+    cwd = os.getcwd()
+    if kind == OSC633:
+        return _osc(OSC633, f"P;Cwd={escape_value(cwd)}")
+    out = f"\x1b]7;{file_url(cwd)}\x07"
+    if os.name == "nt" and os.environ.get("WT_SESSION"):
+        out += f'\x1b]9;9;"{cwd}"\x07'
+    return out
+
+
 def _write(text: str) -> None:
     sys.stdout.write(text)
     sys.stdout.flush()
@@ -172,16 +199,15 @@ def command_finished(status: int | None) -> None:
     if _state == "prompt":
         out += (_osc(OSC633, "E;") if kind == OSC633 else "") + _osc(kind, "C")
     out += _osc(kind, "D" if status is None else f"D;{status}")
-    if kind == OSC633:
-        out += _osc(OSC633, f"P;Cwd={escape_value(os.getcwd())}")
-    _write(out)
+    _write(out + _cwd_report(kind))
     _open, _state = None, "idle"
 
 
 def startup() -> None:
-    """Tell VS Code where eosh starts, before the first prompt."""
-    if dialect() == OSC633:
-        _write(_osc(OSC633, f"P;Cwd={escape_value(os.getcwd())}"))
+    """Tell the terminal where eosh starts, before the first prompt."""
+    kind = dialect()
+    if kind is not None:
+        _write(_cwd_report(kind))
 
 
 _ALIASES = {"on": AUTO, "true": AUTO, "yes": AUTO, "1": AUTO,

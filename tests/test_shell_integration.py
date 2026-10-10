@@ -42,6 +42,10 @@ def _osc(n, body):
     return f"\x1b]{n};{body}\x07"
 
 
+def _osc7():
+    return _osc(7, si.file_url(os.getcwd()))
+
+
 # ── which marks ──────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("var, value, expected", [
@@ -118,7 +122,7 @@ def test_one_line_osc133(monkeypatch):
     assert si.prompt_marks(continuation=True) == ("", "")
     si.command_started("ls -l")
     si.command_finished(0)
-    assert out.getvalue() == _osc(133, "C") + _osc(133, "D;0")
+    assert out.getvalue() == _osc(133, "C") + _osc(133, "D;0") + _osc7()
 
 
 def test_a_line_that_ran_nothing_is_closed(monkeypatch):
@@ -136,7 +140,7 @@ def test_backgrounded_line_has_no_status(monkeypatch):
     si.prompt_marks()
     si.command_started("make")
     si.command_finished(None)
-    assert out.getvalue() == _osc(133, "C") + _osc(133, "D")
+    assert out.getvalue() == _osc(133, "C") + _osc(133, "D") + _osc7()
 
 
 def test_closed_in_the_dialect_it_was_opened_in(monkeypatch):
@@ -148,6 +152,55 @@ def test_closed_in_the_dialect_it_was_opened_in(monkeypatch):
     si.command_finished(0)
     assert _osc(633, "D;0") in out.getvalue()
     assert "\x1b]133;" not in out.getvalue()
+
+
+# ── the cwd ──────────────────────────────────────────────────────────────────
+
+def test_file_url(monkeypatch):
+    monkeypatch.setattr(si.socket, "gethostname", lambda: "box")
+    assert si.file_url("/home/me/my dir/100%") == "file://box/home/me/my%20dir/100%25"
+
+
+def test_file_url_of_a_windows_path(monkeypatch):
+    monkeypatch.setattr(si.socket, "gethostname", lambda: "box")
+    monkeypatch.setattr(si.os, "name", "nt")
+    assert si.file_url("C:\\Users\\me") == "file://box/C:/Users/me"
+
+
+def test_windows_terminal_also_gets_osc_9_9(monkeypatch):
+    out = _tty(monkeypatch)
+    monkeypatch.setenv("WT_SESSION", "x")
+    monkeypatch.setattr(si.os, "name", "nt")
+    monkeypatch.setattr(si.os, "getcwd", lambda: "C:\\work")
+    si.startup()
+    assert out.getvalue().endswith(_osc(9, '9;"C:\\work"'))
+
+
+def test_osc_9_9_only_on_native_windows(monkeypatch):
+    out = _tty(monkeypatch)
+    monkeypatch.setenv("WT_SESSION", "x")             # WSL passes it through
+    monkeypatch.setattr(si.os, "name", "posix")
+    si.startup()
+    assert out.getvalue() == _osc7()
+
+
+@pytest.mark.parametrize("env, expected", [
+    (("TERM_PROGRAM", "vscode"), lambda: _osc(633, f"P;Cwd={si.escape_value(os.getcwd())}")),
+    (("TERM_PROGRAM", "ghostty"), _osc7),
+])
+def test_startup_reports_the_cwd(monkeypatch, env, expected):
+    out = _tty(monkeypatch)
+    monkeypatch.setenv(*env)
+    si.startup()
+    assert out.getvalue() == expected()
+
+
+def test_startup_off_writes_nothing(monkeypatch):
+    out = _tty(monkeypatch)
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+    si.set_mode(si.OFF)
+    si.startup()
+    assert out.getvalue() == ""
 
 
 def test_finish_without_a_prompt_writes_nothing(monkeypatch):
