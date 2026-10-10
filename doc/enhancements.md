@@ -217,6 +217,20 @@ first two together — `slots.py` + `dispatch.py` — collapses
 implies (~600 lines), which is also what the architecture diagrams
 in CLAUDE.md and architecture.md already promise.
 
+## Decided against
+
+- **Structured data in pipelines** (lists, dictionaries, tables and
+  objects flowing between commands, à la Nushell / PowerShell; issue #13,
+  closed). eosh optimises conventional terminal work over text streams, and
+  in daily use the pipe is mostly `| grep`. Picking an ID for the next
+  command, the one case that looked eosh-shaped, is what argument
+  completion already does. If it comes back, the scope that fits is
+  narrow: only between eosh's own Python commands (awsut's `print_table`
+  rows are structured right up to printing), falling back to today's text
+  whenever the consumer is an external command, the terminal or a file.
+  Parsing external tools' text tables (`ps`, `ls -l`) stays out either
+  way: too fragile for what it buys.
+
 ## UX brainstorming — closing the CUI/GUI gap
 
 Exploratory ideas for narrowing the gap between CUI and GUI interaction
@@ -276,21 +290,6 @@ pick them up without re-deriving the motivation.
   side by side*, and tmux-style splits are disconnected from the shell.
   Open question: should the shell own a split-view mode, or is
   "remember one side" good enough for most cases?
-
-- **Structured-data filtering and sorting.** `ps aux`, `ls -la`,
-  `git log` are tabular but treated as plain text — sorting/filtering by
-  column means reaching for `awk`/`sort`/`grep`, and header rows cause
-  off-by-one bugs in `wc -l`. Idea: a built-in viewer that recognizes
-  tabular output and supports column sort/filter, opt-in via something
-  like a `--view` flag or `@table` decorator (heuristic parsing of known
-  command output, à la a lightweight Nushell — fragile but maybe
-  practical without sacrificing compatibility).
-  To keep the fragile part small and replaceable, use a registry of
-  per-command parsers. XeFM does the same for formats, with a
-  `suffix → decoder` table. Here it would be `@register_parser("ps") def
-  parse(text) -> rows`, with whitespace-column heuristics as the fallback
-  for anything unregistered. Design it together with `@table`, not before
-  (from discussion #33).
 
 - **Lowering the pipe learning curve.** The "data flowing through a
   pipeline" mental model is hard to build without visual feedback;
