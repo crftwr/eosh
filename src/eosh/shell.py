@@ -69,6 +69,7 @@ from .slots import (
     _in_pipeline,
     _read_from_user,
     _run_interactive,
+    _stdin_is_tty,
     install_stdio_routers,
     run_handler,
 )
@@ -716,17 +717,20 @@ class Shell:
             CallbackCompleter, ChoiceCompleter, Completer, Completion, DirCompleter,
         )
 
+        # cd, var and source-bash change only the context they run in, and
+        # do it through ctx — so, unlike the commands that change the whole
+        # shell (context, alias, reload, exit), they need not be `sync`:
+        # one that is still running after Ctrl+] changes its own context.
+
         @self.registry.command(
             name="cd",
-            sync=True,
             help="Change directory.",
             params=[arg("path", nargs="?", default="~", completer=DirCompleter())],
+            pass_context=True,
         )
-        def cd(path):
-            target = os.path.expanduser(path)
+        def cd(ctx, path):
             try:
-                os.chdir(target)
-                os.environ["PWD"] = os.getcwd()
+                ctx.chdir(path)
             except OSError as e:
                 print(f"cd: {e}", file=sys.stderr)
                 return 1
@@ -758,7 +762,6 @@ class Shell:
 
         @self.registry.command(
             name="var",
-            sync=True,
             help=(
                 "Set, unset, or list context variables.\n\n"
                 "  var              list all registered vars and env vars\n"
@@ -771,43 +774,42 @@ class Shell:
             ),
             params=[arg("assignments", nargs="*", metavar="NAME[=VALUE]",
                         completer=VarCompleter())],
+            pass_context=True,
         )
-        def var_cmd(assignments):
+        def var_cmd(ctx, assignments):
             if not assignments:
                 # List registered Python-backed vars first, then plain env.
                 py_vars = var_registry.all()
                 if py_vars:
                     print("[vars]")
                     for v in py_vars:
-                        val = v.get()
+                        val = ctx.get_var(v.name)
                         val_str = val if val is not None else "(unset)"
                         desc = f"  # {v.description}" if v.description else ""
                         print(f"  {v.name}={val_str}{desc}")
                     print("[env]")
-                for key, value in sorted(os.environ.items()):
+                for key, value in sorted(ctx.environ().items()):
                     print(f"  {key}={value}")
                 return
             for assignment in assignments:
                 if "=" in assignment:
                     key, _, value = assignment.partition("=")
                     if value == "":
-                        self._unset_variable(key)
+                        ctx.unset_var(key)
                     else:
-                        self._set_variable(key, value)
+                        ctx.set_var(key, value)
                 elif var_registry.get(assignment) is not None:
                     # 'var NAME' with no '=' → print current value of Python-backed var
-                    v = var_registry.get(assignment)
-                    val = v.get()
+                    val = ctx.get_var(assignment)
                     print(f"{assignment}={val}" if val is not None else f"{assignment}=(unset)")
-                elif assignment in os.environ:
+                elif ctx.get_var(assignment) is not None:
                     # 'var NAME' for a plain env var → print its value
-                    print(f"{assignment}={os.environ[assignment]}")
+                    print(f"{assignment}={ctx.get_var(assignment)}")
                 else:
                     print(f"var: invalid argument '{assignment}' (expected NAME=VALUE or NAME= to unset)")
 
         @self.registry.command(
             name="source-bash",
-            sync=True,
             help=(
                 "Run a bash script and import its environment into this shell.\n\n"
                 "  source-bash                 paste lines, end with a blank line or Ctrl+D\n"
@@ -829,8 +831,9 @@ class Shell:
                 arg("-q", "--quiet", action="store_true",
                     help="don't print the summary of imported variables"),
             ],
+            pass_context=True,
         )
-        def source_bash_cmd(script, command, no_cd, quiet):
+        def source_bash_cmd(ctx, script, command, no_cd, quiet):
             if command is not None and script:
                 print("source-bash: -c takes the whole script; don't pass a FILE too")
                 return 2
@@ -862,7 +865,7 @@ class Shell:
                 return code or 1
 
             changed, removed, new_cwd = self._apply_bash_env(
-                cwd, env, import_cwd=not no_cd
+                ctx, cwd, env, import_cwd=not no_cd
             )
             if code != 0:
                 print(f"source-bash: exit status {code}")
@@ -1353,43 +1356,43 @@ class Shell:
         cwd, env = _parse_bash_env_dump(data)
         return code, cwd, env
 
+    @staticmethod
     def _apply_bash_env(
-        self, cwd: str | None, env: dict[str, str], *, import_cwd: bool = True
+        ctx: CommandContext, cwd: str | None, env: dict[str, str], *,
+        import_cwd: bool = True,
     ) -> tuple[list[str], list[str], str | None]:
-        """Import a bash dump into this shell: set, unset, and chdir.
+        """Import a bash dump into *ctx*'s context: set, unset, and chdir.
 
-        Assignments go through :meth:`_set_variable` / :meth:`_unset_variable`
-        so a Var-backed name and the current context's save/restore table see
-        the change — an imported variable is indistinguishable from one set
-        with ``var NAME=VALUE``.
+        Everything goes through *ctx* — an imported variable is
+        indistinguishable from one set with ``var NAME=VALUE``, and a
+        ``source-bash`` sent to the background with Ctrl+] (still at an MFA
+        prompt, say) lands in the context it was started in.
 
         Returns ``(set_names, unset_names, new_cwd)`` for the caller's summary;
         ``new_cwd`` is None when the directory did not change.
         """
+        before = ctx.environ()
         changed: list[str] = []
         for key, value in env.items():
             if _bash_env_ignored(key):
                 continue
-            if os.environ.get(key) != value:
-                self._set_variable(key, value)
+            if before.get(key) != value:
+                ctx.set_var(key, value)
                 changed.append(key)
 
         removed: list[str] = []
-        for key in list(os.environ):
+        for key in before:
             if key in env or _bash_env_ignored(key) or not _ENV_NAME_RE.match(key):
                 continue
-            self._unset_variable(key)
+            ctx.unset_var(key)
             removed.append(key)
 
         new_cwd = None
-        if import_cwd and cwd and os.path.realpath(cwd) != os.path.realpath(os.getcwd()):
+        if import_cwd and cwd and os.path.realpath(cwd) != os.path.realpath(ctx.cwd):
             try:
-                os.chdir(cwd)
+                new_cwd = ctx.chdir(cwd)
             except OSError as e:
                 print(f"source-bash: cannot enter {cwd}: {e}")
-            else:
-                os.environ["PWD"] = os.getcwd()
-                new_cwd = os.getcwd()
 
         return sorted(changed), sorted(removed), new_cwd
 
@@ -1964,11 +1967,13 @@ class Shell:
         if cmd and env_prefix:
             return self._env_prefix_refused(command_name, env_prefix)
         if cmd:
-            if IS_WINDOWS or cmd.sync:
-                # On the main thread: a `sync` command (the built-ins — they
-                # finish at once or change the shell's own state), and every
-                # command on Windows, which lacks the PTY-backed slot used for
-                # thread-based context switching.  ctx.run_interactive falls
+            if IS_WINDOWS or cmd.sync or not _stdin_is_tty():
+                # On the main thread: a `sync` command (the built-ins that
+                # change the whole shell), every command on Windows, which
+                # lacks the PTY-backed slot used for thread-based context
+                # switching, and every command when stdin isn't a terminal —
+                # there is no Ctrl+] to send it anywhere, and no terminal for
+                # the forwarding loop to hold.  ctx.run_interactive falls
                 # back to subprocess.run and ctx.input reads the terminal
                 # directly, since no slot is registered.
                 return run_handler(lambda: cmd.invoke(args, ctx=self._command_context()),
@@ -2141,6 +2146,10 @@ class Shell:
                     result = "interrupted"
                     break
                 slot.write_stdin(data)
+            if python and result == "exited":
+                # Typed ahead of the next prompt (a pasted `cd x` + `ls`):
+                # the command never read it, so the line editor gets it.
+                terminal.unread(slot.take_unread())
             return result
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)

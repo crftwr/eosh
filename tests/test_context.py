@@ -318,3 +318,35 @@ def test_context_close_refuses_the_last_context(capsys):
     sh.registry.get("context").invoke(["close"])
     assert sh.context_manager.current_name == "default"
     assert "Cannot close the last context." in capsys.readouterr().out
+
+
+def test_unsetting_an_inherited_variable_is_per_context(monkeypatch):
+    monkeypatch.setenv("EOSH_TEST_BASE", "orig")
+    cm = ContextManager()
+    cm.create("a")
+    cm.create("b")
+    cm.switch("a")
+    cm.unset_variable("EOSH_TEST_BASE")
+    assert "EOSH_TEST_BASE" not in os.environ
+    cm.switch("b")
+    assert os.environ["EOSH_TEST_BASE"] == "orig"      # only "a" unset it
+    assert cm.env_value_in(cm.contexts["a"], "EOSH_TEST_BASE") is None
+    cm.switch("a")
+    assert "EOSH_TEST_BASE" not in os.environ          # and it stays unset there
+
+
+def test_environ_in_a_context_that_is_not_current(monkeypatch):
+    monkeypatch.setenv("EOSH_TEST_BASE", "orig")
+    cm = ContextManager()
+    cm.create("a")
+    cm.create("b")
+    cm.switch("a")
+    cm.set_variable("EOSH_TEST_VAR", "in-a")
+    cm.unset_variable("EOSH_TEST_BASE")
+    cm.switch("b")
+    cm.set_variable("EOSH_TEST_VAR", "in-b")
+    env_a = cm.environ_in(cm.contexts["a"])
+    assert env_a["EOSH_TEST_VAR"] == "in-a"
+    assert "EOSH_TEST_BASE" not in env_a
+    assert cm.environ_in(cm.contexts["b"])["EOSH_TEST_BASE"] == "orig"
+    os.environ.pop("EOSH_TEST_VAR", None)

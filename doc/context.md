@@ -23,7 +23,7 @@ class ContextState(Enum):
 @dataclass
 class Context:
     name: str                           # unique identifier
-    variables: dict[str, str]           # key-value pairs exported to os.environ
+    variables: dict[str, str | None]    # exported to os.environ; None = unset here
     cwd: str                            # saved working directory
     process_slot: ProcessSlot | None    # optional running subprocess
 
@@ -111,7 +111,9 @@ var KEY= [KEY= ...]              # remove variables from context and os.environ
 var                              # list all current environment variables
 ```
 
-`var` sets variables on the **current context** and immediately exports them to `os.environ`. They will be re-applied whenever this context is switched to.
+`var` sets variables on the **current context** and immediately exports them to `os.environ`. They will be re-applied whenever this context is switched to. `var KEY=` on a variable eosh inherited from its own environment unsets it **in this context only**: other contexts keep it, and it stays unset when this one is entered again (`Context.variables[KEY] = None`).
+
+`cd`, `var` and `source-bash` change the context they were started in, not the one that is current when they finish: a `source-bash` waiting at an MFA prompt can be sent to the background with Ctrl+], and what it imports lands in its own context.
 
 ### Ctrl+] — Live Context Switch
 
@@ -141,7 +143,7 @@ After any action the picker reopens with the updated list. `Esc` cancels and (if
 
 When a context becomes active:
 1. Back up the current value of each variable key in `os.environ` (or `None` if unset)
-2. Set each context variable in `os.environ`
+2. Set each context variable in `os.environ` (or remove it, for one the context unset)
 
 ### Deactivation
 

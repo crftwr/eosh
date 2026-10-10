@@ -161,6 +161,96 @@ def test_a_pyvar_set_in_the_background_comes_back_with_its_context(sh):
     assert var.get() == "https://staging"
 
 
+def test_unset_var_in_the_background_stays_unset_there(sh, monkeypatch):
+    monkeypatch.setenv("EOSH_T_A", "base")      # from the environment eosh started with
+    ctx = sh._command_context()
+    sh._execute("context new other")
+    ctx.unset_var("EOSH_T_A")
+    assert os.environ["EOSH_T_A"] == "base"     # "other" keeps it
+    assert ctx.get_var("EOSH_T_A") is None
+    assert "EOSH_T_A" not in ctx.environ()
+    sh._execute("context switch default")
+    assert "EOSH_T_A" not in os.environ
+
+
+def test_environ_is_the_contexts_whole_environment(sh):
+    ctx = sh._command_context()
+    ctx.set_var("EOSH_T_A", "here")
+    sh._execute("context new other")
+    sh._execute("var EOSH_T_A=there")
+    assert ctx.environ()["EOSH_T_A"] == "here"
+    assert sh._command_context().environ()["EOSH_T_A"] == "there"
+
+
+# ── chdir ───────────────────────────────────────────────────────────────────
+
+def test_chdir_in_the_current_context_is_cd(sh, tmp_path):
+    (tmp_path / "sub").mkdir()
+    ctx = sh._command_context()
+    assert ctx.chdir("sub") == os.getcwd()
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(tmp_path / "sub")
+    assert os.environ["PWD"] == os.getcwd()
+
+
+def test_chdir_after_a_switch_lands_in_the_commands_context(sh, tmp_path):
+    (tmp_path / "sub").mkdir()
+    ctx = sh._command_context()            # started in "default", in tmp_path
+    sh._execute("context new other")
+    here = os.getcwd()
+    ctx.chdir("sub")                       # relative to the context's own cwd
+    assert os.getcwd() == here             # "other" didn't move
+    assert ctx.cwd == os.path.join(str(tmp_path), "sub")
+    sh._execute("context switch default")
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(tmp_path / "sub")
+
+
+@pytest.mark.parametrize("make, error", [
+    (lambda p: None, FileNotFoundError),
+    (lambda p: p.write_text(""), NotADirectoryError),
+])
+def test_chdir_in_the_background_refuses_what_cd_would(sh, tmp_path, make, error):
+    make(tmp_path / "target")
+    ctx = sh._command_context()
+    sh._execute("context new other")
+    with pytest.raises(error):
+        ctx.chdir("target")
+    assert ctx.cwd == str(tmp_path)
+
+
+# ── the built-ins that change one context ───────────────────────────────────
+
+@pytest.mark.parametrize("name", ["cd", "var", "source-bash"])
+def test_per_context_builtins_are_not_sync(sh, name):
+    assert not sh.registry.get(name).sync
+
+
+@pytest.mark.parametrize("name", ["context", "alias", "unalias", "reload", "exit", "config"])
+def test_shell_wide_builtins_stay_sync(sh, name):
+    assert sh.registry.get(name).sync
+
+
+def test_cd_in_the_background_moves_its_own_context(sh, tmp_path):
+    (tmp_path / "sub").mkdir()
+    ctx = sh._command_context()
+    sh._execute("context new other")
+    sh.registry.get("cd").invoke(["sub"], ctx=ctx)
+    assert ctx.cwd == os.path.join(str(tmp_path), "sub")
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(tmp_path)
+
+
+def test_source_bash_in_the_background_imports_into_its_own_context(sh, tmp_path):
+    (tmp_path / "sub").mkdir()
+    ctx = sh._command_context()
+    sh._execute("context new other")
+    sh.registry.get("source-bash").invoke(
+        ["-q", "-c", "export EOSH_T_A=from-bash; cd sub"], ctx=ctx)
+    assert "EOSH_T_A" not in os.environ
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(tmp_path)
+    sh._execute("context switch default")
+    assert os.environ["EOSH_T_A"] == "from-bash"
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(tmp_path / "sub")
+
+
 def test_a_globalvar_is_one_value_everywhere(sh):
     class Knob(GlobalVar):
         name = "eosh_t_knob"

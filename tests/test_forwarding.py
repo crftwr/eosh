@@ -106,6 +106,9 @@ class _PySlot(_Recorder, PythonCommandSlot):
         self.killed = True
         self.done.set()
 
+    def take_unread(self):
+        return b""
+
 
 @pytest.mark.parametrize("make", [_PtySlot, _PySlot])
 def test_keys_are_forwarded_until_the_slot_ends(typed, make):
@@ -147,3 +150,25 @@ def test_ctrl_c_is_just_a_byte_to_a_pty_child(typed):
     slot = _PtySlot()
     assert typed(slot, b"\x03q") == "exited"
     assert slot.received == b"\x03q"
+
+
+def test_keys_a_python_command_never_read_go_back_to_the_prompt(typed, monkeypatch):
+    from eosh import terminal
+    monkeypatch.setattr(terminal, "_pending_input", b"")
+
+    class _Instant(_PySlot):
+        def take_unread(self):
+            return b"ls\r"                 # typed ahead while `cd x` ran
+
+    typed(_Instant(), b"q")
+    assert terminal._pending_input == b"ls\r"
+
+
+def test_take_unread_empties_the_key_buffer():
+    slot = PythonCommandSlot.__new__(PythonCommandSlot)
+    slot._keybuf, slot._keybuf_lock = bytearray(), threading.Lock()
+    slot._keybuf_event = threading.Event()
+    slot._pty_lock, slot._pty_master_fd = threading.Lock(), -1
+    slot.write_stdin(b"pwd\r")
+    assert slot.take_unread() == b"pwd\r"
+    assert slot.take_unread() == b""

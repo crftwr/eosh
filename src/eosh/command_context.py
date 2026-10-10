@@ -3,7 +3,7 @@
 * :class:`ShellView` — read-only: the context's name, its cwd, its
   variables.  Completers get one as ``CompletionContext.shell_context``.
 * :class:`CommandContext` — a :class:`ShellView` that can also talk to the
-  user and change variables.  A Python command declared with
+  user and change its context's variables and directory.  A Python command declared with
   ``pass_context=True`` receives one as its first argument::
 
       @registry.command("deploy", params=[arg("env")], pass_context=True)
@@ -57,6 +57,12 @@ class ShellView:
         that is the process's; otherwise the one it will return to."""
         with self._manager.lock:
             return os.getcwd() if self._is_current() else self._context.cwd
+
+    def environ(self) -> dict[str, str]:
+        """The context's whole environment (a copy) — ``os.environ`` while
+        it is current, what it will return to otherwise."""
+        with self._manager.lock:
+            return self._manager.environ_in(self._context)
 
     def get_var(self, name: str) -> str | None:
         """*name* as ``$name`` would expand in this context: a registered
@@ -161,8 +167,35 @@ class CommandContext(ShellView):
             keys = self._shell._env_keys_for(name)
             if keys is not None:
                 for key in keys:
-                    self._context.variables.pop(key, None)
+                    self._context.variables[key] = None
             elif isinstance(var_registry.get(name), PyVar):
                 self._context.py_values[name] = None
             else:
                 var_registry.get(name).unset()
+
+    # ── The working directory ───────────────────────────────────────────
+
+    def chdir(self, path: str) -> str:
+        """Change this command's context's directory, like ``cd``; return
+        the new one.  *path* is relative to :attr:`cwd`, ``~`` expands.
+
+        While the context is current that is ``os.chdir`` (and ``$PWD``);
+        once it isn't (the command went to the background) it is the
+        directory the context returns to.  Raises :class:`OSError` as
+        ``os.chdir`` would.
+        """
+        path = os.path.expanduser(path)
+        with self._manager.lock:
+            if self._is_current():
+                os.chdir(path)
+                os.environ["PWD"] = os.getcwd()
+                return os.getcwd()
+            target = os.path.normpath(os.path.join(self._context.cwd, path))
+            if not os.path.exists(target):
+                raise FileNotFoundError(2, "No such file or directory", path)
+            if not os.path.isdir(target):
+                raise NotADirectoryError(20, "Not a directory", path)
+            if not os.access(target, os.X_OK):
+                raise PermissionError(13, "Permission denied", path)
+            self._context.cwd = target
+            return target

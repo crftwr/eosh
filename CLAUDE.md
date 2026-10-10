@@ -191,7 +191,7 @@ Methods:
 - `command(name, *, help=None, params=None, delegate=None, sync=False, override=False, pass_context=False) -> Command` — register a root. Two forms, both returning the `Command`. Use a **plain call** for a group or an external recipe (`git = registry.command("git", ...)`), and a **decorator** to attach a handler (`@registry.command("hello", ...)` or `name="hello"`). A name is always required. `params=[arg(...)]` declares positionals and flags. argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`, `node.takes_value(flag)`); there is no pre-built completer dict. `delegate=Completer` is a `Command` attribute that answers every completion slot, for a tool with its own completion protocol (`aws_completer`, cobra). It can't be combined with `params`.
 - `node.command(name, ...)` — the same two forms one level down (see [doc/subcommands.md](doc/subcommands.md)). A node's flags are **its own** and are never inherited from ancestors; a flag shared by several commands is one `arg(...)` listed on each. A node never has both a handler and children: either order raises `ValueError`. A flat command is a root with no children, so completion, the status bar and dispatch all follow the same per-node rules, through `shell._resolve_slot`.
 - `pass_context=True` (on `registry.command` or `node.command`) makes the handler receive a `CommandContext` as its first argument — see **command_context.py** below.
-- `sync=True` (on `registry.command`) runs the command on the main thread instead of a backgroundable `PythonCommandSlot` — for commands that finish at once or change shell state; every built-in sets it.
+- `sync=True` (on `registry.command`) runs the command on the main thread instead of a backgroundable `PythonCommandSlot` — for commands that change the whole shell (`context`, `alias` / `unalias`, `reload`, `config`, `exit`) or finish at once (`help`, `history`). `cd`, `var` and `source-bash` don't need it: they change only their own context, through `ctx` (`chdir`, `set_var`, `unset_var`), so one still running after Ctrl+] changes the context it started in (discussion #76). Without a terminal on stdin every Python command runs on the main thread.
 - **A handler's return value is its exit status** — an `int` is the status, anything else (usually `None`) is 0, so `my_cmd && next` sees a failure the handler reports. A `SystemExit` is only a status too (it never ends the shell; `exit` sets `Shell._exit_requested` instead), `KeyboardInterrupt` is 130, an exception is 1 with the traceback on stderr, and an argparse usage error is 2. Every execution path — foreground slot, pipeline stage, decorator, main-thread run — goes through one function, `slots.run_handler`.
 - `defining_builtins()` — context manager the shell registers its own commands in; exactly what is registered inside it is the built-in set. Afterwards, registering a built-in name without `override=True` prints a `config warning:` and keeps the built-in (the decorator form gets a detached node, so the config runs on). `is_builtin(name)` is false for an override, which `help` lists under "Commands from your config". `mark_builtins()` snapshots everything (for hand-built test registries).
 - `clear_user_commands()` — back to the built-in set: drops config commands and aliases and restores any built-in a config overrode
@@ -457,7 +457,8 @@ class EC2InstanceCompleter(Completer):
 ### context.py — Context Switch
 
 Contexts represent an environment (e.g., AWS account + region, k8s cluster). Each context stores:
-- `variables: dict[str, str]` — exported to `os.environ` on activation
+- `variables: dict[str, str | None]` — exported to `os.environ` on activation;
+  `None` unsets an inherited variable in this context only
 - `cwd: str` — saved and restored on switch
 - `process_slot: ProcessSlot | None` — optional running subprocess for multiplexing
 - `state: ContextState` — `IDLE`, `RUNNING`, or `EXITED` (derived from `process_slot`)
@@ -591,7 +592,8 @@ Two objects, so user code never holds a live internal (`Context`, a slot, the
   only for a node that opted in). Adds `input(prompt)`, `input_block(prompt)`,
   `confirm(prompt, default=False)`, `choose(items, title="")`,
   `run_interactive(argv, **popen_kwargs)`, `set_var(name, value)`,
-  `unset_var(name)`.
+  `unset_var(name)`, `chdir(path)`, and `environ()` (the context's whole
+  environment, on `ShellView`).
 
 ```python
 @registry.command("deploy", params=[arg("env")], pass_context=True)
@@ -613,16 +615,17 @@ implementations stay private in `slots.py` (`_run_interactive`,
 so a command sent to the background with Ctrl+] keeps reading and writing
 *its own* context: `cwd` is that context's saved directory once it isn't
 current, `get_var` reads its saved values (`ContextManager.env_value_in`,
-`Context.py_values`), and `set_var` writes them there — taking effect when the
-context is entered again — instead of touching whatever context is current
-now. A `GlobalVar` is one value everywhere. Reads and writes hold
+`Context.py_values`), and `set_var` / `unset_var` / `chdir` write them there —
+taking effect when the context is entered again — instead of touching
+whatever context is current now. `cd`, `var` and `source-bash` are written
+on these, which is why they need no `sync`. A `GlobalVar` is one value everywhere. Reads and writes hold
 `ContextManager.lock`, which `switch` / `remove` / `set_variable` also take,
 since they happen on the command's thread while the main thread may be
 switching.
 
 #### Why the user-facing methods exist: one reader for real stdin
 
-A Python `@registry.command` runs in a background thread inside a `PythonCommandSlot` — unless it was registered with `sync=True`, which the built-ins (`cd`, `var`, `context`, `exit`, `source-bash`, `alias`, `help`, …) are: they finish at once or change the shell's own state, so they run on the main thread (no slot, no output proxy, not backgroundable with Ctrl+]), as every Python command does on Windows. While a slot runs, the main thread holds stdin in raw mode and forwards bytes to the slot via `write_stdin`. If the command body calls `subprocess.run([...])` or `input()` directly, it reads the real terminal stdin — and now the main thread *and* the command are both calling `read()` on fd 0. Whoever wins each keystroke gets it; the other sees nothing. Symptoms: dropped keys, garbled input, Ctrl+] sometimes reaches the subprocess.
+A Python `@registry.command` runs in a background thread inside a `PythonCommandSlot` — unless it was registered with `sync=True`, which most built-ins (`context`, `exit`, `alias`, `reload`, `help`, …) are: they change the whole shell or finish at once, so they run on the main thread (no slot, no output proxy, not backgroundable with Ctrl+]), as every Python command does on Windows. While a slot runs, the main thread holds stdin in raw mode and forwards bytes to the slot via `write_stdin`. If the command body calls `subprocess.run([...])` or `input()` directly, it reads the real terminal stdin — and now the main thread *and* the command are both calling `read()` on fd 0. Whoever wins each keystroke gets it; the other sees nothing. Symptoms: dropped keys, garbled input, Ctrl+] sometimes reaches the subprocess.
 
 External commands typed at the prompt (e.g. plain `aws ssm start-session`) don't have this problem because they're routed through `ProcessSlot`, which gives them a dedicated PTY pair. The main thread is the *only* reader of real stdin; it copies bytes into the PTY master.
 
