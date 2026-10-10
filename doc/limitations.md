@@ -162,7 +162,7 @@ misses in both directions:
 
 Deciding this properly means asking whether the process actually read from
 the terminal — e.g. tracking whether the PTY slot ever received forwarded
-stdin bytes, which `ProcessSlot` is in a position to know. That would
+stdin bytes, which the slot is in a position to know. That would
 subsume the skip list for external commands (a `vim` session that took
 keystrokes is self-evidently interactive) but not for Python commands. Until then: add to `notify.SKIP_COMMANDS` from
 `~/.eosh/config.py`, or `var notify=off` for a session spent in

@@ -74,6 +74,16 @@ def test_a_stage_has_the_pty_as_its_controlling_terminal():
     assert "via-dev-tty" in _output(slot)
 
 
+def test_keys_reach_a_stage_reading_the_terminal():
+    slot = PipelineSlot("test")
+    proc = slot.spawn(["cat"], stdin=None, stdout=None, stderr=None,
+                      env=_env(), cwd=os.getcwd())
+    slot.start([proc])
+    slot.write_stdin(b"typed-in\n\x04")
+    assert _finish(slot) == 0
+    assert _output(slot).count("typed-in") == 2      # the echo, and cat's copy
+
+
 def test_a_missing_command_raises_like_popen():
     slot = PipelineSlot("test")
     with pytest.raises(FileNotFoundError):
@@ -174,13 +184,22 @@ def test_a_decorator_body_joins_the_slot(sh):
     assert "real" in out
 
 
-def test_a_lone_command_still_runs_on_its_own_slot(sh, monkeypatch):
-    seen = []
-    monkeypatch.setattr(sh, "_execute_external",
-                        lambda name, args, env_prefix=None: seen.append(name) or 0)
-    sh._execute("echo alone")
-    assert seen == ["echo"]
+def test_a_lone_command_runs_on_a_slot_too(sh):
+    assert sh._execute("echo alone") == 0
+    (slot,) = sh.slots
+    assert "alone" in _output(slot)
+
+
+def test_a_lone_command_not_found_goes_to_the_hooks(sh, capsys):
+    assert sh._execute("no-such-command-eosh x") == 127
+    assert "command not found: no-such-command-eosh" in capsys.readouterr().out
     assert sh.slots == []
+
+
+def test_a_lone_python_command_is_not_on_a_pipeline_slot(sh):
+    assert sh._execute("var EOSH_T_LONE=1") == 0
+    assert not any(isinstance(s, PipelineSlot) for s in sh.slots)
+    os.environ.pop("EOSH_T_LONE", None)
 
 
 # ── decorators on the slot ──────────────────────────────────────────────────

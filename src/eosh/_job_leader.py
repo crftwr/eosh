@@ -1,9 +1,10 @@
 """The job leader: a small helper process that owns one command line's session.
 
-Run by :class:`eosh.job.PipelineSlot` as ``python -I -S _job_leader.py FD``,
-in a new session (``start_new_session``) with the slot's PTY slave as its
-stdio.  It takes that PTY as its controlling terminal, then starts the line's
-external stages on request.  They inherit its session, process group and
+Started ahead of time by :mod:`eosh.job` as ``python -I -S _job_leader.py FD``,
+in a new session (``start_new_session``) with no terminal, so a line never
+waits for an interpreter to start.  A :class:`eosh.job.PipelineSlot` hands it
+the slot's PTY slave; it takes that as its controlling terminal and stdio,
+then starts the line's external stages on request.  They inherit its session, process group and
 controlling terminal — as the stages of a job do in a POSIX shell — so
 ``/dev/tty`` works for ``| less`` / ``| sudo`` / ``| fzf``, Ctrl+C on the PTY
 reaches every stage through the line discipline, and SIGWINCH goes to the
@@ -13,8 +14,10 @@ session.
 
 Protocol, over the socket on fd *FD*: length-prefixed JSON (``!I`` + body).
 
-* eosh → leader: ``{"argv", "env", "cwd"}`` with the stage's stdin, stdout
-  and stderr attached as fds (``SCM_RIGHTS``).  The leader answers
+* eosh → leader, first: ``{"op": "attach"}`` with the PTY slave attached
+  as an fd (``SCM_RIGHTS``); the answer is ``{"ok": true}`` or an error.
+* eosh → leader: ``{"op": "spawn", "argv", "env", "cwd"}`` with the stage's
+  stdin, stdout and stderr attached as fds.  The leader answers
   ``{"pid": n}`` or ``{"errno": n, "error": "..."}``, then later
   ``{"exit": pid, "status": n}`` when that stage ends (128+N for signal N).
 * EOF from eosh — the line is done — and the leader exits.
@@ -37,13 +40,10 @@ def _status(code: int) -> int:
 
 
 def main() -> None:
+    import fcntl
+    import termios
+
     sock = socket.socket(fileno=int(sys.argv[1]))
-    try:
-        import fcntl
-        import termios
-        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-    except OSError:
-        pass
     # Ctrl+C on the PTY is for the stages.  A handler (not SIG_IGN, which
     # children would inherit across exec) keeps the leader alive.
     signal.signal(signal.SIGINT, lambda *_: None)
@@ -78,6 +78,20 @@ def main() -> None:
             req = json.loads(recv_exact(size))
         except EOFError:
             return
+        if req.get("op") == "attach":
+            try:
+                (tty,) = fds
+                fcntl.ioctl(tty, termios.TIOCSCTTY, 0)
+                for n in (0, 1, 2):
+                    os.dup2(tty, n)
+            except (OSError, ValueError) as e:
+                send({"errno": getattr(e, "errno", 0) or 0, "error": str(e)})
+            else:
+                send({"ok": True})
+            finally:
+                for fd in fds:
+                    os.close(fd)
+            continue
         try:
             stdin, stdout, stderr = fds
             proc = subprocess.Popen(req["argv"], stdin=stdin, stdout=stdout,

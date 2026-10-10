@@ -18,10 +18,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from .process import ProcessSlot
+from typing import Any
 
 _SENTINEL = object()
 
@@ -39,7 +36,7 @@ class Context:
     # from the environment eosh started with, removed in this context only).
     variables: dict[str, str | None] = field(default_factory=dict)
     cwd: str = field(default_factory=os.getcwd)
-    process_slot: Any = field(default=None, repr=False)  # ProcessSlot | PythonCommandSlot
+    process_slot: Any = field(default=None, repr=False)  # PipelineSlot | PythonCommandSlot
     history: list[str] = field(default_factory=list, repr=False)
     # PyVar values (name → get() result, None = unset), saved when leaving
     # the context and restored when coming back — like cwd.

@@ -122,9 +122,9 @@ fired-once flag to make exactly one of two paths deliver, plus a separate
 constructor, before anything runs, removes the race: the decision moves to
 exit time, where `parked` already says everything.
 
-It is a mixin because `ProcessSlot` and `PythonCommandSlot` share nothing
+It is a mixin because `PtySlot` and `PythonCommandSlot` share nothing
 else; each calls `_init_exit_callback(on_exit)` from its own constructor.
-The two call sites for `_fire_on_exit()` are `ProcessSlot._reader_loop`'s
+The two call sites for `_fire_on_exit()` are `PtySlot._reader_loop`'s
 `finally` (after the PTY is closed and the child reaped) and
 `PythonCommandSlot._run` right after `self._finished.set()`.
 
