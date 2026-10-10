@@ -77,6 +77,9 @@ change.
 │  │   send / PowerShell toast / terminal bell       │
 │  └── var notify, var notify_threshold              │
 ├─────────────────────────────────────────────────────┤
+│  Shell Integration (shell_integration.py)           │
+│  └── OSC 633 / 133 marks around prompts + commands │
+├─────────────────────────────────────────────────────┤
 │  Event Hooks (hooks.py)                             │
 │  └── @hooks.on_directory_changed, … from config    │
 ├─────────────────────────────────────────────────────┤
@@ -129,7 +132,7 @@ Entry point. Reads input, parses lines, dispatches commands.
 **`reload` is one sweep.** `Shell._clear_user_config` puts every registry a
 config writes to back to its built-in state — commands, decorators and
 aliases, Vars, `recipes.skipped_recipes`, the prompt, `notify`'s backend and
-skip list — and the config runs again. A new kind of config registration
+skip list, `shell_integration.TERMINALS` — and the config runs again. A new kind of config registration
 (hooks, key bindings, …) adds its reset there. `config edit` runs
 `$VISUAL` / `$EDITOR` (`vi`, `notepad` on Windows) on `config.py` through
 `_run_interactive` and reloads when the editor exits 0.
@@ -755,6 +758,39 @@ def insert_last_arg(ctx):                     # ctx: lineedit.EditorContext
 
 See [doc/keys.md](doc/keys.md); gaps are in `doc/limitations.md`.
 
+### shell_integration.py — Prompt and Command Marks
+
+Tells the terminal where each prompt, command line and output starts —
+VS Code's `OSC 633` or the FinalTerm `OSC 133` that iTerm2, WezTerm,
+Ghostty, kitty, foot and Windows Terminal read — so sticky scroll,
+jump-to-prompt and the exit-status gutter see each eosh line as a command.
+Without it, VS Code (which injects its own marks into the bash / zsh it
+starts) sees `zsh% eosh` as one command whose output is the whole session
+(issue #26).
+
+```
+osc633:  A <prompt> B <line> [F "> " G …]  E;<line> C <output> D;<status> P;Cwd=…
+osc133:  A <prompt> B <line>                        C <output> D;<status>
+```
+
+- `prompt_marks(continuation)` — `LineEditor.prompt` takes them once and
+  `_redraw` writes them around the prompt on every redraw, outside
+  `_prompt_str` so the width math never sees them.
+- `command_started(line)` / `command_finished(status)` — from
+  `Shell._run_loop` around `_execute`, which returns the line's status (or
+  `None` when Ctrl+] parked it). A line that ran nothing (empty, Ctrl+C, a
+  switch) is closed at the top of the next iteration, as zsh does: `C` and a
+  `D` without a status. Marks are closed in the dialect they were opened in.
+- **Allowlist, not opt-out.** Nushell and fish send `OSC 133` everywhere;
+  fish printed garbage in Termux / Guacamole / noVNC that way (fish#11749),
+  and here a stray mark would also break the caret math. `TERMINALS` is a
+  list of `(env var, value or None, dialect)` rules, first match wins, VS
+  Code first. A config appends to it (`reload` restores the defaults, as
+  `notify.SKIP_COMMANDS`). Nothing unless stdout is a tty.
+- `var shell_integration=auto|osc133|osc633|off` (a `GlobalVar`; unset →
+  `auto`) forces a dialect or turns marks off. Gaps are in
+  `doc/limitations.md`, follow-ups in `doc/enhancements.md`.
+
 ### hooks.py — Event Hooks
 
 `config.py` reacts to shell events with one decorator per event:
@@ -1072,6 +1108,7 @@ eosh/
 │       ├── lineedit.py         # DIY raw-mode line editor, ghost suggestion, TAB completion glue
 │       ├── command_context.py  # CommandContext / ShellView: what user code sees
 │       ├── hooks.py            # event hooks: @hooks.on_directory_changed, …
+│       ├── shell_integration.py # OSC 633 / 133 prompt and command marks
 │       ├── keys.py             # key bindings: action table, keys.bind, @keys.action
 │       ├── notify.py           # OS notification when a slow command finishes;
 │       │                       # native backends, skip list, `notify` +
@@ -1132,6 +1169,7 @@ eosh/
     ├── test_recipe_missing.py
     ├── test_recipes.py
     ├── test_shell_continuation.py
+    ├── test_shell_integration.py
     ├── test_user_config.py
     └── test_variables.py
 

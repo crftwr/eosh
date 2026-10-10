@@ -218,6 +218,30 @@ pressing an arrow key or typing continues the answer. Redrawing on resume
 would need the slot to tell the forwarding loop "I'm showing a prompt" and to
 re-render it on `activate()`.
 
+## Prompt marks (OSC 633 / 133) — what isn't marked
+
+`shell_integration.py` marks each prompt and line for the terminal
+(issue #26), but only lines typed at the prompt are commands to it:
+
+- **Output of a resumed context.** Switching to a context with a live
+  process (Ctrl+]) replays its buffer and keeps forwarding outside any
+  command, so sticky scroll and the gutter show nothing for it, and its
+  exit status isn't reported. Marking it would mean opening a command
+  without a prompt of its own (`A`), which terminals don't expect.
+- **Command lines are unverified in VS Code.** VS Code proves an `E` line
+  genuine with `VSCODE_NONCE`, which it gives only to the shell it started
+  — and that shell's script unsets it. Features that rerun a reported line
+  may treat eosh's as untrusted.
+- **The terminal is recognised by environment variables only.** Over
+  `ssh` or inside `tmux` / `screen` they are usually gone or replaced, so
+  nothing is marked (`TERM=xterm-kitty` / `xterm-ghostty` are the
+  exception: `TERM` survives `ssh`). Add a rule to `shell_integration.TERMINALS` or force
+  `var shell_integration=osc133`. Asking the terminal itself (XTVERSION,
+  as fish does) would work there too — see `doc/enhancements.md`.
+- **Konsole is left out on purpose.** Its default profile draws the marks
+  visibly (fish disables them there for the same reason, fish#11409);
+  `TERMINALS.append(("KONSOLE_VERSION", None, "osc133"))` opts in.
+
 ## History
 
 - **A network-mounted `~/.eosh` may not lock reliably.** The history is a
