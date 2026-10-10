@@ -58,7 +58,8 @@ from .pipeline import (
 )
 from . import hooks, notify, shell_integration
 from . import keys as keymap
-from .process import ProcessSlot
+from .process import PtySlot
+from . import job as job_mod
 from .job import PipelineSlot
 from .colors import set_color_scheme
 from .prompt import get_prompt_func, set_prompt
@@ -346,6 +347,8 @@ class Shell:
         # The line _execute is running, for _park to hand to the slot.
         self._current_line: str | None = None
         install_stdio_routers()
+        if not IS_WINDOWS and _stdin_is_tty():
+            job_mod.prewarm()           # a line never waits for its job leader
 
         # The history every eosh process shares (SQLite — see history.py).
         self._history = HistoryStore(config_dir() / "history.db")
@@ -1573,7 +1576,7 @@ class Shell:
         the thread's rebound ``sys.stdout`` (which is the outer pipe's
         write end).  Without this, a body like ``@watch {ls}`` running
         under ``@watch {ls} | grep py`` would route through the
-        standalone-command path (``ProcessSlot`` / ``PythonCommandSlot``)
+        standalone-command path (``PipelineSlot`` / ``PythonCommandSlot``)
         and grab the real terminal — wrong from a worker thread.
         """
         if any(x is not None for x in (stdin, stdout, stderr)):
@@ -1624,14 +1627,16 @@ class Shell:
         # is no second redirect path that swaps the process-global
         # ``sys.stdout`` under every other thread.  Decorator stages keep
         # the direct path — their redirects live inside the braced body.
-        # A lone decorator at the top of a line runs on a PipelineSlot when
-        # there is a terminal for one, like a pipeline, so Ctrl+] can park it.
+        # At the top of a line, on a terminal, everything but a Python
+        # command runs on a PipelineSlot — a lone external command and a
+        # lone decorator included — so Ctrl+] can park it.
         can_park = _top_level and not IS_WINDOWS and _stdin_is_tty()
         if (
             single is not None
             and not _in_outer_pipe
             and (not single.redirects or single.decorator is not None)
-            and not (single.decorator is not None and can_park)
+            and not (can_park and (single.decorator is not None
+                                   or not self._is_python_stage(single)))
         ):
             return self._execute_stage(single)
 
@@ -1651,6 +1656,8 @@ class Shell:
                                          on_exit=self._slot_finished)
 
         n = len(stages)
+        # The status when nothing could be started (a lone command not found).
+        unstarted_status = 0
         pipe_fds: list[tuple[int, int]] = []
         for _ in range(n - 1):
             pipe_fds.append(os.pipe())
@@ -1794,9 +1801,13 @@ class Shell:
                             cwd=os.getcwd(),
                         )
                 except FileNotFoundError:
-                    print(f"eosh: command not found: {tokens[0]}")
+                    if n == 1 and not _in_outer_pipe:
+                        unstarted_status = self._command_not_found(tokens)
+                    else:
+                        print(f"eosh: command not found: {tokens[0]}")
                 except OSError as e:
                     print(f"eosh: {e}")
+                    unstarted_status = 1
 
             if worker is not None:
                 workers.append(worker)
@@ -1855,17 +1866,32 @@ class Shell:
                     except Exception:
                         pass
 
+        if not workers:
+            if own_job is not None:
+                own_job.discard()
+            return unstarted_status
         if own_job is not None:
-            return self._run_pipeline_slot(own_job, workers)
+            lone_command = (n == 1 and not stages[0].redirects
+                            and stages[0].decorator is None)
+            return self._run_pipeline_slot(own_job, workers,
+                                           announce_exit=lone_command)
         return self._wait_for_stages(workers)
 
-    def _run_pipeline_slot(self, slot: PipelineSlot, workers: list) -> int:
+    def _is_python_stage(self, stage: Stage) -> bool:
+        """Whether a lone stage runs in eosh itself: a Python command, or a
+        line of assignments (``FOO=bar``)."""
+        tokens = self._tokenize_stage(stage)
+        if not tokens or all(self._ASSIGNMENT_RE.match(t) for t in tokens):
+            return True
+        _, tokens = self._split_env_prefix(tokens)
+        cmd = self.registry.get(tokens[0]) if tokens else None
+        return cmd is not None and cmd.has_any_handler()
+
+    def _run_pipeline_slot(self, slot: PipelineSlot, workers: list, *,
+                           announce_exit: bool = False) -> int:
         """Give the terminal to a pipeline's slot until it ends or Ctrl+]
-        parks it — what :meth:`_execute_external` does for one command."""
+        parks it.  *announce_exit*: say so when a lone command fails."""
         slot.start(workers)
-        if not workers:
-            slot.wait()
-            return 0
         ctx = self.context_manager.current()
         slot.activate(replay_missed=True)
         result = self._forward(slot)
@@ -1875,7 +1901,12 @@ class Shell:
             self._handle_switch()
             return 0
         slot.deactivate()
-        return slot.exit_code or 0
+        if ctx is not None and ctx.process_slot is slot:
+            ctx.process_slot = None
+        exit_code = slot.exit_code or 0
+        if announce_exit and exit_code != 0:
+            print(f"\n[Process exited with code {exit_code}]")
+        return exit_code
 
     @staticmethod
     def _wait_for_stages(workers: list) -> int:
@@ -2039,10 +2070,11 @@ class Shell:
     def _execute_stage(self, stage: Stage) -> int:
         """Execute a lone stage with no redirects on the terminal.
 
-        External commands get a PTY (``ProcessSlot``), Python commands a
-        ``PythonCommandSlot``, so either can be backgrounded with Ctrl+].
-        Redirected stages never reach here — :meth:`_execute_pipeline` runs
-        them as a one-stage pipeline.  Returns the exit code.
+        A Python command gets a ``PythonCommandSlot``, so it can be
+        backgrounded with Ctrl+].  On a POSIX terminal an external command
+        and a redirected stage never reach here — :meth:`_execute_pipeline`
+        runs them on a ``PipelineSlot``; without one (Windows, no tty) an
+        external command inherits the terminal.  Returns the exit code.
         """
         if stage.decorator is not None:
             return self._execute_decorator_stage(stage)
@@ -2144,47 +2176,27 @@ class Shell:
     def _execute_external(
         self, command_name: str, args: list[str], env_prefix: dict[str, str] | None = None
     ) -> int:
+        """Run a lone external command on the inherited terminal — Windows,
+        or no terminal on stdin.  On a POSIX terminal it runs on a
+        :class:`~eosh.job.PipelineSlot` instead (see :meth:`_execute_pipeline`)."""
         if IS_WINDOWS:
             return self._execute_external_windows(command_name, args, env_prefix)
-
-        ctx = self.context_manager.current()
-
-        slot = ProcessSlot(on_exit=self._slot_finished)
+        argv = [command_name] + args
         try:
-            slot.start(
-                argv=[command_name] + args,
-                env=self._merged_env(env_prefix or {}),
-                cwd=os.getcwd(),
-            )
+            return subprocess.run(argv, env=self._merged_env(env_prefix or {}),
+                                  cwd=os.getcwd()).returncode
         except FileNotFoundError:
-            return self._command_not_found([command_name] + args)
+            return self._command_not_found(argv)
         except OSError as e:
             print(f"eosh: {e}")
             return 1
 
-        slot.activate()
-        slot.replay_buffer()  # flush any output that arrived before activate()
-        result = self._forward(slot)
-        if result == "switched":
-            self._park(slot, ctx or self.context_manager.current())
-            slot.deactivate()
-            self._handle_switch()
-            return 0
-        # result == "exited"
-        slot.deactivate()
-        if ctx is not None:
-            ctx.process_slot = None
-        exit_code = slot.exit_code or 0
-        if exit_code != 0:
-            print(f"\n[Process exited with code {exit_code}]")
-        return exit_code
-
     def _forward(self, slot, force_redraw: bool = False) -> str:
         """Forward the terminal to a running *slot* until it ends or is left.
 
-        One loop for both slot kinds — a ``ProcessSlot`` (an external command
-        on its own PTY) and a ``PythonCommandSlot`` (a Python command on a
-        thread).  It holds stdin in raw mode, ignores SIGINT (the key reaches
+        One loop for both slot kinds — a ``PipelineSlot`` (external commands
+        and pipelines on their own PTY) and a ``PythonCommandSlot`` (a Python
+        command on a thread).  It holds stdin in raw mode, ignores SIGINT (the key reaches
         the slot as a byte instead), passes window resizes on through
         ``slot.resize`` and forwards every key with ``slot.write_stdin``:
 
@@ -2429,7 +2441,7 @@ class Shell:
                 return None
             return (selected, False)
 
-    def _resume_pty_slot(self, slot: ProcessSlot) -> None:
+    def _resume_pty_slot(self, slot: PtySlot) -> None:
         """Restore terminal modes and re-activate a backgrounded PTY slot.
 
         Used both when resuming after a context switch and when the user

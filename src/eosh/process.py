@@ -12,12 +12,11 @@ import time
 from typing import Callable
 
 # PTY-backed process multiplexing is POSIX-only.  On Windows these modules do
-# not exist; ProcessSlot is simply never instantiated there (the shell runs
+# not exist; no PtySlot is ever instantiated there (the shell runs
 # external commands on the real console instead), but OutputBuffer and the
 # module itself must still import cleanly.
 if os.name != "nt":
     import fcntl
-    import pty
     import select
     import termios
 
@@ -49,7 +48,7 @@ class ExitCallbackMixin:
     """The "this slot's work ended" hook and the facts it reports, shared by
     every slot type.
 
-    A slot's work ends on a thread the shell isn't watching — ``ProcessSlot``'s
+    A slot's work ends on a thread the shell isn't watching — a ``PtySlot``'s
     reader thread, ``PythonCommandSlot``'s command thread — so the shell
     passes its handler (*on_exit*, called with the slot) when it constructs
     the slot, and the end of the work calls it exactly once.  Wired at
@@ -60,7 +59,7 @@ class ExitCallbackMixin:
     A slot that never was ran in the foreground, and the line's own timing
     already covered it.
 
-    A mixin: ``ProcessSlot`` (here) and ``PythonCommandSlot`` (``shell.py``)
+    A mixin: ``PtySlot`` (here) and ``PythonCommandSlot`` (``slots.py``)
     share nothing else; each calls :meth:`_init_exit_callback` from its own
     constructor.
     """
@@ -368,107 +367,6 @@ class PtySlot(ExitCallbackMixin):
     def tail_lines(self, n: int) -> list[str]:
         """Return up to *n* most recent output lines from the buffer (non-destructive)."""
         return _tail_lines_from_bytes(self.buffer.peek(), n)
-
-
-class ProcessSlot(PtySlot):
-    """One external command on a PTY of its own: the session leader of a new
-    session, with the PTY as its controlling terminal."""
-
-    def __init__(self, on_exit=None):
-        super().__init__(on_exit)
-        self.pid: int = -1
-
-    def start(self, argv: list[str], env: dict[str, str], cwd: str) -> None:
-        self.argv = argv
-        self.mark_started()
-        master_fd, slave_fd = pty.openpty()
-
-        # Set PTY size before fork so child sees correct dimensions immediately.
-        # Don't set LINES/COLUMNS in env: ncurses honors those over TIOCGWINSZ
-        # and then ignores SIGWINCH-driven resize (KEY_RESIZE never fires).
-        rows, cols = self._get_real_terminal_size()
-        if rows and cols:
-            winsize = struct.pack("HHHH", rows, cols, 0, 0)
-            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
-
-        # Pipe for the child to report exec failure to the parent. CLOEXEC
-        # on the write end means a successful exec auto-closes it and the
-        # parent reads EOF. On exec failure the child writes the errno and
-        # exits, so the parent can surface a real FileNotFoundError instead
-        # of leaving a dead PTY slot registered with the failed argv.
-        err_r, err_w = os.pipe()
-        flags = fcntl.fcntl(err_w, fcntl.F_GETFD)
-        fcntl.fcntl(err_w, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
-
-        pid = os.fork()
-        if pid == 0:
-            # Child process
-            try:
-                os.close(master_fd)
-                os.close(err_r)
-                os.setsid()
-                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-                os.dup2(slave_fd, 0)
-                os.dup2(slave_fd, 1)
-                os.dup2(slave_fd, 2)
-                if slave_fd > 2:
-                    os.close(slave_fd)
-                os.chdir(cwd)
-                os.execvpe(argv[0], argv, env)
-            except BaseException as e:
-                errno_val = getattr(e, "errno", 0) or 0
-                try:
-                    os.write(err_w, errno_val.to_bytes(4, "little", signed=True))
-                except OSError:
-                    pass
-            os._exit(127)
-        else:
-            # Parent process
-            os.close(slave_fd)
-            os.close(err_w)
-            try:
-                err_data = b""
-                while len(err_data) < 4:
-                    chunk = os.read(err_r, 4 - len(err_data))
-                    if not chunk:
-                        break
-                    err_data += chunk
-            finally:
-                os.close(err_r)
-            if err_data:
-                # Child reported exec failure — reap it and raise.
-                try:
-                    os.waitpid(pid, 0)
-                except ChildProcessError:
-                    pass
-                try:
-                    os.close(master_fd)
-                except OSError:
-                    pass
-                errno_val = int.from_bytes(err_data.ljust(4, b"\x00"), "little", signed=True)
-                raise OSError(errno_val, os.strerror(errno_val) if errno_val else "exec failed", argv[0])
-            self.pid = pid
-            self.master_fd = master_fd
-            self._start_reader()
-
-    def _reap(self) -> int:
-        try:
-            _, status = os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            return -1
-        return os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
-
-    def _pgid(self) -> int | None:
-        return os.getpgid(self.pid)
-
-    def kill(self) -> None:
-        import signal as sig
-
-        if self.is_alive():
-            try:
-                os.kill(self.pid, sig.SIGTERM)
-            except ProcessLookupError:
-                pass
 
 
 def _tail_lines_from_bytes(data: bytes, n: int) -> list[str]:

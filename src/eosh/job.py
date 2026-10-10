@@ -1,19 +1,19 @@
 """A command line's pipeline on one PTY, so Ctrl+] can park it.
 
-A single external command already runs on a PTY of its own
-(:class:`~eosh.process.ProcessSlot`).  A pipeline — or a redirected command,
-which runs as a one-stage pipeline — is several processes and Python threads
-wired together with pipes, and used to run on the real terminal while the
-main thread waited, so Ctrl+] couldn't reach it (discussion #76).
+On a POSIX terminal every external command runs here — alone, in a
+pipeline, or redirected — and so does a lone decorator: several processes
+and Python threads wired together with pipes, on one PTY, so Ctrl+] can park
+them (discussion #76).
 
 :class:`PipelineSlot` gives the whole pipeline one PTY.  Every
 terminal-facing end — the first stage's stdin, the last stage's stdout, every
 stage's stderr — is its slave; the master is read and buffered like
-``ProcessSlot``'s, so the shell parks, resumes and previews it the same way.
+any :class:`~eosh.process.PtySlot`'s, so the shell parks, resumes and
+previews it the same way.
 
 The external stages are started by a *job leader* (``_job_leader.py``), a
-helper process that is the session leader with the PTY as its controlling
-terminal: the stages share its session and process group, so ``/dev/tty``,
+helper process — started ahead of time, one spare always waiting — that is
+the session leader with the PTY as its controlling terminal: the stages share its session and process group, so ``/dev/tty``,
 Ctrl+C and SIGWINCH work as they do for a POSIX shell's job.  It starts only
 when the line has an external stage.  Python stages stay on the shell's
 threads, writing to the slave through the thread-local routers.
@@ -75,14 +75,16 @@ class _LeaderProc:
 
 
 class _JobLeader:
-    """The helper process, and the socket to it."""
+    """The helper process, and the socket to it.  Started with no terminal;
+    :meth:`attach` gives it one."""
 
-    def __init__(self, slave_fd: int) -> None:
+    def __init__(self) -> None:
         self._sock, theirs = socket.socketpair()
         try:
             self.proc = subprocess.Popen(
                 [sys.executable, "-I", "-S", _LEADER, str(theirs.fileno())],
-                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 pass_fds=(theirs.fileno(),), start_new_session=True,
             )
         finally:
@@ -134,11 +136,21 @@ class _JobLeader:
                 if proc.returncode is None:
                     proc._finished(-1)
 
+    def _request(self, req: dict, fds: list[int]) -> dict:
+        data = json.dumps(req).encode()
+        socket.send_fds(self._sock, [struct.pack("!I", len(data)) + data], fds)
+        return self._replies.get()
+
+    def attach(self, tty_fd: int) -> None:
+        """Make *tty_fd* (a PTY slave) the leader's controlling terminal."""
+        reply = self._request({"op": "attach"}, [tty_fd])
+        if not reply.get("ok"):
+            raise OSError(reply.get("errno") or 0, reply.get("error", "attach failed"))
+
     def spawn(self, argv: list[str], env: dict[str, str], cwd: str,
               fds: tuple[int, int, int]) -> _LeaderProc:
-        data = json.dumps({"argv": argv, "env": env, "cwd": cwd}).encode()
-        socket.send_fds(self._sock, [struct.pack("!I", len(data)) + data], list(fds))
-        reply = self._replies.get()
+        reply = self._request({"op": "spawn", "argv": argv, "env": env, "cwd": cwd},
+                              list(fds))
         if "pid" not in reply:
             err = reply.get("errno") or 0
             if err == 2:
@@ -164,6 +176,40 @@ class _JobLeader:
             self.proc.kill()
             self.proc.wait()
         self._sock.close()
+
+
+# One leader started ahead of time, so a line never waits ~30 ms for an
+# interpreter: the line takes it, and the next one starts in the background.
+_spare: _JobLeader | None = None
+_spare_lock = threading.Lock()
+
+
+def _warm() -> None:
+    global _spare
+    try:
+        leader = _JobLeader()
+    except OSError:
+        return
+    with _spare_lock:
+        if _spare is None:
+            _spare = leader
+            return
+    leader.close()
+
+
+def prewarm() -> None:
+    """Start the spare leader in the background (at shell startup)."""
+    threading.Thread(target=_warm, daemon=True, name="eosh-job-warm").start()
+
+
+def _take_leader() -> _JobLeader:
+    global _spare
+    with _spare_lock:
+        leader, _spare = _spare, None
+    if leader is None or leader.proc.poll() is not None:
+        leader = _JobLeader()
+    prewarm()
+    return leader
 
 
 class PipelineSlot(PtySlot):
@@ -215,7 +261,9 @@ class PipelineSlot(PtySlot):
 
         with self._spawn_lock:
             if self._leader is None:
-                self._leader = _JobLeader(self._slave_fd)
+                leader = _take_leader()
+                leader.attach(self._slave_fd)
+                self._leader = leader
             return self._leader.spawn(argv, env, cwd, (fd(stdin), fd(stdout), fd(stderr)))
 
     def start(self, workers: list) -> None:

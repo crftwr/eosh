@@ -300,7 +300,7 @@ Executor story
   context, dups the thread-local stdio fds, and forces the multi-stage
   codepath in `_execute_pipeline` so the body's first/last stage
   read/write those fds directly.  Without this the body would route
-  through the standalone-command path (`ProcessSlot` /
+  through the standalone-command path (`PipelineSlot` /
   `PythonCommandSlot`) and grab the real terminal — wrong from a
   worker thread.
 * fds duped from thread-local overrides are owned by Popen / the

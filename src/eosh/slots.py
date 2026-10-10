@@ -8,7 +8,7 @@ that lets it share one terminal with the shell.
 * :class:`_StdoutProxy` — a slot's output, live while its context is in
   front and buffered while it isn't.
 * :class:`PythonCommandSlot` — a Python command on a thread, with the same
-  runtime interface as :class:`~eosh.process.ProcessSlot` so the shell can
+  runtime interface as :class:`~eosh.process.PtySlot` so the shell can
   park and resume either; :class:`_PyStageHandle` — a Python pipeline stage.
 * :func:`run_handler` — how a handler's end becomes an exit status, for
   every execution path.
@@ -43,7 +43,7 @@ if not IS_WINDOWS:
     import termios
 
 from . import terminal
-from .process import ExitCallbackMixin, OutputBuffer, ProcessSlot
+from .process import ExitCallbackMixin, OutputBuffer, PtySlot
 
 # ---------------------------------------------------------------------------
 # Thread-local stdout routing + per-slot buffering proxy
@@ -648,7 +648,7 @@ def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool,
 class PythonCommandSlot(ExitCallbackMixin):
     """Manages a Python @registry.command running in a background thread.
 
-    Implements the same runtime interface as ProcessSlot so the shell's
+    Implements the same runtime interface as PtySlot so the shell's
     run() loop and context machinery can treat both uniformly.
     """
 
@@ -724,7 +724,7 @@ class PythonCommandSlot(ExitCallbackMixin):
             self._finished.set()
             self._fire_on_exit()
 
-    # --- ProcessSlot-compatible interface ------------------------------------
+    # --- PtySlot-compatible interface ------------------------------------
 
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -915,7 +915,7 @@ class PythonCommandSlot(ExitCallbackMixin):
             self._err_proxy.deactivate()
         master_fd, slave_fd = pty.openpty()
         try:
-            rows, cols = ProcessSlot._get_real_terminal_size()
+            rows, cols = PtySlot._get_real_terminal_size()
             if rows and cols:
                 winsize = struct.pack("HHHH", rows, cols, 0, 0)
                 fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
@@ -927,7 +927,7 @@ class PythonCommandSlot(ExitCallbackMixin):
         env.setdefault("TERM", os.environ.get("TERM", "xterm-256color"))
 
         def _make_session_leader():
-            # Mirror ProcessSlot.start(): make the slave PTY the child's
+            # As the job leader does: make the slave PTY the child's
             # controlling terminal.  Without TIOCSCTTY there is no foreground
             # process group on this PTY, so the slave line discipline's ISIG
             # silently eats control bytes we forward via the master

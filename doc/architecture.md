@@ -124,7 +124,7 @@ Defines the `Completer` protocol, `CompletionContext`, and built-in completers.
 
 Manages named environments with variables, working directories, and optional running processes.
 
-- `Context` dataclass: name, variables dict, saved cwd, optional `ProcessSlot`, `state` property (`IDLE`/`RUNNING`/`EXITED`)
+- `Context` dataclass: name, variables dict, saved cwd, optional parked slot, `state` property (`IDLE`/`RUNNING`/`EXITED`)
 - `ContextManager`: named collection with a current pointer, kept in most-recently-used order; `new(name)` creates a context inheriting the current one's variables and history, and removing the current context makes the MRU next one current
 - On switch: saves current cwd, restores target cwd, swaps environment variables
 - Environment variable backup/restore to avoid leaking between contexts
@@ -151,15 +151,15 @@ Inline-rendered widgets anchored with DECSC/DECRC (no alternate screen). Cancel 
 
 ### process.py — PTY Process Slots
 
-`ProcessSlot` manages a PTY-backed subprocess with output buffering for context multiplexing.
+`PtySlot` is work on a PTY eosh owns, with output buffering for context multiplexing.
 
-- `start()` forks a child in a new PTY; a reader thread streams output to `OutputBuffer`
+- a reader thread streams the master's output to `OutputBuffer`
 - `activate()` / `deactivate()` route buffered output to stdout or hold it
 - `replay_buffer()` flushes held output when switching back to a context
 - `resize()` updates PTY window size and delivers SIGWINCH to the child process group
 - `suspend_terminal_modes()` / `restore_terminal_modes()` generate escape sequences to undo/redo DEC private modes (alt screen, mouse, app cursor keys) across switches
 
-All of that lives in the `PtySlot` base class; `ProcessSlot` adds the fork/exec of one command.
+`job.PipelineSlot` is the one subclass: every external command runs on it.
 
 ### job.py — A Pipeline on One PTY
 
@@ -225,8 +225,8 @@ Quote-aware parser for the full operator set.
 ```
 User input → expand_vars() → parse_line() → Sequence of Pipelines
   → For each Pipeline:
-      → Single stage, no redirect: PTY via ProcessSlot (Python: PythonCommandSlot)
-      → Multiple stages, or a redirect: one PipelineSlot — OS pipes between
+      → Python command alone: PythonCommandSlot
+      → Anything else (one command, a pipeline, a redirect): one PipelineSlot — OS pipes between
         stages, the slot's PTY at the terminal-facing ends, external stages
         started by its job leader (plain Popen without a terminal / on Windows)
   → Python stages get thread-local sys.stdin/stdout/stderr
@@ -260,7 +260,7 @@ Ctrl+] pressed (or "context switch <name>")
   → _activate(name):
       → os.chdir(target.cwd)
       → _apply_env(target): export target.variables, backup originals
-  → If target context has live ProcessSlot: resume forwarding mode
+  → If target context has a live slot: resume forwarding mode
 ```
 
 ## File Layout
@@ -343,7 +343,7 @@ eosh/
 
 4. **Config as Python** — `~/.eosh/config.py` is plain Python importing eosh APIs. No DSL to learn; full language power for defining completers with caching, API calls, conditional logic. `reload` applies changes without restarting.
 
-5. **PTY process multiplexing** — each context can hold a `ProcessSlot` with a live subprocess. `Ctrl+]` switches between contexts without killing the running process; the slot buffers output while inactive and replays it on return.
+5. **PTY process multiplexing** — each context can hold a slot with live work. `Ctrl+]` switches between contexts without killing the running process; the slot buffers output while inactive and replays it on return.
 
 6. **Context variables as env vars** — switching contexts exports variables to `os.environ` and backs up originals. This means subprocesses (system commands) automatically inherit context variables without eosh-specific wiring.
 

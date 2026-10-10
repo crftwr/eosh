@@ -25,7 +25,7 @@ class Context:
     name: str                           # unique identifier
     variables: dict[str, str | None]    # exported to os.environ; None = unset here
     cwd: str                            # saved working directory
-    process_slot: ProcessSlot | None    # optional running subprocess
+    process_slot: PtySlot | PythonCommandSlot | None  # parked work
 
     @property
     def state(self) -> ContextState: ...  # derived from process_slot
