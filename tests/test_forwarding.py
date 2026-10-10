@@ -83,6 +83,9 @@ class _Recorder:
         self.suspended += 1
         return ""
 
+    def take_unread(self):
+        return b""
+
 
 class _PtySlot(_Recorder):
     pass

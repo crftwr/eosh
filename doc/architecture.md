@@ -12,6 +12,7 @@
 │  ├── Command dispatch                              │
 │  ├── PTY process multiplexing (process.py)         │
 │  ├── Python-command slots (slots.py)               │
+│  ├── Pipeline slots + job leader (job.py)          │
 │  └── Context switch TUI (tui.py)                   │
 ├─────────────────────────────────────────────────────┤
 │  Command Registry (commands.py)                     │
@@ -158,6 +159,12 @@ Inline-rendered widgets anchored with DECSC/DECRC (no alternate screen). Cancel 
 - `resize()` updates PTY window size and delivers SIGWINCH to the child process group
 - `suspend_terminal_modes()` / `restore_terminal_modes()` generate escape sequences to undo/redo DEC private modes (alt screen, mouse, app cursor keys) across switches
 
+All of that lives in the `PtySlot` base class; `ProcessSlot` adds the fork/exec of one command.
+
+### job.py — A Pipeline on One PTY
+
+`PipelineSlot(PtySlot)` runs a whole pipeline (or a redirected command) on one PTY, so Ctrl+] parks it like a single command. Terminal-facing ends of every stage are the PTY slave. External stages are started by a job leader (`_job_leader.py`, `python -I -S`): the session leader with the PTY as its controlling terminal, so the stages share its session and process group — `/dev/tty`, Ctrl+C and SIGWINCH behave as in a POSIX shell's job. Requests go over a socketpair (length-prefixed JSON, stdio fds as `SCM_RIGHTS`). Python stages stay on eosh's threads.
+
 ### prompt.py — Prompt Function
 
 Provides `set_prompt()` / `get_prompt_func()` for customizable prompt generation.
@@ -218,10 +225,11 @@ Quote-aware parser for the full operator set.
 ```
 User input → expand_vars() → parse_line() → Sequence of Pipelines
   → For each Pipeline:
-      → Single stage, no redirect: PTY via ProcessSlot
-      → Multiple stages (pipe): subprocess.Popen with OS pipes
-      → Single stage with redirect: subprocess.run with file fds
-  → Python commands have sys.stdout/stdin/stderr temporarily replaced
+      → Single stage, no redirect: PTY via ProcessSlot (Python: PythonCommandSlot)
+      → Multiple stages, or a redirect: one PipelineSlot — OS pipes between
+        stages, the slot's PTY at the terminal-facing ends, external stages
+        started by its job leader (plain Popen without a terminal / on Windows)
+  → Python stages get thread-local sys.stdin/stdout/stderr
 ```
 
 ### Tab Completion
@@ -289,6 +297,7 @@ eosh/
 │       ├── lineedit.py         # DIY raw-mode line editor, ghost suggestion, TAB completion glue
 │       ├── parsing.py          # line tokenization, quote handling, var expansion
 │       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run()
+│       ├── job.py              # PipelineSlot: a line's pipeline on one PTY; _job_leader.py starts its stages
 │       ├── process.py          # PTY subprocess slots, output buffering, terminal-mode tracking
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
 │       ├── colors.py           # ColorScheme + set_color_scheme (dark/light/mono), NO_COLOR
