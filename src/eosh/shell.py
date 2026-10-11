@@ -468,6 +468,11 @@ class Shell(ContextSwitcher):
         stripped_line = self._strip_leading_tokens(
             line_before_cursor, len(tokens) - len(stripped_tokens)
         )
+        # A stacked decorator (`@time @re<TAB>`, `@time @retry -<TAB>`): the
+        # body is a decorator line of its own.
+        inner = self._maybe_decorator_completion(stripped_tokens, prefix, stripped_line)
+        if inner is not None:
+            return inner
         return "fallthrough", (stripped_tokens, prefix, stripped_line)
 
     @staticmethod

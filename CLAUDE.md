@@ -972,7 +972,7 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 @watch --no-clear {tail -f log}
 ```
 
-**Scope rule.** Any pipeline that contains `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. The single-command form is allowed without braces. Operators outside braces raise `DecoratorParseError` at parse time with a message pointing at the offending operator.
+**Scope rule.** Any pipeline that contains `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. The single-command form is allowed without braces (a redirect there binds to the body: `@time make > log`). Operators outside braces raise `DecoratorParseError` at parse time with a message pointing at the offending operator. After a braced scope the line goes on: `@deco {…} | next`, `@deco {…} && other`, and a decorator may start any item of a sequence (`make; @time {…}`) — `parse_line` takes one item at a time. Decorators stack outside in: `@time @retry -n 3 cmd` is @time around @retry.
 
 **Brace handling.** The brace-balancer in `pipeline.py::_find_matching_brace` shares a single scan with the existing quote/escape tracker and handles three things so braces inside the body don't terminate the scope:
 
@@ -1018,7 +1018,7 @@ The decorator function receives a `Pipeline` (the parsed AST of the wrapped body
 
 **Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `ctx.run_interactive` / `ctx.input` / `ctx.choose` raise `RuntimeError` from a piped decorator. A lone decorator on a `PipelineSlot` is not "piped": its stdin and stdout are the slot's PTY, so they work (`_in_pipeline.on_terminal`).
 
-See [doc/decorators.md](doc/decorators.md) for the full design rationale, IPython-magic precedent, parser/executor walkthrough, and resolved UX questions; remaining follow-ups (stacking, more built-ins, …) are in [discussion #67](https://github.com/crftwr/eosh/discussions/67).
+See [doc/decorators.md](doc/decorators.md) for the full design rationale, IPython-magic precedent, parser/executor walkthrough, and resolved UX questions; remaining follow-ups (more built-ins) are in [discussion #67](https://github.com/crftwr/eosh/discussions/67).
 
 ### User Config (~/.eosh/config.py)
 

@@ -17,8 +17,9 @@ unambiguous and the construct doesn't collide with POSIX command names.
 **Status:** the feature is shipped. Parser, executor, registry, and
 four built-in decorators (`@watch`, `@time`, `@retry`, `@quiet`)
 are in place; `@deco {body} | next` composition runs the body's stdout
-through the outer pipeline. Open follow-ups (decorator stacking,
-outer sequencing, more built-ins) are tracked in
+through the outer pipeline, the line goes on after a braced scope
+(`@deco {body} && next`, `make; @deco {body}`), and decorators stack
+(`@time @retry -n 3 cmd`). Open follow-ups (more built-ins) are tracked in
 [discussion #67](https://github.com/crftwr/eosh/discussions/67).
 
 **Shipped:**
@@ -667,7 +668,7 @@ Open questions are tracked in
 ## What's left for follow-up commits
 
 Tracked in
-[discussion #67](https://github.com/crftwr/eosh/discussions/67):
-stacking, outer sequencing after a decorator scope, slot-aware
-`@watch`, more built-ins, typo suggestions, and tests pinning history
-and redirect binding.
+[discussion #67](https://github.com/crftwr/eosh/discussions/67): more
+built-ins (`@confirm`, `@nice`). Stacking, sequencing after a scope,
+slot-aware `@watch`, typo suggestions and the history / redirect tests
+have shipped (#80, #88, #89).
