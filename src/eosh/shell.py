@@ -54,7 +54,7 @@ from .pipeline import (
     expand_globs,
     parse_line,
     set_pipeline_executor,
-    _split_on_operators,
+    split_on_operators,
 )
 from . import hooks, notify, shell_integration
 from . import keys as keymap
@@ -527,7 +527,7 @@ class Shell:
     def _get_completions(self, line_before_cursor: str) -> tuple[list[Completion], str, str]:
         # Isolate the current pipeline stage so completions for `ls | grep -`
         # are computed against `grep`, not `ls`.
-        stage_line = _split_on_operators(line_before_cursor, [";", "&&", "||", "|"])[-1][1]
+        stage_line = split_on_operators(line_before_cursor, [";", "&&", "||", "|"])[-1][1]
         tokens, prefix = split_for_completion(stage_line)
 
         # Decorator-prefixed stage (e.g. ``@watch -n 1 ls -l <TAB>``): handle
@@ -673,7 +673,7 @@ class Shell:
 
         # Parse everything before the token to get the command/args context.
         pre = buf[:start].rstrip()
-        stage_pre = _split_on_operators(pre, [";", "&&", "||", "|"])[-1][1]
+        stage_pre = split_on_operators(pre, [";", "&&", "||", "|"])[-1][1]
         tokens_before, _ = split_for_completion(stage_pre + " ")
 
         if not tokens_before:
