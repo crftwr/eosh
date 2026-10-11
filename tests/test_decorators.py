@@ -802,3 +802,49 @@ def test_thread_local_fileno_follows_the_override():
     finally:
         os.close(r)
         os.close(w)
+
+
+# ── typo suggestions; behaviour pinned (discussion #67) ─────────────────────
+
+def test_an_unknown_decorator_suggests_a_close_name(capsys):
+    sh = Shell()
+    stage = parse_line("@watche ls").items[0][1].stages[0]
+    assert sh._execute_decorator_stage(stage) == 127
+    assert "unknown decorator: @watche (did you mean @watch?)" in capsys.readouterr().err
+
+
+def test_an_unknown_decorator_far_from_any_says_only_that(capsys):
+    sh = Shell()
+    stage = parse_line("@zzqx ls").items[0][1].stages[0]
+    assert sh._execute_decorator_stage(stage) == 127
+    err = capsys.readouterr().err
+    assert "unknown decorator: @zzqx" in err and "did you mean" not in err
+
+
+def test_a_decorated_line_is_one_history_entry(tmp_path):
+    """`@retry -n 3 {…}` re-runs its body; history keeps the line once, as
+    written — the shell records the line, the decorator never does."""
+    sh = Shell()
+    count = tmp_path / "count"
+    line = f"@retry -n 3 {{true | sh -c 'echo x >> {count}; exit 1'}}"
+    sh._record_history(line)
+    sh._execute(line)
+    assert count.read_text().count("x") == 3
+    assert [e.cmd for e in sh._history.entries()] == [line]
+
+
+def test_a_redirect_after_a_decorator_binds_to_its_body(tmp_path, capfd):
+    """`@time cmd > f`: the redirect is the body's — its output goes to f,
+    @time's own timing line to stderr, not into the file."""
+    sh = Shell()
+    out = tmp_path / "out.txt"
+    assert sh._execute(f"@time echo body-output > {out}") == 0
+    assert out.read_text() == "body-output\n"
+    assert "real" in capfd.readouterr().err
+
+
+def test_a_redirect_after_a_braced_body_is_refused():
+    """With braces the body's scope is explicit, so a redirect after `}` has
+    nothing to bind to: put it inside, or pipe the decorator's output."""
+    with pytest.raises(DecoratorParseError, match="must start with `|`"):
+        parse_line("@time {echo x} > out.txt")
