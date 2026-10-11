@@ -240,7 +240,7 @@ User input → expand_vars() → parse_line() → Sequence of Pipelines
 User presses TAB
   → LineEditor._complete()
     → _get_completions(line_before_cursor)
-        → _split_on_operators() → isolate current pipeline stage
+        → split_on_operators() → isolate current pipeline stage
         → split_for_completion(stage) → (tokens, prefix)
         → No tokens? → CommandNameCompleter
         → Has tokens?
@@ -357,7 +357,6 @@ These are not bugs and they are not blocking work. They are the architectural ro
 
 - **`shell.py` is ~2600 lines** and still hosts three concerns that are conceptually separate: the per-stage pipeline executor (`_execute_pipeline`, `_execute_stage`, redirect plumbing); the raw-mode forwarding loop (`_forward`) and the Ctrl+] switcher; and the actual REPL + built-ins + completion glue. (The Python-command slot family moved to `slots.py`.) Everything else in the package is right-sized.
 - **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_in_pipeline` / `_job_local` thread-locals consumed by `CommandContext`'s methods (via `slots._run_interactive` / `_read_from_user` / `_choose`) are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
-- **`shell.py` imports private names from `pipeline.py`** — `_split_on_operators` is used both for completion-stage isolation and for decorator-prefix remainder validation. It is part of `pipeline.py`'s effective public surface; the leading underscore is a leftover.
 - **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.
 
 The shape of the relief is sketched in [discussion #70](https://github.com/crftwr/eosh/discussions/70): extract `dispatch.py` (the pipeline executor), and replace the global setters with a single `ExecutionEnvironment` interface that `Shell` constructs and passes down. None of this is a one-shot refactor — it is a sequence of medium-risk moves, each independently valuable.

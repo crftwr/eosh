@@ -8,17 +8,17 @@ from eosh.pipeline import (
     Sequence,
     parse_line,
     expand_globs,
-    _split_on_operators,
+    split_on_operators,
     _extract_redirects,
 )
 
 
 # ---------------------------------------------------------------------------
-# _split_on_operators
+# split_on_operators
 # ---------------------------------------------------------------------------
 
 def test_split_simple_pipe():
-    parts = _split_on_operators("ls | grep foo", ["|"])
+    parts = split_on_operators("ls | grep foo", ["|"])
     assert len(parts) == 2
     assert parts[0] == (None, "ls ")
     assert parts[1] == ("|", " grep foo")
@@ -26,31 +26,31 @@ def test_split_simple_pipe():
 
 def test_split_pipe_quoted():
     # Pipe inside quotes should not split
-    parts = _split_on_operators('echo "a | b"', ["|"])
+    parts = split_on_operators('echo "a | b"', ["|"])
     assert len(parts) == 1
     assert parts[0][0] is None
 
 
 def test_split_and_or():
-    parts = _split_on_operators("make && ./run || echo fail", ["&&", "||"])
+    parts = split_on_operators("make && ./run || echo fail", ["&&", "||"])
     assert [op for op, _ in parts] == [None, "&&", "||"]
 
 
 def test_split_semicolon():
-    parts = _split_on_operators("cd foo; ls", [";"])
+    parts = split_on_operators("cd foo; ls", [";"])
     assert len(parts) == 2
     assert parts[1][0] == ";"
 
 
 def test_split_no_match():
-    parts = _split_on_operators("echo hello", ["|"])
+    parts = split_on_operators("echo hello", ["|"])
     assert len(parts) == 1
     assert parts[0] == (None, "echo hello")
 
 
 def test_split_prefers_longer_operator():
     # "&&" must not be matched as two "&"
-    parts = _split_on_operators("a && b", ["&&", "&"])
+    parts = split_on_operators("a && b", ["&&", "&"])
     assert len(parts) == 2
     assert parts[1][0] == "&&"
 

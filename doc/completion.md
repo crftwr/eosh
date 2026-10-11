@@ -206,7 +206,7 @@ The line editor (`lineedit.py`) calls `_get_completions(line_before_cursor)` on 
 
 ```
 _get_completions(line_before_cursor)
-  → _split_on_operators() → isolate current pipeline stage
+  → split_on_operators() → isolate current pipeline stage
   → split_for_completion(stage) → (tokens, prefix)
   → No tokens?
       → CommandNameCompleter

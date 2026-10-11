@@ -280,7 +280,7 @@ Parser story (implemented in
 ```
 
 The remainder after the closing `}` is fed back through the same
-`_split_on_operators` path as a top-level pipeline, so any number of
+`split_on_operators` path as a top-level pipeline, so any number of
 `|`-stages can follow.  `;`/`&&`/`||` after the closing `}` are
 explicitly rejected with a clear error — relaxing that needs the
 outer-sequence parser to treat the decorator-stage as one statement,

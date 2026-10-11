@@ -109,7 +109,7 @@ def _flag_takes_value(decorator_name: str, flag: str) -> bool:
 # Quote-aware operator splitter
 # ---------------------------------------------------------------------------
 
-def _split_on_operators(text: str, operators: list[str]) -> list[tuple[str | None, str]]:
+def split_on_operators(text: str, operators: list[str]) -> list[tuple[str | None, str]]:
     """Split *text* on any token in *operators*, respecting single/double quotes.
 
     Returns [(op_before | None, segment_text), ...].
@@ -547,7 +547,7 @@ def _extract_decorator_prefix(line: str) -> tuple[DecoratorCall | None, str]:
     if remainder_stripped:
         # Use the same operator splitter as the rest of the parser so quote
         # / escape handling matches.  Reject `;`/`&&`/`||` here.
-        seq_parts = _split_on_operators(remainder_stripped, [";", "&&", "||"])
+        seq_parts = split_on_operators(remainder_stripped, [";", "&&", "||"])
         if len(seq_parts) > 1:
             bad_op = seq_parts[1][0]
             raise DecoratorParseError(
@@ -592,13 +592,13 @@ def _parse_bare_body(text: str, *, decorator_name: str) -> Pipeline:
     # Use the same operator splitter so quote/escape handling matches
     # the rest of the parser exactly.  More than one segment means an
     # operator is present at the top level — reject with a clear error.
-    pipe_parts = _split_on_operators(text, ["|"])
+    pipe_parts = split_on_operators(text, ["|"])
     if len(pipe_parts) > 1:
         raise DecoratorParseError(
             f"@{decorator_name}: '|' in decorator body without braces "
             f"(wrap the pipeline in {{ ... }})"
         )
-    seq_parts = _split_on_operators(text, [";", "&&", "||"])
+    seq_parts = split_on_operators(text, [";", "&&", "||"])
     if len(seq_parts) > 1:
         bad_op = seq_parts[1][0]
         raise DecoratorParseError(
@@ -629,7 +629,7 @@ def parse_line(line: str) -> Sequence:
         # Drop the leading `|` and parse the rest as additional pipe stages,
         # then prepend the decorator-stage.
         rest_text = line[1:]
-        pipe_parts = _split_on_operators(rest_text, ["|"])
+        pipe_parts = split_on_operators(rest_text, ["|"])
         stages: list[Stage] = [deco_stage]
         for _, stage_text in pipe_parts:
             stage_text = stage_text.strip()
@@ -639,14 +639,14 @@ def parse_line(line: str) -> Sequence:
             stages.append(Stage(text=cleaned.strip(), redirects=redirects))
         return Sequence(items=[(None, Pipeline(stages=stages))])
 
-    seq_parts = _split_on_operators(line, [";", "&&", "||"])
+    seq_parts = split_on_operators(line, [";", "&&", "||"])
     items: list[tuple[str | None, Pipeline]] = []
 
     for op, part in seq_parts:
         part = part.strip()
         if not part:
             continue
-        pipe_parts = _split_on_operators(part, ["|"])
+        pipe_parts = split_on_operators(part, ["|"])
         stages: list[Stage] = []
         for _, stage_text in pipe_parts:
             stage_text = stage_text.strip()
