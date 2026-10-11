@@ -36,7 +36,7 @@ class Context:
     # from the environment eosh started with, removed in this context only).
     variables: dict[str, str | None] = field(default_factory=dict)
     cwd: str = field(default_factory=os.getcwd)
-    process_slot: Any = field(default=None, repr=False)  # PipelineSlot | PythonCommandSlot
+    process_slot: Any = field(default=None, repr=False)  # the PipelineSlot parked here
     history: list[str] = field(default_factory=list, repr=False)
     # PyVar values (name → get() result, None = unset), saved when leaving
     # the context and restored when coming back — like cwd.

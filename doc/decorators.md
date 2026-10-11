@@ -300,8 +300,8 @@ Executor story
   context, dups the thread-local stdio fds, and forces the multi-stage
   codepath in `_execute_pipeline` so the body's first/last stage
   read/write those fds directly.  Without this the body would route
-  through the standalone-command path (`PipelineSlot` /
-  `PythonCommandSlot`) and grab the real terminal — wrong from a
+  through the standalone-command path (its own `PipelineSlot`) and grab
+  the real terminal — wrong from a
   worker thread.
 * fds duped from thread-local overrides are owned by Popen / the
   Python-stage thread, so subsequent body runs (e.g. each
@@ -328,7 +328,8 @@ Two caveats worth flagging to decorator authors:
   codes are wrong when its stdout is piped. Decorators that emit
   terminal control (or produce non-pipeable output) need to check
   `sys.stdout.isatty()` — same discipline as any well-behaved program.
-  (`@watch` already does — see `_StdoutProxy.isatty()`.)
+  (`@watch` already does — `_ThreadLocalStream.isatty()` answers for the
+  stage's own stdout.)
 - **Infinite-output decorators in a pipeline.** `@watch {ls} | grep foo`
   runs forever; the user has to `Ctrl+C` (or `Ctrl+]` to background)
   just like `tail -f | grep`. Not a bug, but worth a sentence so it's

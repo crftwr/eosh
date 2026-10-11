@@ -225,8 +225,8 @@ Quote-aware parser for the full operator set.
 ```
 User input → expand_vars() → parse_line() → Sequence of Pipelines
   → For each Pipeline:
-      → Python command alone: PythonCommandSlot
-      → Anything else (one command, a pipeline, a redirect): one PipelineSlot — OS pipes between
+      → A sync built-in or assignments alone: the main thread
+      → Anything else (one command, external or Python; a pipeline; a redirect): one PipelineSlot — OS pipes between
         stages, the slot's PTY at the terminal-facing ends, external stages
         started by its job leader (plain Popen without a terminal / on Windows)
   → Python stages get thread-local sys.stdin/stdout/stderr
@@ -354,7 +354,7 @@ eosh/
 These are not bugs and they are not blocking work. They are the architectural rough edges that have accumulated as features (Python pipelines, decorators, passthrough subprocesses) layered on top of the original PTY-multiplexing core. Each is tracked in more detail in [discussion #70](https://github.com/crftwr/eosh/discussions/70).
 
 - **`shell.py` is ~2600 lines** and still hosts three concerns that are conceptually separate: the per-stage pipeline executor (`_execute_pipeline`, `_execute_stage`, redirect plumbing); the raw-mode forwarding loop (`_forward`) and the Ctrl+] switcher; and the actual REPL + built-ins + completion glue. (The Python-command slot family moved to `slots.py`.) Everything else in the package is right-sized.
-- **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_current_slot` / `_in_pipeline` thread-locals consumed by `CommandContext`'s methods (via `slots._run_interactive` / `_read_from_user` / `_choose`) are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
+- **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_in_pipeline` / `_job_local` thread-locals consumed by `CommandContext`'s methods (via `slots._run_interactive` / `_read_from_user` / `_choose`) are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
 - **`shell.py` imports private names from `pipeline.py`** — `_split_on_operators` is used both for completion-stage isolation and for decorator-prefix remainder validation. It is part of `pipeline.py`'s effective public surface; the leading underscore is a leftover.
 - **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.
 

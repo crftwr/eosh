@@ -1,5 +1,5 @@
-"""Tests for ``Shell._forward``, the one loop that hands the terminal to a
-running slot — a ``ProcessSlot`` or a ``PythonCommandSlot``.
+"""Tests for ``Shell._forward``, the loop that hands the terminal to a
+running slot (a PTY: ``PipelineSlot``).
 
 stdin is the slave end of a fresh PTY, so the loop can set raw mode on it;
 the test types into the master end.
@@ -13,7 +13,6 @@ import time
 import pytest
 
 from eosh.shell import Shell
-from eosh.slots import PythonCommandSlot
 
 pty = pytest.importorskip("pty")
 termios = pytest.importorskip("termios")
@@ -87,91 +86,54 @@ class _Recorder:
         return b""
 
 
-class _PtySlot(_Recorder):
-    pass
+class _Slot(_Recorder):
+    """A PTY slot: Ctrl+C is an interrupt unless a stage turned ISIG off."""
 
+    def __init__(self, *, isig=True, unread=b""):
+        super().__init__()
+        self.isig = isig
+        self.unread = unread
+        self.interrupts = 0
 
-class _PySlot(_Recorder, PythonCommandSlot):
-    def __init__(self, *, pty_active=False, reading_input=False):
-        _Recorder.__init__(self)
-        self._pty_active = pty_active
-        self._reading_input = reading_input
-        self.activated = False
-        self.killed = False
+    def ctrl_c_interrupts(self):
+        return self.isig
 
-    def activate(self):
-        self.activated = True
-
-    def deactivate(self):
-        pass
-
-    def kill(self):
-        self.killed = True
-        self.done.set()
+    def interrupt_python_stages(self):
+        self.interrupts += 1
 
     def take_unread(self):
-        return b""
+        return self.unread
 
 
-@pytest.mark.parametrize("make", [_PtySlot, _PySlot])
-def test_keys_are_forwarded_until_the_slot_ends(typed, make):
-    slot = make()
+def test_keys_are_forwarded_until_the_slot_ends(typed):
+    slot = _Slot()
     assert typed(slot, b"abq") == "exited"
     assert slot.received == b"abq"
 
 
-@pytest.mark.parametrize("make", [_PtySlot, _PySlot])
-def test_switch_key_forwards_what_came_before_it(typed, make):
-    slot = make()
+def test_switch_key_forwards_what_came_before_it(typed):
+    slot = _Slot()
     assert typed(slot, b"ab\x1dcd") == "switched"
     assert slot.received == b"ab"
     assert slot.suspended == 1
 
 
-def test_a_python_slot_is_activated_by_the_loop(typed):
-    slot = _PySlot()
-    typed(slot, b"q")
-    assert slot.activated
-
-
-def test_ctrl_c_interrupts_a_python_command(typed):
-    slot = _PySlot()
-    assert typed(slot, b"\x03") == "interrupted"
-    assert slot.killed
-    assert slot.received == b""
-
-
-@pytest.mark.parametrize("state", [{"pty_active": True}, {"reading_input": True}])
-def test_ctrl_c_reaches_a_subprocess_or_a_question(typed, state):
-    slot = _PySlot(**state)
+def test_ctrl_c_reaches_the_pty_and_the_python_stages(typed):
+    slot = _Slot()
     assert typed(slot, b"\x03q") == "exited"
-    assert not slot.killed
-    assert slot.received == b"\x03q"
+    assert slot.received == b"\x03q"         # the line discipline signals the processes
+    assert slot.interrupts == 1               # the threads are told separately
 
 
-def test_ctrl_c_is_just_a_byte_to_a_pty_child(typed):
-    slot = _PtySlot()
+def test_ctrl_c_is_only_a_key_when_the_pty_says_so(typed):
+    slot = _Slot(isig=False)                  # `less`, or a ctx.input question
     assert typed(slot, b"\x03q") == "exited"
     assert slot.received == b"\x03q"
+    assert slot.interrupts == 0
 
 
-def test_keys_a_python_command_never_read_go_back_to_the_prompt(typed, monkeypatch):
+def test_keys_nothing_read_go_back_to_the_prompt(typed, monkeypatch):
     from eosh import terminal
     monkeypatch.setattr(terminal, "_pending_input", b"")
-
-    class _Instant(_PySlot):
-        def take_unread(self):
-            return b"ls\r"                 # typed ahead while `cd x` ran
-
-    typed(_Instant(), b"q")
-    assert terminal._pending_input == b"ls\r"
-
-
-def test_take_unread_empties_the_key_buffer():
-    slot = PythonCommandSlot.__new__(PythonCommandSlot)
-    slot._keybuf, slot._keybuf_lock = bytearray(), threading.Lock()
-    slot._keybuf_event = threading.Event()
-    slot._pty_lock, slot._pty_master_fd = threading.Lock(), -1
-    slot.write_stdin(b"pwd\r")
-    assert slot.take_unread() == b"pwd\r"
-    assert slot.take_unread() == b""
+    typed(_Slot(unread=b"ls\n"), b"q")          # typed ahead while `cd x` ran
+    assert terminal._pending_input == b"ls\n"

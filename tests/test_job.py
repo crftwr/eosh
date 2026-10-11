@@ -196,10 +196,9 @@ def test_a_lone_command_not_found_goes_to_the_hooks(sh, capsys):
     assert sh.slots == []
 
 
-def test_a_lone_python_command_is_not_on_a_pipeline_slot(sh):
-    assert sh._execute("var EOSH_T_LONE=1") == 0
-    assert not any(isinstance(s, PipelineSlot) for s in sh.slots)
-    os.environ.pop("EOSH_T_LONE", None)
+def test_a_sync_command_stays_on_the_main_thread(sh):
+    assert sh._execute("alias eosh_t_al=ls") == 0
+    assert sh.slots == []
 
 
 # ── decorators on the slot ──────────────────────────────────────────────────
@@ -233,8 +232,103 @@ def test_ctrl_c_raises_keyboard_interrupt_in_a_decorator_stage():
         def interrupt(self):
             calls.append("plain")
 
-    slot._workers = [_Deco("@time", decorator=True), _Plain("cmd")]
+    slot._workers = [_Deco("@time", graceful=True), _Plain("cmd")]
     slot.interrupt_python_stages()
     assert calls == ["deco", "plain"]
     slot.discard()
     _finish(slot)
+
+
+# ── a Python command on the slot's PTY ─────────────────────────────────────
+
+def _wait_for(slot, text, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while text not in _output(slot):
+        assert time.monotonic() < deadline, f"never saw {text!r}: {_output(slot)!r}"
+        time.sleep(0.01)
+
+
+@pytest.fixture
+def driven(monkeypatch):
+    """A Shell whose forwarding loop is a script: ``driven.keys`` is a list
+    of ``(wait_for_text, keys)`` sent to the slot in turn."""
+    monkeypatch.setattr("eosh.shell._stdin_is_tty", lambda: True)
+    shell = Shell()
+    shell.keys = []
+    shell.slots = []
+
+    def forward(slot, force_redraw=False):
+        shell.slots.append(slot)
+        for text, keys in shell.keys:
+            if text:
+                _wait_for(slot, text)
+            slot.write_stdin(keys)
+            if keys == b"\x03" and slot.ctrl_c_interrupts():
+                slot.interrupt_python_stages()       # what _forward does
+        _finish(slot)
+        return "exited"
+
+    monkeypatch.setattr(shell, "_forward", forward)
+    yield shell
+    command_registry.clear_user_commands()
+
+
+@pytest.mark.requires_real_stdio
+def test_a_python_command_runs_on_a_slot_and_asks_on_its_pty(driven):
+    @command_registry.command("eosh-t-ask", pass_context=True)
+    def ask(ctx):
+        print(f"hello {ctx.input('name? ')}")
+
+    driven.keys = [("name? ", b"bob\r")]
+    assert driven._execute("eosh-t-ask") == 0
+    (slot,) = driven.slots
+    assert isinstance(slot, PipelineSlot)
+    assert "hello bob" in _output(slot)
+
+
+@pytest.mark.requires_real_stdio
+def test_keys_typed_before_the_question_are_not_the_answer(driven):
+    @command_registry.command("eosh-t-ask2", pass_context=True)
+    def ask(ctx):
+        time.sleep(0.2)
+        print(f"got {ctx.input('sure? ')}")
+
+    driven.keys = [(None, b"y\r"), ("sure? ", b"n\r")]
+    driven._execute("eosh-t-ask2")
+    assert "got n" in _output(driven.slots[0])
+
+
+@pytest.mark.requires_real_stdio
+def test_run_interactive_gets_the_pty(driven):
+    @command_registry.command("eosh-t-run", pass_context=True)
+    def run(ctx):
+        return ctx.run_interactive(["sh", "-c", "test -t 0 && test -t 1 && echo on-a-tty"])
+
+    assert driven._execute("eosh-t-run") == 0
+    assert "on-a-tty" in _output(driven.slots[0])
+
+
+@pytest.mark.requires_real_stdio
+def test_ctrl_c_interrupts_a_python_command(driven):
+    @command_registry.command("eosh-t-sleep")
+    def nap():
+        print("napping")
+        for _ in range(50):
+            time.sleep(0.1)
+
+    driven.keys = [("napping", b"\x03")]
+    started = time.monotonic()
+    assert driven._execute("eosh-t-sleep") == 130
+    assert time.monotonic() - started < 3
+
+
+@pytest.mark.requires_real_stdio
+def test_ctrl_c_during_run_interactive_is_the_programs(driven):
+    @command_registry.command("eosh-t-wrap", pass_context=True)
+    def wrap(ctx):
+        status = ctx.run_interactive(["sh", "-c", "echo child-up; sleep 5"])
+        print(f"after {status}")
+
+    driven.keys = [("child-up", b"\x03")]
+    assert driven._execute("eosh-t-wrap") == 0
+    assert "after 130" in _output(driven.slots[0])

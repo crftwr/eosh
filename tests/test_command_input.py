@@ -1,21 +1,16 @@
 """Tests for reading user input from a command — ctx.input / ctx.input_block.
 
-Both read the raw key stream (discussion #38): off the slot's key buffer,
-which the forwarding loop feeds, or — on the main thread — the terminal
-itself.  ``_read_typed`` does the line assembly for every source.
+Both read the raw key stream (discussion #38) of the command's terminal —
+its slot's PTY (see test_job.py), or on the main thread the terminal itself.
+``_read_typed`` does the line assembly for every source.
 """
 
 from __future__ import annotations
 
-import threading
-import time
-import types
 
 import pytest
 
-from eosh.slots import (
-    PythonCommandSlot, _read_from_user, _read_typed,
-)
+from eosh.slots import _read_from_user, _read_typed
 
 
 def _feed(*chunks: bytes):
@@ -30,10 +25,6 @@ def _line(keys: bytes) -> str:
 
 def _block(keys: bytes) -> str:
     return _read_typed(_feed(keys), "", block=True)
-
-
-def _slot() -> PythonCommandSlot:
-    return PythonCommandSlot(types.SimpleNamespace(name="stub"), [])
 
 
 # ---------------------------------------------------------------------------
@@ -128,45 +119,6 @@ def test_block_echoes_what_it_reads(capsys):
 
 
 # ---------------------------------------------------------------------------
-# From a slot: the forwarding loop's key buffer
-# ---------------------------------------------------------------------------
-
-def test_a_slot_block_reads_a_paste_that_landed_before_the_first_poll():
-    slot = _slot()
-    slot.write_stdin(b"export A=1\r\r")
-    assert slot._read_typed("", block=True) == "export A=1"
-
-
-def test_a_slot_line_ignores_keys_typed_before_the_question():
-    """Typeahead was not an answer to a question not yet asked."""
-    slot = _slot()
-    slot.write_stdin(b"y\r")            # typed while the command was busy
-
-    def answer():
-        time.sleep(0.05)
-        slot.write_stdin(b"n\r")
-
-    threading.Thread(target=answer, daemon=True).start()
-    assert slot._read_typed("", block=False) == "n"
-
-
-def test_a_slot_marks_itself_reading_so_ctrl_c_reaches_the_reader():
-    slot = _slot()
-    seen = []
-
-    def answer():
-        time.sleep(0.05)
-        seen.append(slot._reading_input)
-        slot.write_stdin(b"\x03")
-
-    threading.Thread(target=answer, daemon=True).start()
-    with pytest.raises(KeyboardInterrupt):
-        slot._read_typed("", block=False)
-    assert seen == [True]
-    assert slot._reading_input is False
-
-
-# ---------------------------------------------------------------------------
 # Fallbacks — no terminal to read keys from
 # ---------------------------------------------------------------------------
 
@@ -179,16 +131,6 @@ def test_block_falls_back_to_input_without_a_terminal(monkeypatch):
     lines = iter(["export A=1", "export B=2", "", "later"])
     monkeypatch.setattr("builtins.input", lambda *a: next(lines))
     assert _read_from_user("", block=True) == "export A=1\nexport B=2"
-
-
-def test_block_falls_back_to_input_in_a_slot_when_stdin_is_not_a_terminal(monkeypatch):
-    slot = _slot()
-    monkeypatch.setattr("eosh.slots._current_slot",
-                        types.SimpleNamespace(slot=slot))
-    monkeypatch.setattr("eosh.slots._stdin_is_tty", lambda: False)
-    lines = iter(["export A=1", ""])
-    monkeypatch.setattr("builtins.input", lambda *a: next(lines))
-    assert _read_from_user("", block=True) == "export A=1"
 
 
 # ── Ctrl+] where nothing can park the command (discussion #76) ─────────────
