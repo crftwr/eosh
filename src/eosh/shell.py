@@ -40,7 +40,7 @@ from .completion import (
     get_argcomplete_fallback,
 )
 from .variables import EnvVar, registry as var_registry, VarCompleter
-from .command_context import CommandContext, ShellView
+from .command_context import CommandContext, ShellView, SubshellContext
 from .context import ContextManager
 from .history import HistoryStore, norm_dir
 from .lineedit import CONTEXT_CHANGED_SENTINEL, LineEditor
@@ -1516,6 +1516,17 @@ class Shell(ContextSwitcher):
         starts in, which it keeps if it is sent to the background."""
         return CommandContext(self.context_manager, self.context_manager.current(), self)
 
+    @staticmethod
+    def _thread_ctx() -> CommandContext | None:
+        """The ctx this thread's work runs in, when it isn't simply the
+        current context: a pipeline stage's (a subshell, for a decorator
+        body), else its line's on a slot (``job.ctx``)."""
+        ctx = getattr(_job_local, "ctx", None)
+        if ctx is None:
+            job = getattr(_job_local, "job", None)
+            ctx = job.ctx if job is not None else None
+        return ctx
+
     # --- hooks ----------------------------------------------------------------
 
     def _observed_state(self) -> tuple[str | None, str | None]:
@@ -1648,8 +1659,9 @@ class Shell(ContextSwitcher):
         # the thread-local routers installed in __init__.
 
         # Whose cwd and environment the stages get: the line's context on a
-        # slot (it may not be the current one by now), else the process's.
-        line_ctx = job.ctx if job is not None else None
+        # slot (it may not be the current one by now), or a decorator body's
+        # stage (a subshell), else the process's.
+        line_ctx = self._thread_ctx()
         cwd = line_ctx.cwd if line_ctx is not None else os.getcwd()
 
         def stage_env(prefix: dict[str, str]) -> dict[str, str]:
@@ -1660,6 +1672,14 @@ class Shell(ContextSwitcher):
             return env
 
         n = len(stages)
+
+        def stage_ctx() -> CommandContext:
+            # Each stage of `a | b` is a subshell, as in bash: `cd x | cat`
+            # and `var X=1 | cat` change nothing (discussion #85).  A lone
+            # stage — redirected, or a decorator's body — runs in the shell.
+            base = line_ctx or self._command_context()
+            return SubshellContext(base) if n > 1 else base
+
         # The status when nothing could be started (a lone command not found).
         unstarted_status = 0
         pipe_fds: list[tuple[int, int]] = []
@@ -1699,6 +1719,7 @@ class Shell(ContextSwitcher):
                     stdin_fd=stdin_fd_pipe,
                     stdout_fd=stdout_fd_pipe,
                     job=job,
+                    ctx=stage_ctx(),
                     decorator=True,
                 )
                 workers.append(worker)
@@ -1773,8 +1794,7 @@ class Shell(ContextSwitcher):
                     # work, so its pipe ends close and its status is 2.
                     fn = lambda name=cmd.name, env=env_prefix: self._env_prefix_refused(name, env)
                 else:
-                    fn = (lambda cmd=cmd, args=tokens[1:],
-                          ctx=line_ctx or self._command_context():
+                    fn = (lambda cmd=cmd, args=tokens[1:], ctx=stage_ctx():
                           cmd.invoke(args, ctx=ctx))
                 worker = self._start_stage_thread(
                     label=cmd.name,
@@ -1807,8 +1827,8 @@ class Shell(ContextSwitcher):
                             stdin=stdin_arg,
                             stdout=stdout_arg,
                             stderr=stderr_dst,
-                            env=self._merged_env(env_prefix),
-                            cwd=os.getcwd(),
+                            env=stage_env(env_prefix),
+                            cwd=cwd,
                         )
                 except FileNotFoundError:
                     if n == 1 and not _in_outer_pipe:
@@ -2012,6 +2032,7 @@ class Shell(ContextSwitcher):
         stdout_file=None,
         stderr_dst=None,
         job: PipelineSlot | None = None,
+        ctx: CommandContext | None = None,
         decorator: bool = False,
     ) -> "_PyStageHandle":
         """Run *fn* — a Python command or a decorator — as one pipeline stage.
@@ -2022,7 +2043,9 @@ class Shell(ContextSwitcher):
         ``sys.stdin`` / ``sys.stdout`` / ``sys.stderr`` for the duration of
         *fn*.  A decorator body that re-enters ``_execute_pipeline`` through
         ``Pipeline.run()`` inherits that binding, so its output flows on to
-        the next stage.  The exit status comes from :func:`run_handler`.
+        the next stage, and runs in *ctx* (the stage's own, a subshell in a
+        multi-command pipeline).  The exit status comes from
+        :func:`run_handler`.
         """
         # Exactly one of (stdin_fd, stdin_file) is set when this stage has
         # any stdin source, and similarly for stdout.  Neither means the
@@ -2065,6 +2088,7 @@ class Shell(ContextSwitcher):
             _in_pipeline.flag = True
             _in_pipeline.on_terminal = on_terminal
             _job_local.job = job        # a decorator body joins the slot
+            _job_local.ctx = ctx        # … and runs in the stage's ctx
             try:
                 if in_wrapper is not None:
                     sys.stdin.set_override(in_wrapper)
@@ -2099,6 +2123,7 @@ class Shell(ContextSwitcher):
                 _in_pipeline.flag = False
                 _in_pipeline.on_terminal = False
                 _job_local.job = None
+                _job_local.ctx = None
                 handle.done.set()
 
         t = threading.Thread(target=_target, name=f"pipe-{label}", daemon=True)
@@ -2122,7 +2147,7 @@ class Shell(ContextSwitcher):
             print(f"eosh: unknown decorator: @{decorator_call.name}{hint}", file=sys.stderr)
             return 127
         return deco.invoke(decorator_call.flag_tokens, decorator_call.body,
-                           ctx=self._command_context())
+                           ctx=self._thread_ctx() or self._command_context())
 
     def _execute_decorator_stage(self, stage: Stage) -> int:
         """Run a lone ``@name`` stage on the main thread."""

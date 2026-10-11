@@ -217,25 +217,15 @@ def test_talking_to_the_user_refuses_inside_pipeline_thread():
 
 
 # ---------------------------------------------------------------------------
-# Stateful built-ins: the in-process model lets these mutate the parent
-# (POSIX shells discard them; eosh does not — documented in
-# doc/limitations.md as accepted behaviour).
+# Stateful built-ins: each stage of a pipeline is a subshell, as in bash
+# (discussion #85) — its changes are discarded.
 # ---------------------------------------------------------------------------
 
-def test_var_in_pipeline_mutates_parent(shell):
-    """`var FOO=bar | cat` actually sets FOO in the parent process.
-
-    The Python `var` builtin runs in the pipeline thread and writes to
-    os.environ, which is shared.  This is the documented divergence
-    from POSIX shells.
-    """
-    if "_T_PIPED_VAR" in os.environ:
-        del os.environ["_T_PIPED_VAR"]
+def test_var_in_pipeline_does_not_mutate_parent(shell):
+    """`var FOO=bar | cat` sets FOO in the stage's subshell only."""
+    os.environ.pop("_T_PIPED_VAR", None)
     shell._execute("var _T_PIPED_VAR=hello | cat")
-    try:
-        assert os.environ.get("_T_PIPED_VAR") == "hello"
-    finally:
-        os.environ.pop("_T_PIPED_VAR", None)
+    assert "_T_PIPED_VAR" not in os.environ
 
 
 # ---------------------------------------------------------------------------

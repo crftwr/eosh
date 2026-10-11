@@ -465,9 +465,10 @@ verbatim to decorator bodies, because they *are* Python commands:
   the terminal. They raise `RuntimeError`. A decorator that wants to
   launch an interactive subprocess has to refuse, or fall back to
   non-interactive execution, when invoked from a piped context.
-- **Stateful effects mutate the parent.** `@as NAME {...}` switching
-  contexts persists, even if invoked inside a pipeline. Same as the
-  built-in `cd | tee log` quirk; treat as the cost of in-process.
+- **Only `ctx` is a subshell.** A decorator in a pipeline gets the
+  stage's subshell `ctx`, and its body runs in it: `@time {cd x} | cat`
+  changes nothing. Effects outside `ctx` persist — an `@as NAME {...}`
+  switching contexts would switch them even inside a pipeline.
 
 **4. Ctrl+C handling is mostly solved.** The pipeline driver already
 catches `KeyboardInterrupt` and closes pipe ends to unblock I/O-bound

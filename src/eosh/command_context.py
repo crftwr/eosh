@@ -13,7 +13,10 @@
               return 1
           return ctx.run_interactive(["make", "deploy", f"TARGET={target}"])
 
-Both are bound to the context the command **started in**, not to whichever
+* :class:`SubshellContext` — what a stage of a multi-command pipeline gets
+  instead: its changes stay in the stage (``cd x | cat`` changes nothing).
+
+All three are bound to the context the command **started in**, not to whichever
 context is current when they are asked: a command left running in the
 background (Ctrl+]) still reads and writes its own context's variables and
 directory, so a script started in ``prod`` can never change ``staging``.
@@ -190,12 +193,75 @@ class CommandContext(ShellView):
                 os.chdir(path)
                 os.environ["PWD"] = os.getcwd()
                 return os.getcwd()
-            target = os.path.normpath(os.path.join(self._context.cwd, path))
-            if not os.path.exists(target):
-                raise FileNotFoundError(2, "No such file or directory", path)
-            if not os.path.isdir(target):
-                raise NotADirectoryError(20, "Not a directory", path)
-            if not os.access(target, os.X_OK):
-                raise PermissionError(13, "Permission denied", path)
+            target = _resolve_dir(self._context.cwd, path)
             self._context.cwd = target
             return target
+
+
+class SubshellContext(CommandContext):
+    """The ``ctx`` of one stage of a multi-command pipeline: a subshell.
+
+    POSIX shells run each stage of ``a | b`` in a subshell, so ``cd x | cat``
+    and ``var X=1 | cat`` change nothing once the line is over.  This is
+    that: it reads as its *parent* does until it writes, and its writes
+    (``set_var``, ``unset_var``, ``chdir``) stay in it — later reads and the
+    stage's own children see them, the context never does.  Every stage
+    gets one of its own, as bash does (zsh and ksh run the last stage in
+    the shell itself).
+    """
+
+    def __init__(self, parent: CommandContext) -> None:
+        super().__init__(parent._manager, parent._context, parent._shell)
+        self._parent = parent
+        self._cwd: str | None = None
+        self._env: dict[str, str | None] = {}   # environment keys written here
+        self._py: dict[str, str | None] = {}    # PyVar / GlobalVar values written here
+
+    @property
+    def cwd(self) -> str:
+        return self._cwd if self._cwd is not None else self._parent.cwd
+
+    def environ(self) -> dict[str, str]:
+        env = self._parent.environ()
+        for key, value in self._env.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        return env
+
+    def get_var(self, name: str) -> str | None:
+        keys = self._shell._env_keys_for(name)
+        if keys is None:
+            if name in self._py:
+                return self._py[name]
+        elif keys[0] in self._env:
+            return self._env[keys[0]]
+        return self._parent.get_var(name)
+
+    def set_var(self, name: str, value: str | None) -> None:
+        keys = self._shell._env_keys_for(name)
+        if keys is None:
+            self._py[name] = value
+        else:
+            for key in keys:
+                self._env[key] = value
+
+    def unset_var(self, name: str) -> None:
+        self.set_var(name, None)
+
+    def chdir(self, path: str) -> str:
+        self._cwd = _resolve_dir(self.cwd, os.path.expanduser(path))
+        return self._cwd
+
+
+def _resolve_dir(base: str, path: str) -> str:
+    """*path* relative to *base*, refused as ``os.chdir`` would refuse it."""
+    target = os.path.normpath(os.path.join(base, path))
+    if not os.path.exists(target):
+        raise FileNotFoundError(2, "No such file or directory", path)
+    if not os.path.isdir(target):
+        raise NotADirectoryError(20, "Not a directory", path)
+    if not os.access(target, os.X_OK):
+        raise PermissionError(13, "Permission denied", path)
+    return target

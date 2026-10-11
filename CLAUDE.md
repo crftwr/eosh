@@ -595,6 +595,8 @@ Two objects, so user code never holds a live internal (`Context`, a slot, the
   `run_interactive(argv, **popen_kwargs)`, `set_var(name, value)`,
   `unset_var(name)`, `chdir(path)`, and `environ()` (the context's whole
   environment, on `ShellView`).
+- **`SubshellContext(CommandContext)`** — a pipeline stage's `ctx`: writes
+  stay in it (see below).
 
 ```python
 @registry.command("deploy", params=[arg("env")], pass_context=True)
@@ -623,6 +625,16 @@ on these, which is why they need no `sync`. A `GlobalVar` is one value everywher
 `ContextManager.lock`, which `switch` / `remove` / `set_variable` also take,
 since they happen on the command's thread while the main thread may be
 switching.
+
+**A pipeline stage is a subshell.** Each stage of a multi-command pipeline
+gets a `SubshellContext` of its own (`command_context.py`, built in
+`Shell._execute_pipeline`), as bash runs every stage in a subshell: it reads
+as its parent until it writes, and its writes stay in it — the stage and the
+programs it starts see them, the context never does. So `cd x | cat` and
+`var X=1 | cat` change nothing (discussion #85). A lone stage — redirected
+(`cd x > log`) or a decorator body — runs in the shell itself. A decorator
+that is a stage gets the subshell too, and its body runs in it
+(`_job_local.ctx`, read by `Shell._thread_ctx`).
 
 #### Why the user-facing methods exist: one reader for real stdin
 
