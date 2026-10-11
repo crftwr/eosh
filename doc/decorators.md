@@ -636,7 +636,8 @@ Open questions are tracked in
    resolves the decorator, runs its argparse, calls
    `deco.func(body_pipeline, **kwargs)`. `SystemExit` propagates;
    `KeyboardInterrupt` exits 130; other exceptions print and exit 1;
-   unknown decorator name returns 127.  On a POSIX terminal a lone
+   unknown decorator name returns 127, naming the closest one (`@watche` →
+   did you mean `@watch`?).  On a POSIX terminal a lone
    decorator stage doesn't come here: like any pipeline it runs on a
    `PipelineSlot` (one PTY, parkable with Ctrl+]), on a stage thread whose
    stdio is that PTY — so its body, and `ctx.input` / `ctx.choose` /

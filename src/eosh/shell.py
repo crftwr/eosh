@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import difflib
 import io
 import os
 import re
@@ -2110,7 +2111,10 @@ class Shell(ContextSwitcher):
         """
         deco = self.registry.get(f"@{decorator_call.name}")
         if deco is None:
-            print(f"eosh: unknown decorator: @{decorator_call.name}", file=sys.stderr)
+            known = [n for n in self.registry.list_commands() if n.startswith("@")]
+            close = difflib.get_close_matches(f"@{decorator_call.name}", known, n=1)
+            hint = f" (did you mean {close[0]}?)" if close else ""
+            print(f"eosh: unknown decorator: @{decorator_call.name}{hint}", file=sys.stderr)
             return 127
         return deco.invoke(decorator_call.flag_tokens, decorator_call.body,
                            ctx=self._command_context())
