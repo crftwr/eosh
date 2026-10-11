@@ -288,13 +288,48 @@ def test_unmatched_brace_is_rejected(watch_deco):
         parse_line("@watch {ls")
 
 
-def test_seq_after_close_brace_is_rejected(watch_deco):
-    """``@deco {body} ; pwd`` mixes a decorator scope with the outer
-    sequence grammar — only ``|`` composition is supported in the MVP."""
-    with pytest.raises(DecoratorParseError, match="not supported"):
-        parse_line("@watch {ls} ; pwd")
-    with pytest.raises(DecoratorParseError, match="not supported"):
-        parse_line("@watch {ls} && pwd")
+@pytest.mark.parametrize("op", [";", "&&", "||"])
+def test_the_line_goes_on_after_a_braced_scope(watch_deco, op):
+    """``@deco {body} ; pwd``: the scope ends at ``}``, the sequence goes on
+    (discussion #67)."""
+    seq = parse_line(f"@watch {{ls}} {op} pwd")
+    assert [o for o, _ in seq.items] == [None, op]
+    assert seq.items[0][1].stages[0].decorator.name == "watch"
+    assert seq.items[1][1].stages[0].text == "pwd"
+
+
+def test_pipe_stages_then_the_sequence_after_a_scope(watch_deco):
+    seq = parse_line("@watch {ls} | grep a && pwd")
+    first, second = seq.items
+    assert [st.text for st in first[1].stages] == ["", "grep a"]
+    assert second == ("&&", second[1]) and second[1].stages[0].text == "pwd"
+
+
+def test_a_decorator_after_an_operator(watch_deco):
+    seq = parse_line("make && @watch {ls | wc -l}")
+    deco = seq.items[1][1].stages[0].decorator
+    assert seq.items[1][0] == "&&"
+    assert deco.name == "watch" and [st.text for st in deco.body.stages] == ["ls", "wc -l"]
+
+
+def test_stacked_decorators_nest_outside_in():
+    """``@time @retry -n 3 cmd``: @time's body is the @retry call."""
+    from eosh.decorators import register_builtins
+    register_builtins()
+    seq = parse_line("@time @retry -n 3 flaky")
+    outer = seq.items[0][1].stages[0].decorator
+    inner = outer.body.stages[0].decorator
+    assert (outer.name, inner.name) == ("time", "retry")
+    assert inner.flag_tokens == ["-n", "3"]
+    assert inner.body.stages[0].text == "flaky"
+
+
+def test_stacked_decorators_run_outside_in(capfd):
+    sh = Shell()
+    assert sh._execute("@time @quiet {echo hidden | cat}") == 0
+    out, err = capfd.readouterr()
+    assert "hidden" not in out          # @quiet ran inside @time
+    assert "real" in err                # @time reported around it
 
 
 def test_text_after_close_brace_without_pipe_is_rejected(watch_deco):
@@ -498,13 +533,13 @@ def test_shell_execute_swallows_decorator_parse_error(capsys, watch_deco):
     assert "unmatched" in err
 
 
-def test_shell_execute_swallows_decorator_composition_seq_error(capsys, watch_deco):
-    """``@deco {body} ; pwd`` is rejected — only ``|`` composition is
-    supported.  The parse error must not crash the shell."""
+def test_shell_execute_swallows_text_after_a_scope_error(capsys, watch_deco):
+    """Text after `}` that isn't an operator is a parse error; it must not
+    crash the shell."""
     sh = Shell()
-    sh._execute("@watch {ls} ; pwd")
+    sh._execute("@watch {ls} grep foo")
     err = capsys.readouterr().err
-    assert "not supported" in err
+    assert "must start with" in err
 
 
 # ---------------------------------------------------------------------------
@@ -848,3 +883,11 @@ def test_a_redirect_after_a_braced_body_is_refused():
     nothing to bind to: put it inside, or pipe the decorator's output."""
     with pytest.raises(DecoratorParseError, match="must start with `|`"):
         parse_line("@time {echo x} > out.txt")
+
+
+def test_a_stacked_decorator_completes_like_the_first():
+    sh = Shell()
+    comps, prefix, _ = sh._get_completions("@time @ret")
+    assert prefix == "@ret" and [c.value for c in comps] == ["@retry"]
+    comps, _, _ = sh._get_completions("@time @retry -")
+    assert "--attempts" in [c.value for c in comps]

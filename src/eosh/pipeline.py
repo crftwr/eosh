@@ -519,10 +519,16 @@ def _extract_decorator_prefix(line: str) -> tuple[DecoratorCall | None, str]:
         # with `-`.  Trust that the body parser handles it.
         pass
 
-    # Body: braced or bare?
+    # Body: another decorator (stacking), braced, or bare?
     body_text_stripped = body_text.lstrip()
     remainder_after = ""
-    if body_text_stripped.startswith("{"):
+    if body_text_stripped.startswith("@") and _DECORATOR_NAME_RE.match(body_text_stripped):
+        # `@time @retry -n 3 cmd`: the inner decorator is this one's body,
+        # outside in, as Python decorators stack; what follows the inner
+        # scope follows this one too.
+        inner, remainder_after = _extract_decorator_prefix(body_text_stripped)
+        body_pipeline = Pipeline(stages=[Stage(text="", decorator=inner)])
+    elif body_text_stripped.startswith("{"):
         # Find the matching brace
         ws_offset = len(body_text) - len(body_text_stripped)
         open_pos = ws_offset
@@ -538,27 +544,15 @@ def _extract_decorator_prefix(line: str) -> tuple[DecoratorCall | None, str]:
         # Bare single-command body — operators are rejected.
         body_pipeline = _parse_bare_body(body_text_stripped, decorator_name=name)
 
-    # Validate the remainder: only a `|`-prefixed continuation is allowed in
-    # the MVP.  ``;``/``&&``/``||`` after a decorator scope are rejected so
-    # the outer-sequence interaction stays well-defined for a follow-up
-    # commit (see "Composing decorators inside larger pipelines" in
-    # doc/decorators.md).
+    # What follows the scope continues the line: more pipe stages
+    # (`@deco {…} | next`) or the next item of the sequence (`@deco {…} &&
+    # other`).  Anything else — a redirect, a word — has nothing to bind to.
     remainder_stripped = remainder_after.strip()
-    if remainder_stripped:
-        # Use the same operator splitter as the rest of the parser so quote
-        # / escape handling matches.  Reject `;`/`&&`/`||` here.
-        seq_parts = split_on_operators(remainder_stripped, [";", "&&", "||"])
-        if len(seq_parts) > 1:
-            bad_op = seq_parts[1][0]
-            raise DecoratorParseError(
-                f"@{name}: {bad_op!r} after decorator scope is not supported "
-                f"yet (only `|` composition is allowed)"
-            )
-        if not remainder_stripped.startswith("|"):
-            raise DecoratorParseError(
-                f"@{name}: text after closing '}}' must start with `|` "
-                f"(decorator composition); got {remainder_stripped!r}"
-            )
+    if remainder_stripped and not remainder_stripped.startswith(("|", ";", "&")):
+        raise DecoratorParseError(
+            f"@{name}: text after closing '}}' must start with `|`, `;`, `&&` "
+            f"or `||`; got {remainder_stripped!r} (a redirect goes inside the braces)"
+        )
 
     return DecoratorCall(name=name, flag_tokens=flag_tokens, body=body_pipeline), remainder_stripped
 
@@ -613,48 +607,56 @@ def _parse_bare_body(text: str, *, decorator_name: str) -> Pipeline:
 # Top-level parser
 # ---------------------------------------------------------------------------
 
-def parse_line(line: str) -> Sequence:
-    """Parse a raw shell line into a Sequence of Pipelines."""
-    # Decorator-prefix handling: peel off any leading @name [flags] body
-    # before the normal pipeline grammar runs.
-    deco_call, line = _extract_decorator_prefix(line)
-    if deco_call is not None:
-        # If there is no remainder, the decorator wrapped the whole line:
-        # build a one-stage Pipeline whose stage is "invoke this decorator".
-        deco_stage = Stage(text="", redirects=[], decorator=deco_call)
-        if not line:
-            return Sequence(items=[(None, Pipeline(stages=[deco_stage]))])
+_SEQ_OPS = [";", "&&", "||"]
 
-        # Composition: the remainder starts with `|` (validated upstream).
-        # Drop the leading `|` and parse the rest as additional pipe stages,
-        # then prepend the decorator-stage.
-        rest_text = line[1:]
-        pipe_parts = split_on_operators(rest_text, ["|"])
-        stages: list[Stage] = [deco_stage]
-        for _, stage_text in pipe_parts:
-            stage_text = stage_text.strip()
-            if not stage_text:
-                continue
-            cleaned, redirects = _extract_redirects(stage_text)
-            stages.append(Stage(text=cleaned.strip(), redirects=redirects))
-        return Sequence(items=[(None, Pipeline(stages=stages))])
 
-    seq_parts = split_on_operators(line, [";", "&&", "||"])
-    items: list[tuple[str | None, Pipeline]] = []
+def _split_first(text: str) -> tuple[str, str | None, str]:
+    """``(head, op, tail)``: *text* split at its first top-level `;` / `&&`
+    / `||` (quote-aware); ``op`` is None when there is none."""
+    parts = split_on_operators(text, _SEQ_OPS)
+    if len(parts) == 1:
+        return text, None, ""
+    head, op = parts[0][1], parts[1][0]
+    return head, op, text[len(head) + len(op):]
 
-    for op, part in seq_parts:
-        part = part.strip()
-        if not part:
+
+def _pipe_stages(text: str) -> list[Stage]:
+    stages: list[Stage] = []
+    for _, stage_text in split_on_operators(text, ["|"]):
+        stage_text = stage_text.strip()
+        if not stage_text:
             continue
-        pipe_parts = split_on_operators(part, ["|"])
-        stages: list[Stage] = []
-        for _, stage_text in pipe_parts:
-            stage_text = stage_text.strip()
-            if not stage_text:
-                continue
-            cleaned, redirects = _extract_redirects(stage_text)
-            stages.append(Stage(text=cleaned.strip(), redirects=redirects))
+        cleaned, redirects = _extract_redirects(stage_text)
+        stages.append(Stage(text=cleaned.strip(), redirects=redirects))
+    return stages
+
+
+def parse_line(line: str) -> Sequence:
+    """Parse a raw shell line into a Sequence of Pipelines.
+
+    One item at a time, so that an item starting with a decorator — first or
+    after `;` / `&&` / `||` — is peeled off with its braced scope intact
+    before the rest of the line is split.
+    """
+    items: list[tuple[str | None, Pipeline]] = []
+    op: str | None = None
+    rest = line
+    while rest.strip():
+        deco_call, after = _extract_decorator_prefix(rest)
+        if deco_call is not None:
+            # `@deco {…} | more | stages && next`: the decorator stands in
+            # as the first stage of its pipeline.
+            stages = [Stage(text="", redirects=[], decorator=deco_call)]
+            head, next_op, tail = _split_first(after)
+            head = head.strip()
+            if head:
+                stages.extend(_pipe_stages(head[1:]))      # after the `|`
+        else:
+            head, next_op, tail = _split_first(rest)
+            stages = _pipe_stages(head)
         if stages:
             items.append((op, Pipeline(stages=stages)))
-
+        if next_op is None:
+            break
+        op, rest = next_op, tail
     return Sequence(items=items)
