@@ -38,13 +38,17 @@ with Ctrl+]), and such a nested `subprocess` still writes to eosh's real
 fd 1 — past the slot, so it isn't buffered while the line is parked and
 lands in whichever context is in front.
 
-**Stateful built-ins mutate the parent in pipelines.**
+**A pipeline stage is a subshell only through `ctx`.**
 
-`cd | tee log` actually changes the shell's CWD; `var X=1 | …` actually
-sets the variable; `context new x | …` actually creates a context. POSIX
-shells run each stage in a subshell, so these mutations are normally
-discarded — eosh does not. Treat this as the cost of the in-process
-model: the change is visible.
+Each stage of a multi-command pipeline gets a `ctx` of its own whose
+writes are discarded, as bash runs every stage in a subshell:
+`cd x | cat`, `var X=1 | cat` and `source-bash … | cat` change nothing
+(discussion #85). That covers what goes through `ctx` (`chdir`,
+`set_var`, `unset_var`) — not what a stage does to the process itself.
+A Python command that calls `os.chdir` or writes `os.environ` directly
+still changes the shell, and the shell-wide built-ins still act on the
+whole shell: `context new x | cat` creates the context, `alias … | cat`
+defines the alias.
 
 **Pure-CPU loops in a Python command can't be Ctrl+C'd in a pipeline.**
 
