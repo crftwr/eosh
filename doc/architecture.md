@@ -13,7 +13,7 @@
 │  ├── PTY process multiplexing (process.py)         │
 │  ├── Python-command slots (slots.py)               │
 │  ├── Pipeline slots + job leader (job.py)          │
-│  └── Context switch TUI (tui.py)                   │
+│  └── Context switch TUI (switcher.py, tui.py)      │
 ├─────────────────────────────────────────────────────┤
 │  Command Registry (commands.py)                     │
 │  ├── Built-in commands                             │
@@ -290,7 +290,8 @@ eosh/
 │       ├── __main__.py         # entry point (calls Shell().run())
 │       ├── _config.py          # bundled default ~/.eosh/config.py template
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
-│       ├── slots.py            # Python-command slots, thread-local stdio, run_handler
+│       ├── switcher.py         # Ctrl+] context switcher (a Shell mixin)
+│       ├── slots.py            # Python stages, thread-local stdio, run_handler
 │       ├── commands.py         # command registry, @command decorator, arg() builder, CmdParser, sub-command tree
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
 │       ├── completion.py       # Completer ABC, CompletionContext, built-in completers, cobra/argcomplete fallbacks
@@ -355,7 +356,7 @@ eosh/
 
 These are not bugs and they are not blocking work. They are the architectural rough edges that have accumulated as features (Python pipelines, decorators, passthrough subprocesses) layered on top of the original PTY-multiplexing core. Each is tracked in more detail in [discussion #70](https://github.com/crftwr/eosh/discussions/70).
 
-- **`shell.py` is ~2600 lines** and still hosts three concerns that are conceptually separate: the per-stage pipeline executor (`_execute_pipeline`, `_execute_stage`, redirect plumbing); the raw-mode forwarding loop (`_forward`) and the Ctrl+] switcher; and the actual REPL + built-ins + completion glue. (The Python-command slot family moved to `slots.py`.) Everything else in the package is right-sized.
+- **`shell.py` is ~2400 lines** and still hosts two concerns that are conceptually separate: the pipeline executor (`_execute_pipeline`, `_execute_stage`, `_run_on_slot`, redirect plumbing) and the actual REPL + built-ins + completion glue. (The Python-command plumbing moved to `slots.py`, the line slot to `job.py`, the Ctrl+] switcher to `switcher.py`.) Everything else in the package is right-sized.
 - **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_in_pipeline` / `_job_local` thread-locals consumed by `CommandContext`'s methods (via `slots._run_interactive` / `_read_from_user` / `_choose`) are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
 - **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.
 
