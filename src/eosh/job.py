@@ -23,6 +23,7 @@ POSIX only, like every PTY slot.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -237,6 +238,9 @@ class PipelineSlot(PtySlot):
         # Stages start from more than one thread (a decorator body spawns
         # from its stage's thread): one leader, one request at a time.
         self._spawn_lock = threading.Lock()
+        # >0 while a Python stage waits on a ctx.run_interactive() program:
+        # Ctrl+C is then the program's alone.
+        self._interactive = 0
         self._workers: list = []
         self._status = 0
         self._unread = b""
@@ -333,11 +337,24 @@ class PipelineSlot(PtySlot):
         except (OSError, termios.error):
             return True
 
+    @contextlib.contextmanager
+    def interactive(self):
+        """A Python stage is running a program for the user
+        (``ctx.run_interactive``): Ctrl+C goes to that program only."""
+        self._interactive += 1
+        try:
+            yield
+        finally:
+            self._interactive -= 1
+
     def interrupt_python_stages(self) -> None:
         """What Ctrl+C does to the Python stages (the external ones get
-        SIGINT from the line discipline)."""
+        SIGINT from the line discipline): KeyboardInterrupt for one on the
+        terminal or a decorator, its stdio closed for one in a pipe."""
+        if self._interactive:
+            return
         for w in self._workers:
-            if getattr(w, "decorator", False):
+            if getattr(w, "graceful", False):
                 w.raise_keyboard_interrupt()
             elif hasattr(w, "interrupt"):
                 w.interrupt()

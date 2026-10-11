@@ -45,11 +45,10 @@ class OutputBuffer:
 
 
 class ExitCallbackMixin:
-    """The "this slot's work ended" hook and the facts it reports, shared by
-    every slot type.
+    """The "this slot's work ended" hook and the facts it reports.
 
-    A slot's work ends on a thread the shell isn't watching — a ``PtySlot``'s
-    reader thread, ``PythonCommandSlot``'s command thread — so the shell
+    A slot's work ends on a thread the shell isn't watching — the
+    ``PtySlot``'s reader thread — so the shell
     passes its handler (*on_exit*, called with the slot) when it constructs
     the slot, and the end of the work calls it exactly once.  Wired at
     construction, before anything runs, it can't race the slot's own end.
@@ -59,9 +58,7 @@ class ExitCallbackMixin:
     A slot that never was ran in the foreground, and the line's own timing
     already covered it.
 
-    A mixin: ``PtySlot`` (here) and ``PythonCommandSlot`` (``slots.py``)
-    share nothing else; each calls :meth:`_init_exit_callback` from its own
-    constructor.
+    ``PtySlot`` calls :meth:`_init_exit_callback` from its constructor.
     """
 
     def _init_exit_callback(self, on_exit: "Callable[[object], None] | None" = None) -> None:

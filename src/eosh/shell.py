@@ -64,7 +64,6 @@ from .job import PipelineSlot
 from .colors import set_color_scheme
 from .prompt import get_prompt_func, set_prompt
 from .slots import (
-    PythonCommandSlot,
     _PyStageHandle,
     _dup_threadlocal_override_fd,
     _in_pipeline,
@@ -1576,7 +1575,7 @@ class Shell:
         the thread's rebound ``sys.stdout`` (which is the outer pipe's
         write end).  Without this, a body like ``@watch {ls}`` running
         under ``@watch {ls} | grep py`` would route through the
-        standalone-command path (``PipelineSlot`` / ``PythonCommandSlot``)
+        standalone-command path (its own ``PipelineSlot``)
         and grab the real terminal — wrong from a worker thread.
         """
         if any(x is not None for x in (stdin, stdout, stderr)):
@@ -1620,23 +1619,25 @@ class Shell:
         """
         stages = pipeline.stages
         single = stages[0] if len(stages) == 1 else None
-        # A lone stage gets the terminal (PTY / PythonCommandSlot) unless it
+        # A lone stage gets the terminal (its own PipelineSlot) unless it
         # has redirects.  A redirected stage is a one-stage pipeline: the
         # loop below already binds a Python stage's stdio through the
         # thread-local routers and an external one through Popen, so there
         # is no second redirect path that swaps the process-global
         # ``sys.stdout`` under every other thread.  Decorator stages keep
         # the direct path — their redirects live inside the braced body.
-        # At the top of a line, on a terminal, everything but a Python
-        # command runs on a PipelineSlot — a lone external command and a
-        # lone decorator included — so Ctrl+] can park it.
+        # At the top of a line, on a terminal, everything runs on a
+        # PipelineSlot — a lone command, external or Python, and a lone
+        # decorator included — so Ctrl+] can park it.  Only a `sync` command
+        # (one that changes the whole shell) and a line of assignments stay
+        # on the main thread.
         can_park = _top_level and not IS_WINDOWS and _stdin_is_tty()
         if (
             single is not None
             and not _in_outer_pipe
             and (not single.redirects or single.decorator is not None)
             and not (can_park and (single.decorator is not None
-                                   or not self._is_python_stage(single)))
+                                   or not self._runs_on_main_thread(single)))
         ):
             return self._execute_stage(single)
 
@@ -1877,15 +1878,15 @@ class Shell:
                                            announce_exit=lone_command)
         return self._wait_for_stages(workers)
 
-    def _is_python_stage(self, stage: Stage) -> bool:
-        """Whether a lone stage runs in eosh itself: a Python command, or a
-        line of assignments (``FOO=bar``)."""
+    def _runs_on_main_thread(self, stage: Stage) -> bool:
+        """Whether a lone stage must run on the main thread: a ``sync``
+        command (it changes the whole shell), or a line of assignments."""
         tokens = self._tokenize_stage(stage)
         if not tokens or all(self._ASSIGNMENT_RE.match(t) for t in tokens):
             return True
         _, tokens = self._split_env_prefix(tokens)
         cmd = self.registry.get(tokens[0]) if tokens else None
-        return cmd is not None and cmd.has_any_handler()
+        return cmd is not None and cmd.has_any_handler() and cmd.sync
 
     def _run_pipeline_slot(self, slot: PipelineSlot, workers: list, *,
                            announce_exit: bool = False) -> int:
@@ -1988,9 +1989,9 @@ class Shell:
 
         err_obj = stderr_dst  # a file, subprocess.STDOUT (2>&1), or None
 
-        handle = _PyStageHandle(cmd_name=label, decorator=decorator)
         # Both ends a terminal (a slot's PTY): the stage may talk to the user.
         on_terminal = _isatty(in_obj) and _isatty(out_obj)
+        handle = _PyStageHandle(cmd_name=label, graceful=decorator or on_terminal)
         in_wrapper = io.TextIOWrapper(in_obj, encoding="utf-8", errors="replace") if in_obj is not None else None
         out_wrapper = io.TextIOWrapper(out_obj, encoding="utf-8", errors="replace", write_through=True) if out_obj is not None else None
         err_wrapper = None
@@ -2070,11 +2071,11 @@ class Shell:
     def _execute_stage(self, stage: Stage) -> int:
         """Execute a lone stage with no redirects on the terminal.
 
-        A Python command gets a ``PythonCommandSlot``, so it can be
-        backgrounded with Ctrl+].  On a POSIX terminal an external command
-        and a redirected stage never reach here — :meth:`_execute_pipeline`
-        runs them on a ``PipelineSlot``; without one (Windows, no tty) an
-        external command inherits the terminal.  Returns the exit code.
+        On a POSIX terminal only a ``sync`` command and a line of
+        assignments reach here — :meth:`_execute_pipeline` runs everything
+        else on a ``PipelineSlot``.  Without one (Windows, no tty) a Python
+        command runs on the main thread and an external one inherits the
+        terminal.  Returns the exit code.
         """
         if stage.decorator is not None:
             return self._execute_decorator_stage(stage)
@@ -2106,36 +2107,15 @@ class Shell:
         if cmd and env_prefix:
             return self._env_prefix_refused(command_name, env_prefix)
         if cmd:
-            if IS_WINDOWS or cmd.sync or not _stdin_is_tty():
-                # On the main thread: a `sync` command (the built-ins that
-                # change the whole shell), every command on Windows, which
-                # lacks the PTY-backed slot used for thread-based context
-                # switching, and every command when stdin isn't a terminal —
-                # there is no Ctrl+] to send it anywhere, and no terminal for
-                # the forwarding loop to hold.  ctx.run_interactive falls
-                # back to subprocess.run and ctx.input reads the terminal
-                # directly, since no slot is registered.
-                return run_handler(lambda: cmd.invoke(args, ctx=self._command_context()),
-                                   command_name,
-                                   announce_interrupt=True)
-            else:
-                # Interactive Python command — run in a thread so Ctrl+] works.
-                ctx = self.context_manager.current()
-                slot = PythonCommandSlot(cmd, args, on_exit=self._slot_finished,
-                                         ctx=self._command_context())
-                slot.start()
-                result = self._forward(slot)
-                if result == "switched":
-                    slot.deactivate()
-                    if ctx is not None:
-                        self._park(slot, ctx)
-                    self._handle_switch()
-                    return 0
-                if result == "interrupted":
-                    print(f"{command_name}: interrupted")
-                    return 130
-                slot.deactivate()
-                return slot.exit_code or 0
+            # On the main thread: a `sync` command (the built-ins that change
+            # the whole shell), and every command on Windows or when stdin
+            # isn't a terminal — on a POSIX terminal any other command runs
+            # on a PipelineSlot (see _execute_pipeline).  ctx.run_interactive
+            # falls back to subprocess.run and ctx.input reads the terminal
+            # directly.
+            return run_handler(lambda: cmd.invoke(args, ctx=self._command_context()),
+                               command_name,
+                               announce_interrupt=True)
 
         return self._execute_external(command_name, args, env_prefix=env_prefix)
 
@@ -2194,32 +2174,23 @@ class Shell:
     def _forward(self, slot, force_redraw: bool = False) -> str:
         """Forward the terminal to a running *slot* until it ends or is left.
 
-        One loop for both slot kinds — a ``PipelineSlot`` (external commands
-        and pipelines on their own PTY) and a ``PythonCommandSlot`` (a Python
-        command on a thread).  It holds stdin in raw mode, ignores SIGINT (the key reaches
-        the slot as a byte instead), passes window resizes on through
-        ``slot.resize`` and forwards every key with ``slot.write_stdin``:
+        Every slot is a PTY (a :class:`~eosh.job.PipelineSlot`), so this is
+        a plain relay: stdin in raw mode, SIGINT ignored (Ctrl+C reaches the
+        slot as a byte, and its line discipline makes it a signal), window
+        resizes passed on through ``slot.resize``, every key forwarded with
+        ``slot.write_stdin``.  Two keys are special:
 
           • the switch key (prompt.switch_context, Ctrl+] by default) —
             anything typed before it is still forwarded; returns 'switched'
             so the caller can park the slot
-          • Ctrl+C on a Python command that is neither running a
-            ctx.run_interactive() subprocess (which gets the byte, so SSH /
-            SSM see the interrupt) nor asking a question (whose reader turns
-            it into its own KeyboardInterrupt) — injects KeyboardInterrupt
-            into the command thread and returns 'interrupted'
+          • Ctrl+C, while the PTY treats it as an interrupt — the Python
+            stages are threads of ours, not processes, so they are told
+            separately (``interrupt_python_stages``)
 
-        A PTY child gets the terminal fully raw: its own line discipline does
-        the output processing.  A Python command writes straight to our
-        stdout, so it gets raw input but cooked output (the kernel's ONLCR
-        adds the CRs to bare LFs) — print(), pexpect output and piped
-        subprocess output all get proper line endings.  Its slot is activated
-        here, after the mode change, replaying what it printed before.
-
-        *force_redraw* sends the current size to a resumed PTY child at once.
-        Returns 'exited' when the slot finishes.
+        *force_redraw* sends the current size to a resumed slot at once.
+        Returns 'exited' when the slot finishes, handing the keys nothing
+        read back to the line editor.
         """
-        python = isinstance(slot, PythonCommandSlot)
         fd = sys.stdin.fileno()
         old_attrs = termios.tcgetattr(fd)
         old_sigint = signal.getsignal(signal.SIGINT)
@@ -2234,15 +2205,10 @@ class Shell:
                 pass
 
         try:
-            if python:
-                terminal.set_raw_input_cooked_output(fd)
-            else:
-                terminal.set_raw(fd)        # TCSADRAIN: keep keys typed ahead
+            terminal.set_raw(fd)            # TCSADRAIN: keep keys typed ahead
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGWINCH, on_resize)
-            if python:
-                slot.activate()
-            elif force_redraw:
+            if force_redraw:
                 on_resize(None, None)
 
             while slot.is_alive():
@@ -2258,17 +2224,8 @@ class Shell:
                         slot.write_stdin(data[:idx])
                     result = "switched"
                     break
-                if (python and b"\x03" in data and not slot._pty_active
-                        and not slot._reading_input):
-                    slot.deactivate()
-                    slot.kill()
-                    result = "interrupted"
-                    break
                 slot.write_stdin(data)
-                if (isinstance(slot, PipelineSlot) and b"\x03" in data
-                        and slot.ctrl_c_interrupts()):
-                    # The PTY sends SIGINT to the external stages; the
-                    # Python ones are threads of ours.
+                if b"\x03" in data and slot.ctrl_c_interrupts():
                     slot.interrupt_python_stages()
             if result == "exited":
                 # Typed ahead of the next prompt (a pasted `cd x` + `ls`):
@@ -2565,18 +2522,13 @@ class Shell:
             # User cancelled.  If a menu action (pop) changed the current
             # context, behave as if the user had switched: let run()'s resume
             # path do the right thing for the new context's slot.  Otherwise
-            # re-activate PTY slots so their reader thread can stream output
-            # again.  PythonCommandSlots stay deactivated: their buffered
-            # output will be replayed correctly the next
-            # time _forward is called from run().
+            # re-activate the slot so its reader streams output again.
             new_ctx = self.context_manager.current()
             if new_ctx is None or (new_ctx.name != original_name):
                 needs_forward = bool(new_ctx and new_ctx.process_slot)
                 return _finish(needs_forward)
             if ctx and ctx.process_slot and ctx.process_slot.is_alive():
-                slot = ctx.process_slot
-                if not isinstance(slot, PythonCommandSlot):
-                    self._resume_pty_slot(slot)
+                self._resume_pty_slot(ctx.process_slot)
             return (False, None)
 
         target_name, is_new = result
@@ -2623,46 +2575,26 @@ class Shell:
                 ctx = self.context_manager.current()
 
                 if ctx and ctx.process_slot and ctx.process_slot.is_alive():
+                    # Resume the slot parked here.
                     slot = ctx.process_slot
-                    if isinstance(slot, PythonCommandSlot):
-                        # Resume a backgrounded Python command.
-                        result = self._forward(slot)
-                        slot.deactivate()
-                        if result == "switched":
-                            self._handle_switch()
-                            continue
-                        elif result == "interrupted":
-                            ctx.process_slot = None
-                            print(f"{slot.argv[0]}: interrupted")
-                            continue
-                        else:
-                            # Its exit handler already notified; an error
-                            # was reported on the slot's own stderr.
-                            ctx.process_slot = None
-                            continue
-                    else:
-                        # Resume a PTY subprocess.
-                        self._resume_pty_slot(slot)
-                        result = self._forward(slot, force_redraw=True)
-                        slot.deactivate()
-                        if result == "switched":
-                            self._handle_switch()
-                            continue
-                        else:
-                            exit_code = slot.exit_code
-                            ctx.process_slot = None
-                            if exit_code and exit_code != 0:
-                                print(f"\n[Process exited with code {exit_code}]")
-                            continue
+                    self._resume_pty_slot(slot)
+                    result = self._forward(slot, force_redraw=True)
+                    slot.deactivate()
+                    if result == "switched":
+                        self._handle_switch()
+                        continue
+                    exit_code = slot.exit_code
+                    ctx.process_slot = None
+                    if exit_code and exit_code != 0:
+                        print(f"\n[Process exited with code {exit_code}]")
+                    continue
 
                 if ctx and ctx.process_slot and not ctx.process_slot.is_alive():
                     slot = ctx.process_slot
                     slot.replay_buffer()
                     exit_code = slot.exit_code
                     ctx.process_slot = None
-                    if isinstance(slot, PythonCommandSlot) and exit_code == 130:
-                        print(f"{slot.argv[0]}: killed")
-                    elif exit_code and exit_code != 0:
+                    if exit_code and exit_code != 0:
                         print(f"\n[Process exited with code {exit_code}]")
 
                 # Anything a resumed or finished slot changed.

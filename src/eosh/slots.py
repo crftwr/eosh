@@ -1,20 +1,19 @@
-"""Python commands on threads: the slot a command runs in, and the plumbing
-that lets it share one terminal with the shell.
+"""Python commands on threads: the plumbing that lets a command run on a
+thread of the shell's own process and still have a terminal of its own.
+
+A Python command typed at a POSIX terminal runs as a stage of its line's
+:class:`~eosh.job.PipelineSlot`, on a thread whose ``sys.std*`` are that
+slot's PTY — just as an external command's fds are (discussion #76).
 
 * :class:`_ThreadLocalStream` — ``sys.stdin`` / ``stdout`` / ``stderr``
-  routed per thread (:func:`install_stdio_routers`), so a command's slot
-  thread or a pipeline stage writes to its own target, never the terminal
-  another thread owns.
-* :class:`_StdoutProxy` — a slot's output, live while its context is in
-  front and buffered while it isn't.
-* :class:`PythonCommandSlot` — a Python command on a thread, with the same
-  runtime interface as :class:`~eosh.process.PtySlot` so the shell can
-  park and resume either; :class:`_PyStageHandle` — a Python pipeline stage.
+  routed per thread (:func:`install_stdio_routers`), so a stage writes to its
+  own target — a pipe, a file, its slot's PTY — never another thread's.
+* :class:`_PyStageHandle` — a Python stage on its thread.
 * :func:`run_handler` — how a handler's end becomes an exit status, for
   every execution path.
 * :func:`_run_interactive`, :func:`_read_from_user`, :func:`_choose` — what
   :class:`~eosh.command_context.CommandContext`'s methods do: reach the user
-  through the slot's key stream when on one, the terminal otherwise.
+  through the stage's PTY, or the real terminal on the main thread.
 """
 
 from __future__ import annotations
@@ -24,29 +23,21 @@ import contextlib
 import ctypes
 import io
 import os
-import select
-import signal
-import struct
 import subprocess
 import sys
 import threading
-import time
 import traceback
 from typing import Callable
 
-# The PTY behind ctx.run_interactive is POSIX-only; on Windows a Python
-# command runs on the main thread and never builds a slot.
+# On Windows a Python command runs on the main thread, on the real console.
 IS_WINDOWS = os.name == "nt"
 if not IS_WINDOWS:
-    import fcntl
-    import pty
     import termios
 
 from . import terminal
-from .process import ExitCallbackMixin, OutputBuffer, PtySlot
 
 # ---------------------------------------------------------------------------
-# Thread-local stdout routing + per-slot buffering proxy
+# Thread-local stdio routing
 # ---------------------------------------------------------------------------
 
 class _ThreadLocalStream(io.TextIOBase):
@@ -54,9 +45,8 @@ class _ThreadLocalStream(io.TextIOBase):
     routes I/O per thread.
 
     A thread with no override (the main thread) uses *real*.  A thread that
-    sets one — a Python command's slot thread (a :class:`_StdoutProxy`), a
-    pipeline stage (a TextIOWrapper around its pipe end or redirect file) —
-    reads and writes there instead, so concurrent commands never trample
+    sets one — a Python stage, with a TextIOWrapper around its pipe end,
+    redirect file or slot's PTY — reads and writes there instead, so concurrent commands never trample
     each other or the terminal.  One class serves all three streams; each
     wraps its own *real*.
     """
@@ -107,8 +97,7 @@ class _ThreadLocalStream(io.TextIOBase):
     def fileno(self) -> int:
         # The override's own fd when it has one (a pipe end, a redirect
         # file, a PipelineSlot's PTY): what `subprocess.run(stdout=
-        # sys.stdout)` and a key reader (@watch's `q`) must use.  A
-        # _StdoutProxy answers with the real terminal's.
+        # sys.stdout)` and a key reader (@watch's `q`) must use.
         target = self._target
         if target is not self._real:
             try:
@@ -119,9 +108,8 @@ class _ThreadLocalStream(io.TextIOBase):
 
     @property
     def buffer(self):
-        # The override's own binary layer when it has one (a pipe end); a
-        # _StdoutProxy has none, so bytes from a slot thread reach the real
-        # terminal, as the PTY passthrough reader relies on.
+        # The override's own binary layer when it has one (a pipe end, a
+        # slot's PTY).
         return getattr(self._target, "buffer", None) or self._real.buffer
 
     @property
@@ -133,99 +121,12 @@ class _ThreadLocalStream(io.TextIOBase):
         return getattr(self._real, "errors", "strict")
 
     def isatty(self) -> bool:
-        # An override answers for itself: a pipe end is never a tty, and a
-        # _StdoutProxy forwards to the real stream and says so.
+        # An override answers for itself: a pipe end is never a tty, a
+        # slot's PTY is.
         try:
             return self._target.isatty()
         except (AttributeError, ValueError):
             return False
-
-
-class _StdoutProxy(io.TextIOBase):
-    """Per-command buffering proxy.
-
-    Starts inactive (buffering); ``activate()`` replays the buffer to the
-    real stream and forwards subsequent writes directly.  ``deactivate()``
-    resumes buffering (used while the context is in the background).
-
-    No CRLF translation happens here: the main loop runs Python commands
-    under raw-input/cooked-output mode (see
-    :func:`terminal.set_raw_input_cooked_output`), so the kernel re-adds
-    carriage returns to bare LFs at the tty boundary.
-    """
-
-    def __init__(self, real: io.TextIOBase) -> None:
-        self._real = real
-        self._buf = io.StringIO()
-        self._active = False
-        self._lock = threading.Lock()
-        # Last char written through the proxy.  Used by the switch handler
-        # to skip its protective newline when the cursor is already at
-        # column 0 (last char ``\n`` / ``\r``).
-        self._last_char: str = "\n"
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._real, "encoding", "utf-8")
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._real, "errors", "strict")
-
-    def write(self, s: str) -> int:
-        with self._lock:
-            if s:
-                self._last_char = s[-1]
-            if self._active:
-                return self._real.write(s)
-            return self._buf.write(s)
-
-    def flush(self) -> None:
-        with self._lock:
-            if self._active:
-                self._real.flush()
-
-    def fileno(self) -> int:
-        return self._real.fileno()
-
-    def isatty(self) -> bool:
-        # The proxy buffers and forwards to the real stdout.  Whether the
-        # destination is a tty is what callers actually want to know
-        # (e.g. ``@watch`` checks ``sys.stdout.isatty()`` to decide
-        # whether emitting ANSI clear-screen escapes makes sense).
-        return self._real.isatty()
-
-    def activate(self) -> None:
-        """Replay buffer to real stdout and start writing live.
-
-        CRLF translation is done by the kernel via OPOST/ONLCR.
-        """
-        with self._lock:
-            content = self._buf.getvalue()
-            if content:
-                self._real.write(content)
-                self._real.flush()
-                self._buf = io.StringIO()
-            self._active = True
-
-    def deactivate(self) -> None:
-        with self._lock:
-            self._active = False
-
-    def replay(self) -> None:
-        """Drain buffer to real stdout (called on switch-back, cooked mode)."""
-        with self._lock:
-            content = self._buf.getvalue()
-            if content:
-                self._real.write(content)
-                self._real.flush()
-                self._buf = io.StringIO()
-
-
-class _NullBuffer:
-    """Stub matching OutputBuffer.drain() used in the run() loop."""
-    def drain(self) -> list:
-        return []
 
 
 class _PyStageHandle:
@@ -237,13 +138,15 @@ class _PyStageHandle:
     """
 
     __slots__ = ("cmd_name", "thread", "done", "exit_code", "_io_objs", "interrupted",
-                 "decorator")
+                 "graceful")
 
-    def __init__(self, cmd_name: str, decorator: bool = False) -> None:
+    def __init__(self, cmd_name: str, graceful: bool = False) -> None:
         self.cmd_name = cmd_name
-        # A decorator stage is interrupted with KeyboardInterrupt rather than
-        # by closing its stdio, so it can still report (@time's timing line).
-        self.decorator = decorator
+        # A decorator, or a command on the terminal, is interrupted with
+        # KeyboardInterrupt rather than by closing its stdio: it can still
+        # report (@time's timing line), and one waiting on nothing but the
+        # clock (time.sleep) still stops.
+        self.graceful = graceful
         self.thread: threading.Thread | None = None
         self.done = threading.Event()
         self.exit_code: int | None = None
@@ -264,7 +167,7 @@ class _PyStageHandle:
         return self.exit_code or 0
 
     def raise_keyboard_interrupt(self) -> None:
-        """Ctrl+C for a decorator stage: KeyboardInterrupt in its thread, at
+        """Ctrl+C for a graceful stage: KeyboardInterrupt in its thread, at
         its next bytecode — a blocked wait for its body returns first."""
         if self.thread is not None and self.thread.is_alive():
             ctypes.pythonapi.PyThreadState_SetAsyncExc(
@@ -341,8 +244,6 @@ def run_handler(
         return 1
 
 
-_current_slot = threading.local()
-
 # Set on threads spawned by _execute_pipeline for Python-command stages.
 # The CommandContext methods that talk to the user check this and refuse,
 # since stdin and stdout are wired to pipe ends, not the terminal.
@@ -398,26 +299,25 @@ def _refuse_in_pipeline(what: str) -> None:
 
 
 def _run_interactive(argv: list[str], **popen_kwargs) -> int:
-    """``CommandContext.run_interactive``: run *argv* on a PTY the enclosing
-    :class:`PythonCommandSlot` owns, so the main thread stays the only reader
-    of the terminal — it forwards keys to the PTY master, still intercepts
-    ``Ctrl+]``, and the child sees a full TTY on fd 0/1/2.
+    """``CommandContext.run_interactive``: run *argv* on the PTY of the
+    command's slot, so the main thread stays the only reader of the terminal
+    — it forwards keys to the PTY master, still intercepts ``Ctrl+]``, and
+    the child sees a full TTY on fd 0/1/2.
 
-    On the main thread (a ``sync`` command, or Windows) there is no slot and
-    nobody else is reading: plain ``subprocess.run``.
+    On the main thread (a ``sync`` command, Windows, no terminal) there is no
+    slot and nobody else is reading: plain ``subprocess.run``.
     """
     _refuse_in_pipeline("ctx.run_interactive")
-    slot = getattr(_current_slot, "slot", None)
-    if slot is not None:
-        return slot._run_in_pty(argv, popen_kwargs)
     job = getattr(_job_local, "job", None)
     if job is not None:
-        # A stage on a PipelineSlot's terminal (a decorator body): the
-        # program gets the slot's PTY, through its job leader.
-        proc = job.spawn(list(argv), stdin=None, stdout=None, stderr=None,
-                         env=popen_kwargs.get("env") or dict(os.environ),
-                         cwd=popen_kwargs.get("cwd") or os.getcwd())
-        return proc.wait()
+        # A command on its slot's terminal: the program gets the slot's PTY,
+        # through its job leader — as a controlling terminal, so it can open
+        # /dev/tty, and Ctrl+C reaches it, not the command.
+        with job.interactive():
+            proc = job.spawn(list(argv), stdin=None, stdout=None, stderr=None,
+                             env=popen_kwargs.get("env") or dict(os.environ),
+                             cwd=popen_kwargs.get("cwd") or os.getcwd())
+            return proc.wait()
     return subprocess.run(argv, **popen_kwargs).returncode
 
 
@@ -431,24 +331,26 @@ def _stdin_is_tty() -> bool:
 
 def _read_from_user(prompt: str, *, block: bool, what: str = "input") -> str:
     """``CommandContext.input`` / ``input_block``: read a line (or a pasted
-    block, up to a blank line or Ctrl+D) off the raw key stream — the keys
-    the forwarding loop feeds the slot, or the terminal itself on the main
-    thread — never through cooked mode, whose line buffer is capped at
+    block, up to a blank line or Ctrl+D) off the raw key stream of the
+    command's terminal — its slot's PTY, or the real one on the main thread
+    — never through cooked mode, whose line buffer is capped at
     ``MAX_CANON``.  See :func:`_read_typed` for the editing keys.
 
     Without a terminal (or on Windows) falls back to :func:`input`.
     """
     _refuse_in_pipeline(what)
-    if _stdin_is_tty():
-        slot = getattr(_current_slot, "slot", None)
-        if slot is not None:
-            return slot._read_typed(prompt, block=block)
-        if not IS_WINDOWS:
-            # The main thread — or a stage on a PipelineSlot's PTY, which
-            # never sees the switch key (the forwarding loop takes it).
-            with _terminal_keys() as next_bytes:
-                return _read_typed(next_bytes, prompt, block=block,
-                                   refuse_switch=getattr(_job_local, "job", None) is None)
+    if _stdin_is_tty() and not IS_WINDOWS:
+        on_slot = getattr(_job_local, "job", None) is not None
+        if on_slot and not block:
+            # Keys typed while the command was busy were not meant as the
+            # answer to a question it hadn't asked yet ("y" to a delete
+            # prompt).  A paste, by contrast, may land before the first read.
+            _drop_typed_ahead()
+        # On a slot the switch key never arrives (the forwarding loop takes
+        # it); on the main thread nothing can park the command — say so.
+        with _terminal_keys() as next_bytes:
+            return _read_typed(next_bytes, prompt, block=block,
+                               refuse_switch=not on_slot)
     if not block:
         return input(prompt)
     if prompt:
@@ -468,8 +370,8 @@ def _read_from_user(prompt: str, *, block: bool, what: str = "input") -> str:
 
 def _choose(items: list[str], title: str) -> str | None:
     """``CommandContext.choose``: an :class:`~eosh.tui.InlinePicker` over
-    *items*, reading keys from the slot (a backgrounded-able command) or the
-    terminal (the main thread)."""
+    *items* on the command's terminal — its slot's PTY, or the real one on
+    the main thread."""
     _refuse_in_pipeline("ctx.choose")
     if not items:
         return None
@@ -477,24 +379,12 @@ def _choose(items: list[str], title: str) -> str | None:
         return _choose_by_number(items, title)
     from .tui import InlinePicker
 
-    slot = getattr(_current_slot, "slot", None)
-    key_source = None                    # main thread: the picker reads the terminal
-    if slot is not None:
-        with slot._keybuf_lock:          # typed before the question: not an answer
-            slot._keybuf.clear()
-            slot._keybuf_event.clear()
-        key_source = slot.poll_key
-
+    if getattr(_job_local, "job", None) is not None:
+        _drop_typed_ahead()             # typed before the question: not an answer
     if title:
         print(title)
-    picker = InlinePicker(items, key_source=key_source)
-    if slot is not None:
-        slot._reading_input = True       # Ctrl+C is the picker's, not a kill
-    try:
-        choice = picker.run()
-    finally:
-        if slot is not None:
-            slot._reading_input = False
+    picker = InlinePicker(items)
+    choice = picker.run()
     if picker.interrupted:
         raise KeyboardInterrupt
     if choice is not None and title:
@@ -502,6 +392,16 @@ def _choose(items: list[str], title: str) -> str | None:
         sys.stdout.write(f"\x1b[1A\r\x1b[K{title} {choice}\n")
         sys.stdout.flush()
     return choice
+
+
+def _drop_typed_ahead() -> None:
+    """Discard keys already queued on this thread's terminal."""
+    if IS_WINDOWS:
+        return
+    try:
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except (OSError, ValueError, AttributeError, termios.error):
+        pass
 
 
 def _choose_by_number(items: list[str], title: str) -> str | None:
@@ -643,398 +543,6 @@ def _read_typed(next_bytes: Callable[[], bytes], prompt: str, *, block: bool,
                 continue                             # other C0 controls
             current.append(ch)
             echo(ch)
-
-
-class PythonCommandSlot(ExitCallbackMixin):
-    """Manages a Python @registry.command running in a background thread.
-
-    Implements the same runtime interface as PtySlot so the shell's
-    run() loop and context machinery can treat both uniformly.
-    """
-
-    def __init__(self, cmd, raw_args: list[str], on_exit=None, ctx=None) -> None:
-        self._init_exit_callback(on_exit)
-        self._cmd = cmd
-        self._raw_args = raw_args
-        self._ctx = ctx   # the CommandContext a pass_context handler gets
-        self.argv: list[str] = [cmd.name] + raw_args
-        self._thread: threading.Thread | None = None
-        self._proxy: _StdoutProxy | None = None
-        self._err_proxy: _StdoutProxy | None = None
-        self._finished = threading.Event()
-        # Stub attributes expected by the run() loop
-        self.buffer = _NullBuffer()
-        self.exit_code: int | None = None
-        # PTY state — created on demand by ctx.run_interactive().  When a
-        # subprocess is running here, the main thread reads stdin and writes
-        # to master_fd; a reader thread copies master_fd output to stdout.
-        self._pty_master_fd: int = -1
-        self._pty_subproc: subprocess.Popen | None = None
-        self._pty_reader: threading.Thread | None = None
-        self._pty_buffer = OutputBuffer()
-        self._pty_last_byte: bytes = b"\n"
-        self._pty_active = False
-        self._pty_lock = threading.Lock()
-        # True while the command is reading a line or block from the user
-        # (ctx.input / input_block): the forwarding loop then hands
-        # Ctrl+C to the reader instead of interrupting the command.
-        self._reading_input = False
-        # Raw stdin bytes the main forwarding loop received while no PTY
-        # subprocess was active.  :meth:`poll_key` drains them — that is
-        # how ``ctx.input`` / ``input_block`` read the user's keys.
-        self._keybuf: bytearray = bytearray()
-        self._keybuf_lock = threading.Lock()
-        self._keybuf_event = threading.Event()
-
-    # --- lifecycle -----------------------------------------------------------
-
-    def start(self) -> None:
-        """Spawn the command thread.  stdout starts buffered (inactive)."""
-        self.mark_started()
-        real = getattr(sys.stdout, "_real", sys.stdout)
-        self._proxy = _StdoutProxy(real)
-        real_err = getattr(sys.stderr, "_real", sys.stderr)
-        self._err_proxy = _StdoutProxy(real_err)
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"pycmd-{self._cmd.name}",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def _run(self) -> None:
-        if hasattr(sys.stdout, "set_override"):
-            sys.stdout.set_override(self._proxy)
-        if hasattr(sys.stderr, "set_override"):
-            sys.stderr.set_override(self._err_proxy)
-        _current_slot.slot = self
-        try:
-            # Errors are reported here, on the slot's own stderr proxy, so
-            # they land with the command's output — live or replayed later.
-            self.exit_code = run_handler(
-                lambda: self._cmd.invoke(self._raw_args, ctx=self._ctx), self._cmd.name)
-        finally:
-            _current_slot.slot = None
-            if hasattr(sys.stdout, "clear_override"):
-                sys.stdout.clear_override()
-            if hasattr(sys.stderr, "clear_override"):
-                sys.stderr.clear_override()
-            if self.exit_code is None:
-                self.exit_code = 130   # interrupted before run_handler returned
-            self._finished.set()
-            self._fire_on_exit()
-
-    # --- PtySlot-compatible interface ------------------------------------
-
-    def is_alive(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def activate(self) -> None:
-        # No newline translation: the forwarding loop keeps the kernel's
-        # ONLCR on (raw input, cooked output), which adds the CRs.
-        if self._proxy:
-            self._proxy.activate()
-        if self._err_proxy:
-            self._err_proxy.activate()
-        # Drain any PTY output that arrived while inactive, then resume
-        # live forwarding from the reader thread.
-        with self._pty_lock:
-            if self._pty_master_fd >= 0:
-                chunks = self._pty_buffer.drain()
-                for chunk in chunks:
-                    try:
-                        sys.stdout.buffer.write(chunk)
-                    except OSError:
-                        pass
-                try:
-                    sys.stdout.buffer.flush()
-                except OSError:
-                    pass
-                self._pty_active = True
-
-    def deactivate(self) -> None:
-        if self._proxy:
-            self._proxy.deactivate()
-        if self._err_proxy:
-            self._err_proxy.deactivate()
-        with self._pty_lock:
-            if self._pty_master_fd >= 0:
-                self._pty_active = False
-
-    def replay_buffer(self) -> None:
-        if self._proxy:
-            self._proxy.replay()
-        if self._err_proxy:
-            self._err_proxy.replay()
-        with self._pty_lock:
-            if self._pty_master_fd >= 0:
-                chunks = self._pty_buffer.drain()
-                for chunk in chunks:
-                    try:
-                        sys.stdout.buffer.write(chunk)
-                    except OSError:
-                        pass
-                try:
-                    sys.stdout.buffer.flush()
-                except OSError:
-                    pass
-
-    def kill(self) -> None:
-        """Inject KeyboardInterrupt into the command thread."""
-        if self._thread and self._thread.is_alive():
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                ctypes.c_ulong(self._thread.ident),
-                ctypes.py_object(KeyboardInterrupt),
-            )
-
-    def restore_terminal_modes(self) -> str:
-        return ""
-
-    def suspend_terminal_modes(self) -> str:
-        return ""
-
-    def cursor_at_col0(self) -> bool:
-        """Heuristic: did the most recent output leave the cursor at column 0?
-
-        ``True`` when either the buffering proxy or an active PTY reader's
-        most recent byte was a line terminator.  The switch handler uses
-        this to skip its protective newline (which would otherwise leave a
-        blank line for the common case of a subprocess whose output ends in
-        ``\\n``).
-        """
-        if self._pty_master_fd >= 0:
-            return self._pty_last_byte in (b"\n", b"\r")
-        if self._proxy is not None:
-            return self._proxy._last_char in ("\n", "\r")
-        return True
-
-    def write_stdin(self, data: bytes) -> None:
-        """Forward bytes from the main loop's stdin reader.
-
-        Two destinations:
-
-        * If a ``ctx.run_interactive`` subprocess is active, the bytes go to
-          its PTY master so the child sees the user's typing.
-        * Otherwise the bytes are buffered in ``_keybuf`` so a Python
-          command body running on this slot can read them via
-          :meth:`poll_key` (``ctx.input_block`` does).
-        """
-        with self._pty_lock:
-            fd = self._pty_master_fd
-        if fd >= 0:
-            try:
-                os.write(fd, data)
-            except OSError:
-                pass
-            return
-        with self._keybuf_lock:
-            self._keybuf.extend(data)
-            self._keybuf_event.set()
-
-    def take_unread(self) -> bytes:
-        """The keys forwarded to this slot that its command never read —
-        typed ahead of the next prompt.  Empties the buffer."""
-        with self._keybuf_lock:
-            data = bytes(self._keybuf)
-            self._keybuf.clear()
-            self._keybuf_event.clear()
-        return data
-
-    def poll_key(self, timeout: float | None) -> bytes:
-        """Return up to one buffered keystroke worth of stdin, or ``b\"\"``.
-
-        Blocks up to *timeout* seconds (``None`` = forever) for a key.
-        Returns an empty ``bytes`` if the timeout expires.  Returns the
-        full byte sequence for one logical key (which may be a multi-byte
-        escape sequence — the caller is expected to interpret it).
-
-        Intended for Python command bodies that want to react to user
-        keystrokes while the main forwarding loop holds stdin.  Bytes
-        consumed here will not later reach a ``ctx.run_interactive``
-        subprocess (none is active by the time this returns data).
-        """
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            with self._keybuf_lock:
-                if self._keybuf:
-                    data = bytes(self._keybuf)
-                    self._keybuf.clear()
-                    self._keybuf_event.clear()
-                    return data
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            if remaining == 0.0:
-                return b""
-            if not self._keybuf_event.wait(timeout=remaining):
-                return b""
-
-    def resize(self, rows: int, cols: int) -> None:
-        """Propagate a SIGWINCH-driven resize to a ctx.run_interactive() subprocess."""
-        with self._pty_lock:
-            fd = self._pty_master_fd
-            pid = self._pty_subproc.pid if self._pty_subproc else -1
-        if fd < 0:
-            return
-        try:
-            winsize = struct.pack("HHHH", rows, cols, 0, 0)
-            fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
-        except OSError:
-            pass
-        if pid > 0:
-            try:
-                os.killpg(os.getpgid(pid), signal.SIGWINCH)
-            except (OSError, ProcessLookupError):
-                pass
-
-    def tail_lines(self, n: int) -> list[str]:
-        """Return up to *n* most recent buffered output lines for preview."""
-        from .process import _tail_lines_from_bytes
-        text_data = b""
-        if self._proxy is not None:
-            with self._proxy._lock:
-                text = self._proxy._buf.getvalue()
-            if text:
-                text_data = text.encode("utf-8", errors="replace")
-        pty_data = self._pty_buffer.peek()
-        return _tail_lines_from_bytes(text_data + pty_data, n)
-
-    # --- ctx.run_interactive() implementation -----------------------------------
-
-    def _run_in_pty(self, argv: list[str], popen_kwargs: dict) -> int:
-        """Run *argv* on a slot-owned PTY; main thread forwards stdin via write_stdin."""
-        # Snapshot whether the proxy was active (i.e. the user was watching
-        # this slot in the foreground) before deactivating it for the
-        # subprocess.  The PTY reader thread mirrors this state — if the
-        # subprocess starts while the slot is backgrounded, the reader
-        # buffers to ``_pty_buffer`` instead of writing to the real terminal.
-        proxy_was_active = bool(self._proxy and self._proxy._active)
-        # Pause the buffering stdout proxy: while the subprocess runs, its
-        # output is written to the slot's PTY master and copied to stdout
-        # by a reader thread.
-        self._proxy.deactivate()
-        if self._err_proxy:
-            self._err_proxy.deactivate()
-        master_fd, slave_fd = pty.openpty()
-        try:
-            rows, cols = PtySlot._get_real_terminal_size()
-            if rows and cols:
-                winsize = struct.pack("HHHH", rows, cols, 0, 0)
-                fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
-        except OSError:
-            pass
-
-        env = popen_kwargs.pop("env", None) or dict(os.environ)
-        # Tell the child the terminal it sees is a TTY.
-        env.setdefault("TERM", os.environ.get("TERM", "xterm-256color"))
-
-        def _make_session_leader():
-            # As the job leader does: make the slave PTY the child's
-            # controlling terminal.  Without TIOCSCTTY there is no foreground
-            # process group on this PTY, so the slave line discipline's ISIG
-            # silently eats control bytes we forward via the master
-            # (e.g. \x03 from Ctrl+C during `aws ssm start-session`).  With a
-            # controlling terminal the kernel delivers SIGINT to the child,
-            # which well-behaved clients then forward to the remote session.
-            os.setsid()
-            try:
-                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-            except OSError:
-                pass
-
-        try:
-            proc = subprocess.Popen(
-                argv,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                env=env,
-                preexec_fn=_make_session_leader,
-                **popen_kwargs,
-            )
-        finally:
-            os.close(slave_fd)
-
-        with self._pty_lock:
-            self._pty_master_fd = master_fd
-            self._pty_subproc = proc
-            self._pty_active = proxy_was_active
-
-        reader = threading.Thread(
-            target=self._pty_reader_loop,
-            args=(master_fd,),
-            name=f"pycmd-pty-{self._cmd.name}",
-            daemon=True,
-        )
-        with self._pty_lock:
-            self._pty_reader = reader
-        reader.start()
-
-        try:
-            proc.wait()
-        finally:
-            # Wait for reader to drain any remaining output, then tear down.
-            reader.join(timeout=1.0)
-            with self._pty_lock:
-                self._pty_active = False
-                self._pty_master_fd = -1
-                self._pty_subproc = None
-                self._pty_reader = None
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-            # Re-enable the buffering proxy for any remaining
-            # prints from the Python command after the subprocess returns.
-            self._proxy.activate()
-            if self._err_proxy:
-                self._err_proxy.activate()
-
-        return proc.returncode if proc.returncode is not None else 1
-
-    def _pty_reader_loop(self, master_fd: int) -> None:
-        while True:
-            try:
-                r, _, _ = select.select([master_fd], [], [], 0.05)
-                if not r:
-                    if self._pty_subproc and self._pty_subproc.poll() is not None:
-                        # Drain any final bytes before returning.
-                        try:
-                            r2, _, _ = select.select([master_fd], [], [], 0)
-                            if not r2:
-                                break
-                        except OSError:
-                            break
-                    continue
-                data = os.read(master_fd, 4096)
-            except OSError:
-                break
-            if not data:
-                break
-            self._pty_buffer.append(data)
-            self._pty_last_byte = data[-1:]
-            if self._pty_active:
-                try:
-                    sys.stdout.buffer.write(data)
-                    sys.stdout.buffer.flush()
-                except OSError:
-                    pass
-
-    # --- ctx.input() / input_block() -------------------------------------
-
-    def _read_typed(self, prompt: str, *, block: bool) -> str:
-        """Read a line (or a pasted block) off the keys the forwarding loop
-        feeds this slot — see :func:`_read_typed`."""
-        if not block:
-            # Keys typed while the command was busy were not meant as the
-            # answer to a question it hadn't asked yet ("y" to a delete
-            # prompt).  A paste, by contrast, may land before the first poll.
-            with self._keybuf_lock:
-                self._keybuf.clear()
-                self._keybuf_event.clear()
-        self._reading_input = True
-        try:
-            return _read_typed(lambda: self.poll_key(0.2), prompt, block=block)
-        finally:
-            self._reading_input = False
 
 
 def install_stdio_routers() -> None:

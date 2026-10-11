@@ -511,25 +511,6 @@ def test_shell_execute_swallows_decorator_composition_seq_error(capsys, watch_de
 # sys.stdout.isatty() inside a decorator body
 # ---------------------------------------------------------------------------
 
-def test_stdout_isatty_visible_to_decorator_body():
-    """``@watch`` checks ``sys.stdout.isatty()`` to decide whether to emit
-    the screen-clear ANSI escape.  The ``_StdoutProxy`` installed for a
-    Python-command thread must report the real stdout's tty status, not
-    the io.TextIOBase default of ``False`` — otherwise ``--no-clear``
-    has no observable effect (the clear path is skipped either way).
-
-    Verified directly against the proxy: under pytest's stdin capture
-    the real stdout isn't a tty, so the proxy must report False; what
-    matters is that it asks the real stream rather than returning
-    False unconditionally.
-    """
-    import sys as _sys
-    from eosh.slots import _StdoutProxy
-
-    proxy = _StdoutProxy(_sys.__stdout__)
-    assert proxy.isatty() == _sys.__stdout__.isatty()
-
-
 def test_watch_split_to_lines_strips_ansi_and_normalises_endings():
     """Real CLI output often includes ANSI colour / cursor-control codes
     even when stdout is redirected (TTY-autodetection is not reliable).
@@ -578,50 +559,30 @@ def test_watch_captured_redirects_the_last_stage_only():
     ]
 
 
-def test_python_command_slot_poll_key_returns_buffered_bytes():
-    """The slot's stdin keybuf collects bytes the main forwarding loop
-    received while no PTY subprocess is active, so a Python command body
-    can poll for keystrokes (e.g. ``q`` to quit ``@watch``)."""
-    from eosh.slots import PythonCommandSlot
-
-    class _DummyCmd:
-        name = "_dummy"
-
-        def invoke(self, args):
-            pass
-
-    slot = PythonCommandSlot(_DummyCmd(), [])
-
-    # No data and a zero timeout → empty bytes immediately.
-    assert slot.poll_key(timeout=0) == b""
-
-    # write_stdin with no PTY active: bytes should land in the keybuf.
-    slot.write_stdin(b"q")
-    assert slot.poll_key(timeout=0) == b"q"
-    # Subsequent poll with the buffer drained returns empty.
-    assert slot.poll_key(timeout=0) == b""
-
-
 def test_thread_local_stdout_isatty_falls_through(monkeypatch):
     """``_ThreadLocalStream`` must forward ``isatty()`` to either the
     real stream (no override) or the thread-local override — not return
-    the io.TextIOBase default of ``False``."""
+    the io.TextIOBase default of ``False``.  ``@watch`` decides on it whether
+    to draw its screen."""
+    import io
+    import os
+    import pty
     import sys as _sys
-    from eosh.slots import _ThreadLocalStream, _StdoutProxy
+    from eosh.slots import _ThreadLocalStream
 
     tls = _ThreadLocalStream(_sys.__stdout__)
     # No override: reflect the real stream.
     assert tls.isatty() == _sys.__stdout__.isatty()
 
-    # With a _StdoutProxy override (the path a PythonCommandSlot uses),
-    # isatty() should reflect the proxy, which itself reflects the real
-    # stream.
-    proxy = _StdoutProxy(_sys.__stdout__)
-    tls.set_override(proxy)
+    # A slot's PTY as the override (a command on a PipelineSlot): a tty.
+    master, slave = pty.openpty()
     try:
-        assert tls.isatty() == _sys.__stdout__.isatty()
+        tls.set_override(io.TextIOWrapper(os.fdopen(slave, "wb", buffering=0, closefd=False)))
+        assert tls.isatty()
     finally:
         tls.clear_override()
+        os.close(master)
+        os.close(slave)
 
 
 # ---------------------------------------------------------------------------
