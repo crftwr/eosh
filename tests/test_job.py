@@ -190,10 +190,10 @@ def test_a_lone_command_runs_on_a_slot_too(sh):
     assert "alone" in _output(slot)
 
 
-def test_a_lone_command_not_found_goes_to_the_hooks(sh, capsys):
+@pytest.mark.requires_real_stdio
+def test_a_lone_command_not_found_goes_to_the_hooks(sh):
     assert sh._execute("no-such-command-eosh x") == 127
-    assert "command not found: no-such-command-eosh" in capsys.readouterr().out
-    assert sh.slots == []
+    assert "command not found: no-such-command-eosh" in _output(sh.slots[0])
 
 
 def test_a_sync_command_stays_on_the_main_thread(sh):
@@ -207,7 +207,7 @@ def test_a_sync_command_stays_on_the_main_thread(sh):
 def test_a_lone_decorator_runs_on_a_slot(sh):
     assert sh._execute("@time echo deco") == 0
     (slot,) = sh.slots
-    assert slot.argv == ["@time {echo deco}"]
+    assert slot.argv == ["@time echo deco"]          # the line as typed
     out = _output(slot)
     assert "deco" in out and "real" in out
 
@@ -332,3 +332,77 @@ def test_ctrl_c_during_run_interactive_is_the_programs(driven):
     driven.keys = [("child-up", b"\x03")]
     assert driven._execute("eosh-t-wrap") == 0
     assert "after 130" in _output(driven.slots[0])
+
+
+# ── one slot per line ───────────────────────────────────────────────────────
+
+@pytest.mark.requires_real_stdio
+def test_a_whole_line_runs_on_one_slot(sh):
+    assert sh._execute("echo one && echo two; false || echo three") == 0
+    (slot,) = sh.slots
+    out = _output(slot)
+    assert ("one" in out) and ("two" in out) and ("three" in out)
+
+
+@pytest.mark.requires_real_stdio
+def test_ctrl_c_ends_the_line(driven):
+    driven.keys = [("started", b"\x03")]
+    status = driven._execute("sh -c 'echo started; sleep 5'; echo not-reached")
+    assert status == 130
+    assert "not-reached" not in _output(driven.slots[0]).replace("echo not-reached", "")
+
+
+@pytest.mark.requires_real_stdio
+def test_a_parked_line_runs_on_in_its_own_context(monkeypatch, tmp_path):
+    """Ctrl+] mid-line: the rest runs later, in the background, with the
+    cwd, environment and globs of the context the line started in."""
+    monkeypatch.setattr("eosh.shell._stdin_is_tty", lambda: True)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.txt").write_text("")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    sh = Shell()
+    slots = []
+
+    def forward(slot, force_redraw=False):
+        slots.append(slot)
+        _wait_for(slot, "first")
+        return "switched"                       # Ctrl+]
+
+    def switch_away():
+        sh.context_manager.new("other")
+        sh.context_manager.switch("other")
+        os.chdir(other)                          # the other context's cwd
+        sh.context_manager.set_variable("EOSH_T_WHERE", "other")
+
+    monkeypatch.setattr(sh, "_forward", forward)
+    monkeypatch.setattr(sh, "_handle_switch", switch_away)
+    monkeypatch.setenv("EOSH_T_WHERE", "line")
+    try:
+        status = sh._execute(
+            "echo first; sleep 0.3 && cd sub && "
+            "sh -c 'echo $EOSH_T_WHERE \"$@\"' x *.txt > out.txt")
+        assert status is None                     # parked
+        _finish(slots[0])
+        assert slots[0].exit_code == 0
+        assert (tmp_path / "sub" / "out.txt").read_text() == "line a.txt\n"
+        assert os.getcwd() == str(other)          # the current context didn't move
+        assert sh.context_manager.contexts["default"].cwd == str(tmp_path / "sub")
+    finally:
+        os.environ.pop("EOSH_T_WHERE", None)
+        command_registry.clear_user_commands()
+
+
+@pytest.mark.requires_real_stdio
+def test_a_line_with_a_shell_wide_builtin_goes_pipeline_by_pipeline(sh):
+    assert sh._execute("echo before; alias eosh_t_x=ls") == 0
+    assert len(sh.slots) == 1                   # echo's own; alias on the main thread
+    assert sh.registry.get_alias("eosh_t_x") == "ls"
+
+
+def test_a_line_of_assignments_stays_on_the_main_thread(sh):
+    assert sh._execute("EOSH_T_A=1; EOSH_T_B=2") == 0
+    assert sh.slots == []
+    assert os.environ.pop("EOSH_T_A") == "1"
+    assert os.environ.pop("EOSH_T_B") == "2"

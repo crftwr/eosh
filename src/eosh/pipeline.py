@@ -254,13 +254,15 @@ def _extract_redirects(text: str) -> tuple[str, list[Redirect]]:
 # Glob expansion
 # ---------------------------------------------------------------------------
 
-def expand_globs(tokens: list[str]) -> list[str]:
-    """Expand glob patterns; non-matching patterns are kept as-is."""
+def expand_globs(tokens: list[str], root_dir: str | None = None) -> list[str]:
+    """Expand glob patterns; non-matching patterns are kept as-is.  Relative
+    patterns match under *root_dir* (default: the process's cwd)."""
     result: list[str] = []
     for token in tokens:
         if any(c in token for c in ('*', '?', '[')):
             recursive = '**' in token
-            expanded = glob.glob(os.path.expanduser(token), recursive=recursive)
+            expanded = glob.glob(os.path.expanduser(token), recursive=recursive,
+                                 root_dir=root_dir)
             if expanded:
                 result.extend(sorted(expanded))
                 continue

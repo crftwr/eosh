@@ -224,11 +224,13 @@ Quote-aware parser for the full operator set.
 
 ```
 User input → expand_vars() → parse_line() → Sequence of Pipelines
-  → For each Pipeline:
-      → A sync built-in or assignments alone: the main thread
-      → Anything else (one command, external or Python; a pipeline; a redirect): one PipelineSlot — OS pipes between
-        stages, the slot's PTY at the terminal-facing ends, external stages
-        started by its job leader (plain Popen without a terminal / on Windows)
+  → On a POSIX terminal, the whole Sequence on one PipelineSlot: a driver
+    thread runs the pipelines (&&, ||, ;) — OS pipes between stages, the
+    slot's PTY at the terminal-facing ends, external stages started by its
+    job leader — in the context the line started in; the main thread relays
+    the terminal.  Exceptions on the main thread: a line of assignments, and
+    a line with a lone sync built-in (pipeline by pipeline)
+  → Without a terminal / on Windows: pipeline by pipeline, plain Popen
   → Python stages get thread-local sys.stdin/stdout/stderr
 ```
 
