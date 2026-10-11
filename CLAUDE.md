@@ -38,7 +38,7 @@ is a deliberate non-goal — see issue #13.
 │  ├── PTY process multiplexing (process.py)         │
 │  ├── Python-command slots (slots.py)               │
 │  ├── Pipeline slots + job leader (job.py)          │
-│  └── Context switch TUI (tui.py)                   │
+│  └── Context switch TUI (switcher.py, tui.py)      │
 ├─────────────────────────────────────────────────────┤
 │  Command Registry (commands.py)                     │
 │  ├── Built-in commands                             │
@@ -1130,6 +1130,7 @@ eosh/
 │       ├── user_errors.py      # traceback of a config/recipe error, eosh
 │       │                       # frames stripped
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
+│       ├── switcher.py         # Ctrl+] context switcher (a Shell mixin)
 │       ├── slots.py            # Python stages: thread-local stdio, run_handler,
 │       │                       # the CommandContext I/O implementations
 │       ├── commands.py         # command registry, @command decorator
