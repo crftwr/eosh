@@ -24,6 +24,7 @@ POSIX only, like every PTY slot.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import queue
@@ -270,22 +271,64 @@ class PipelineSlot(PtySlot):
                 self._leader = leader
             return self._leader.spawn(argv, env, cwd, (fd(stdin), fd(stdout), fd(stderr)))
 
+    def run(self, driver) -> None:
+        """Run *driver* — the line: its pipelines, one after another — on a
+        thread of the slot's own, whose stdio is the PTY and on which
+        :data:`~eosh.slots._job_local` names this slot, so everything it
+        starts joins the slot.  Its return value is the slot's status."""
+        threading.Thread(target=self._drive, args=(driver,), daemon=True,
+                         name="eosh-line").start()
+
     def start(self, workers: list) -> None:
-        """The stages are running: wait for them on a thread of our own."""
-        self._workers = list(workers)
-        threading.Thread(target=self._wait, daemon=True, name="eosh-pipeline").start()
+        """Stages already running: the slot ends when they do."""
+        self.run(lambda: self.wait_for(workers))
 
     def discard(self) -> None:
         """Nothing was started: close the PTY."""
         self.start([])
 
-    def _wait(self) -> None:
+    def wait_for(self, workers: list) -> int:
+        """Wait for one pipeline's stages; the last one's status.  They are
+        the ones Ctrl+C interrupts meanwhile."""
+        self._workers = list(workers)
         status = 0
-        for w in self._workers:
+        for w in workers:
             w.wait()
             # A Popen-like stage has returncode, a Python stage exit_code.
             status = (w.returncode if hasattr(w, "returncode") else w.exit_code) or 0
-        self._status = status
+        return status
+
+    def _drive(self, driver) -> None:
+        from .slots import _job_local
+        streams = [io.TextIOWrapper(os.fdopen(self.terminal_fd(), "wb", buffering=0),
+                                    encoding="utf-8", errors="replace", write_through=True)
+                   for _ in range(2)]
+        _job_local.job = self
+        _job_local.driver = True
+        try:
+            if hasattr(sys.stdout, "set_override"):
+                sys.stdout.set_override(streams[0])
+                sys.stderr.set_override(streams[1])
+            try:
+                self._status = driver()
+            except BaseException:
+                import traceback
+                traceback.print_exc()
+                self._status = 1
+        finally:
+            _job_local.job = None
+            _job_local.driver = False
+            if hasattr(sys.stdout, "clear_override"):
+                sys.stdout.clear_override()
+                sys.stderr.clear_override()
+            for st in streams:
+                try:
+                    st.close()
+                except OSError:
+                    pass
+            self._finish()
+
+    def _finish(self) -> None:
         # Before the leader goes: when a session's controlling process
         # exits, its terminal's input queue is flushed.
         self._unread = self._drain_typed_ahead()

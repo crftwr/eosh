@@ -1261,11 +1261,20 @@ Two execution modes in `shell.py`:
 | Python `@registry.command` in a pipeline | worker thread per stage; thread-local `sys.stdin`/`sys.stdout`/`sys.stderr` rebound to pipe ends (and the slot's PTY at the terminal-facing ends) |
 | Python `@registry.command` with redirect (no pipe) | one-stage pipeline: worker thread, thread-local `sys.std*` rebound to the redirect files |
 
-**A line's pipeline is one slot** (`job.py`). On a POSIX terminal,
-`_execute_pipeline(_top_level=True)` gives every pipeline and redirected
-command a `PipelineSlot`: one PTY whose slave is every terminal-facing end,
-read and buffered by `PtySlot`, so Ctrl+] parks and resumes it the same
-way (discussion #76). The external stages are started by a **job leader**
+**A line is one slot** (`job.py`, discussion #76). On a POSIX terminal,
+`Shell._run_on_slot` runs the whole line — every command, external or Python,
+every pipeline, `&&` / `||` / `;` — on one `PipelineSlot`: one PTY whose slave
+is every terminal-facing end, read and buffered by `PtySlot`. A driver thread
+(`PipelineSlot.run`) runs the sequence; the main thread only relays the
+terminal (`_forward`). So Ctrl+] parks the rest of the line with it, and
+Ctrl+C (a pipeline ending in 130) ends the line, as in bash. Everything the
+line starts uses the context it started in (`slot.ctx`): its cwd for spawns,
+globs and redirects, its environment, its variables — a parked line keeps
+running in its own context, whatever is current. Two exceptions run on the
+main thread: a line of nothing but assignments, and a line with a lone `sync`
+built-in (`context`, `alias`, `reload`, `exit`, …), which goes pipeline by
+pipeline, each of the others on a slot of its own (so parking one drops the
+rest of that line). The external stages are started by a **job leader**
 (`_job_leader.py`, run as `python -I -S`; one spare is always started ahead
 of time, and the PTY is handed to it with `TIOCSCTTY`): the
 session leader with the PTY as its controlling terminal, so the stages share

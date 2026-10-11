@@ -212,14 +212,22 @@ spent in front of the user. Distinguishing "resumed and then finished" from
 "finished unobserved" needs the slot to record when it was last activated,
 which is more bookkeeping than the noise warrants today.
 
-## Ctrl+] parks one part of a line, and drops the rest
+## A line with a shell-wide built-in is parked one pipeline at a time
 
-`make && ./run` with `make` sent to the background by Ctrl+] does not run
-`./run` — not when `make` finishes either. `make`'s status isn't known when
-the line returns to the prompt, and running the rest at once would start it
-in the context just switched to. eosh says `the rest of the line was not
-run`. Sending the whole line along is part of
-[discussion #76](https://github.com/crftwr/eosh/discussions/76).
+A line runs on one slot, so Ctrl+] sends all of it to the background:
+`make && ./run` runs `./run` there once `make` succeeds. A line that also
+has a lone shell-wide built-in (`context`, `alias`, `reload`, `exit`, …) is
+the exception: those run on the main thread, so the line goes pipeline by
+pipeline, and Ctrl+] on one of them drops the rest of the line (eosh says
+`the rest of the line was not run`).
+
+## A parked line's Python code sees the current context's process state
+
+The rest of a parked line runs in the context it started in: its cwd for
+commands, globs and redirects, its environment and variables through `ctx`.
+But a Python command calling `os.getcwd()` or reading `os.environ` directly
+sees the process's — the context in front. Use `ctx.cwd` / `ctx.get_var` /
+`ctx.environ()`.
 
 ## What Ctrl+] can't park, and when it says so
 

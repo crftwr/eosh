@@ -111,6 +111,10 @@ def _isatty(f) -> bool:
         return False
 
 
+def _stage_label_of(pipeline: Pipeline) -> str:
+    return " | ".join(_stage_label(st) for st in pipeline.stages)
+
+
 def _stage_label(stage: Stage) -> str:
     """How a stage reads in the switcher and a notification."""
     call = stage.decorator
@@ -1433,6 +1437,10 @@ class Shell:
         self._current_history_id = history_id
         hooks.fire("on_command_starting", line)
         try:
+            if self._runs_on_one_slot(seq):
+                last_exit = self._run_on_slot(seq, line)
+                self._notice_state_change()
+                return None if self._backgrounded else last_exit
             for op, pipeline in seq.items:
                 if self._backgrounded:
                     # Ctrl+] parked an earlier part.  Its status isn't known
@@ -1445,7 +1453,13 @@ class Shell:
                     continue
                 if op == "||" and last_exit == 0:
                     continue
-                last_exit = self._execute_pipeline(pipeline, _top_level=True)
+                if self._can_park() and not self._on_main_thread(pipeline):
+                    # A line with a shell-wide built-in runs pipeline by
+                    # pipeline, each of the others on a slot of its own.
+                    last_exit = self._run_on_slot(Sequence(items=[(None, pipeline)]),
+                                                  _stage_label_of(pipeline))
+                else:
+                    last_exit = self._execute_pipeline(pipeline)
                 # `cd proj && make`: the move is reported before make runs.
                 self._notice_state_change()
         finally:
@@ -1536,12 +1550,13 @@ class Shell:
         if cwd != old_cwd and cwd is not None:
             hooks.fire("on_directory_changed", old_cwd, cwd)
 
-    def _tokenize_stage(self, stage: Stage) -> list[str]:
-        """Expand variables, tokenize, alias-expand, and glob-expand a stage's text."""
+    def _tokenize_stage(self, stage: Stage, root_dir: str | None = None) -> list[str]:
+        """Expand variables, tokenize, alias-expand, and glob-expand a stage's
+        text — globs relative to *root_dir* (default: the process's cwd)."""
         tokens = tokenize(stage.text + " ")
         tokens = [os.path.expanduser(t) for t in tokens]
         tokens = self._expand_alias(tokens)
-        return expand_globs(tokens)
+        return expand_globs(tokens, root_dir=root_dir)
 
     def _expand_alias(self, tokens: list[str]) -> list[str]:
         """Replace the first token with its alias expansion, if any.
@@ -1596,17 +1611,14 @@ class Shell:
         pipeline: Pipeline,
         *,
         _in_outer_pipe: bool = False,
-        _top_level: bool = False,
     ) -> int:
         """Execute a pipeline; return exit code of last stage.
 
-        ``_top_level`` is a pipeline of the line the user typed (not a
-        decorator body).  On a terminal (POSIX) it runs on a
-        :class:`~eosh.job.PipelineSlot` — one PTY for the whole pipeline — so
-        Ctrl+] can park it like a single command.  Inside that slot (a
-        decorator body on one of its stage threads) the pipeline joins it:
+        On a slot — a line's driver thread, or a decorator body on one of
+        its stage threads (:data:`_job_local`) — the pipeline joins it:
         external stages go through its job leader, terminal-facing ends to
-        its PTY.
+        its PTY, and the cwd, environment and variables are those of the
+        context the line started in (``job.ctx``), whichever is current now.
 
         ``_in_outer_pipe`` is set when this call is the body of a
         decorator that is itself a stage of an outer pipeline
@@ -1626,18 +1638,13 @@ class Shell:
         # is no second redirect path that swaps the process-global
         # ``sys.stdout`` under every other thread.  Decorator stages keep
         # the direct path — their redirects live inside the braced body.
-        # At the top of a line, on a terminal, everything runs on a
-        # PipelineSlot — a lone command, external or Python, and a lone
-        # decorator included — so Ctrl+] can park it.  Only a `sync` command
-        # (one that changes the whole shell) and a line of assignments stay
-        # on the main thread.
-        can_park = _top_level and not IS_WINDOWS and _stdin_is_tty()
+        # On a slot nothing takes the terminal for itself: the slot has it.
+        job: PipelineSlot | None = getattr(_job_local, "job", None)
         if (
             single is not None
+            and job is None
             and not _in_outer_pipe
             and (not single.redirects or single.decorator is not None)
-            and not (can_park and (single.decorator is not None
-                                   or not self._runs_on_main_thread(single)))
         ):
             return self._execute_stage(single)
 
@@ -1648,13 +1655,17 @@ class Shell:
         # sys.stdin/stdout/stderr to the pipe ends (or redirect files) via
         # the thread-local routers installed in __init__.
 
-        # The slot this pipeline runs on, if any — its own (top level) or
-        # the one of the stage thread it runs on (a decorator body).
-        job: PipelineSlot | None = getattr(_job_local, "job", None)
-        own_job: PipelineSlot | None = None
-        if job is None and can_park:
-            own_job = job = PipelineSlot(" | ".join(_stage_label(st) for st in stages),
-                                         on_exit=self._slot_finished)
+        # Whose cwd and environment the stages get: the line's context on a
+        # slot (it may not be the current one by now), else the process's.
+        line_ctx = job.ctx if job is not None else None
+        cwd = line_ctx.cwd if line_ctx is not None else os.getcwd()
+
+        def stage_env(prefix: dict[str, str]) -> dict[str, str]:
+            if line_ctx is None:
+                return self._merged_env(prefix)
+            env = line_ctx.environ()
+            env.update(prefix)
+            return env
 
         n = len(stages)
         # The status when nothing could be started (a lone command not found).
@@ -1701,7 +1712,7 @@ class Shell:
                 workers.append(worker)
                 continue
 
-            tokens = self._tokenize_stage(stage)
+            tokens = self._tokenize_stage(stage, root_dir=cwd)
             if not tokens:
                 continue
 
@@ -1714,7 +1725,10 @@ class Shell:
             ):
                 for token in tokens:
                     m = self._ASSIGNMENT_RE.match(token)
-                    self._set_variable(m.group(1), m.group(2))
+                    if line_ctx is not None:
+                        line_ctx.set_var(m.group(1), m.group(2))
+                    else:
+                        self._set_variable(m.group(1), m.group(2))
                 continue
 
             # Per-command env prefix (``FOO=bar cmd``) applies to this stage only.
@@ -1731,17 +1745,19 @@ class Shell:
             stderr_dst: object | None = None
             redirect_error = False
             for redir in stage.redirects:
+                # Relative to the line's cwd, which may not be the process's.
+                target = os.path.join(cwd, os.path.expanduser(redir.target))
                 try:
                     if redir.kind == "<":
-                        stdin_file = open(redir.target, "rb")
+                        stdin_file = open(target, "rb")
                     elif redir.kind == ">":
-                        stdout_file = open(redir.target, "wb")
+                        stdout_file = open(target, "wb")
                     elif redir.kind == ">>":
-                        stdout_file = open(redir.target, "ab")
+                        stdout_file = open(target, "ab")
                     elif redir.kind == "2>":
-                        stderr_dst = open(redir.target, "wb")
+                        stderr_dst = open(target, "wb")
                     elif redir.kind == "2>>":
-                        stderr_dst = open(redir.target, "ab")
+                        stderr_dst = open(target, "ab")
                     elif redir.kind == "2>&1":
                         stderr_dst = subprocess.STDOUT
                 except OSError as e:
@@ -1765,7 +1781,8 @@ class Shell:
                     # work, so its pipe ends close and its status is 2.
                     fn = lambda name=cmd.name, env=env_prefix: self._env_prefix_refused(name, env)
                 else:
-                    fn = (lambda cmd=cmd, args=tokens[1:], ctx=self._command_context():
+                    fn = (lambda cmd=cmd, args=tokens[1:],
+                          ctx=line_ctx or self._command_context():
                           cmd.invoke(args, ctx=ctx))
                 worker = self._start_stage_thread(
                     label=cmd.name,
@@ -1789,8 +1806,8 @@ class Shell:
                             stdin=stdin_arg,
                             stdout=stdout_arg,
                             stderr=stdout_arg if stderr_dst is subprocess.STDOUT else stderr_dst,
-                            env=self._merged_env(env_prefix),
-                            cwd=os.getcwd(),
+                            env=stage_env(env_prefix),
+                            cwd=cwd,
                         )
                     else:
                         worker = subprocess.Popen(
@@ -1868,31 +1885,81 @@ class Shell:
                         pass
 
         if not workers:
-            if own_job is not None:
-                own_job.discard()
             return unstarted_status
-        if own_job is not None:
-            lone_command = (n == 1 and not stages[0].redirects
-                            and stages[0].decorator is None)
-            return self._run_pipeline_slot(own_job, workers,
-                                           announce_exit=lone_command)
+        if job is not None and getattr(_job_local, "driver", False):
+            return job.wait_for(workers)    # the ones Ctrl+C interrupts
         return self._wait_for_stages(workers)
 
-    def _runs_on_main_thread(self, stage: Stage) -> bool:
-        """Whether a lone stage must run on the main thread: a ``sync``
-        command (it changes the whole shell), or a line of assignments."""
+    # --- one slot per line ---------------------------------------------------
+
+    @staticmethod
+    def _can_park() -> bool:
+        """Whether lines run on slots: a POSIX terminal."""
+        return not IS_WINDOWS and _stdin_is_tty()
+
+    def _stage_command(self, stage: Stage):
+        """A lone stage's registered command, ``"assign"`` for a line of
+        assignments, or None (an external command, a decorator)."""
+        if stage.decorator is not None:
+            return None
         tokens = self._tokenize_stage(stage)
         if not tokens or all(self._ASSIGNMENT_RE.match(t) for t in tokens):
-            return True
+            return "assign"
         _, tokens = self._split_env_prefix(tokens)
         cmd = self.registry.get(tokens[0]) if tokens else None
-        return cmd is not None and cmd.has_any_handler() and cmd.sync
+        return cmd if cmd is not None and cmd.has_any_handler() else None
 
-    def _run_pipeline_slot(self, slot: PipelineSlot, workers: list, *,
-                           announce_exit: bool = False) -> int:
-        """Give the terminal to a pipeline's slot until it ends or Ctrl+]
-        parks it.  *announce_exit*: say so when a lone command fails."""
-        slot.start(workers)
+    def _on_main_thread(self, pipeline: Pipeline) -> bool:
+        """A pipeline that runs on the main thread, not on a slot: a lone
+        `sync` command (it changes the whole shell), or a lone line of
+        assignments."""
+        if len(pipeline.stages) != 1:
+            return False
+        cmd = self._stage_command(pipeline.stages[0])
+        return cmd == "assign" or (cmd is not None and cmd.sync)
+
+    def _runs_on_one_slot(self, seq: Sequence) -> bool:
+        """Whether the whole line runs on one slot (discussion #76): on a
+        terminal, unless it has a lone shell-wide built-in — that runs on the
+        main thread, so the line goes pipeline by pipeline — or is nothing
+        but main-thread work."""
+        if not self._can_park():
+            return False
+        lone = [self._stage_command(p.stages[0]) if len(p.stages) == 1 else None
+                for _, p in seq.items]
+        if any(cmd not in (None, "assign") and cmd.sync for cmd in lone):
+            return False
+        return not all(cmd == "assign" for cmd in lone)
+
+    def _run_on_slot(self, seq: Sequence, label: str) -> int:
+        """Run *seq* on one :class:`~eosh.job.PipelineSlot`: its pipelines,
+        `&&` / `||` / `;` included, on a driver thread, while this thread
+        gives the slot the terminal.  Ctrl+] parks the rest of the line with
+        it; Ctrl+C (a pipeline ending in 130) ends the line, as in bash."""
+        slot = PipelineSlot(label, on_exit=self._slot_finished)
+        # Bound to the context the line started in, whatever is current when
+        # its later parts run: their cwd, environment, variables.
+        slot.ctx = self._command_context()
+        lone_command = (len(seq.items) == 1 and len(seq.items[0][1].stages) == 1
+                        and not seq.items[0][1].stages[0].redirects
+                        and seq.items[0][1].stages[0].decorator is None)
+
+        def drive() -> int:
+            last = 0
+            for op, pipeline in seq.items:
+                if op == "&&" and last != 0:
+                    continue
+                if op == "||" and last == 0:
+                    continue
+                last = self._execute_pipeline(pipeline)
+                if last == 130:
+                    break                   # Ctrl+C ends the line
+                if not slot.parked:
+                    # `cd proj && make`: the move is reported before make runs.
+                    self._notice_state_change()
+            return last
+
+        slot.run(drive)
         ctx = self.context_manager.current()
         slot.activate(replay_missed=True)
         result = self._forward(slot)
@@ -1905,7 +1972,7 @@ class Shell:
         if ctx is not None and ctx.process_slot is slot:
             ctx.process_slot = None
         exit_code = slot.exit_code or 0
-        if announce_exit and exit_code != 0:
+        if lone_command and exit_code not in (0, 127, 130):
             print(f"\n[Process exited with code {exit_code}]")
         return exit_code
 
