@@ -38,7 +38,7 @@ def register() -> None:
     )
 ```
 
-`params=[arg(...)]` declares positionals and flags; the registry derives both an argparse parser and the per-position completer dict from the same list. Each `arg()` configures argparse (validation, defaults, action) and TAB completion in one place — `completer=` on a positional drives completion at that position; `completer=` on a value-taking flag drives completion of the value typed after the flag.
+`params=[arg(...)]` declares positionals and flags; argparse parses with that list, and completion reads it on demand (`node.options_completer()`, `node.positional_completer(i)`) — there is no derived completer dict. Each `arg()` configures argparse (validation, defaults, action) and TAB completion in one place — `completer=` on a positional drives completion at that position; `completer=` on a value-taking flag drives completion of the value typed after the flag.
 
 ## Patterns
 
@@ -76,7 +76,7 @@ def register() -> None:
 
 ### Pattern 2 — Flags with value arguments
 
-When a flag takes a value (e.g. `-j N`, `-C DIR`), declare it on the same `arg()` entry. The flag's `metavar=` becomes the inline hint shown after the flag is selected; if `completer=` is also provided, the engine opens that picker when the user starts typing the value:
+When a flag takes a value (e.g. `-j N`, `-C DIR`), declare it on the same `arg()` entry. The flag's `metavar=` becomes its hint: the picker row reads `-C <DIR>`, and choosing it inserts `-C ` and moves straight on to the value — the `completer=`'s candidates if one is provided, otherwise nothing (the status bar reads `-C <DIR>: …`):
 
 ```python
 arg("-j", metavar="N", help="number of parallel jobs"),                       # hint only
@@ -155,7 +155,7 @@ def _run_git(args: list[str], timeout: float = 2.0) -> list[str]:
 
 ### Pattern 4 — Subcommand tree (per-subcommand flags & completers)
 
-Commands with subcommands (git, make's targets, awsut) are best modelled with the **command tree** API: `registry.command()` returns a `Command` whose `.command()` method registers a child sub-command. Each leaf has its own `params=[...]`, so per-subcommand flags and per-subcommand positional completers fall out for free — no hand-rolled dispatcher.
+Commands with subcommands (git, terraform, awsut) are best modelled with the **command tree** API: `registry.command()` returns a `Command` whose `.command()` method registers a child sub-command. Each leaf has its own `params=[...]`, so per-subcommand flags and per-subcommand positional completers fall out for free — no hand-rolled dispatcher.
 
 ```python
 # Example: trimmed-down git recipe
@@ -239,7 +239,7 @@ application, not a recipe — make it an **add-on** under `addons/` (see
 [addons.md](addons.md)). `awsut` is the bundled example, with its output
 conventions in [addons/awsut/README.md](../addons/awsut/README.md).
 
-Two rules from that world still apply to recipes:
+These rules still apply to recipes:
 
 - **Name a shared helper module with a leading underscore.** `enable("*")`
   discovers the built-in recipes by globbing `recipes/*.py` and calls
@@ -273,5 +273,6 @@ Two rules from that world still apply to recipes:
 | `DirCompleter()` | `completion` | Directory-only arguments (`-C DIR`) |
 | `ChoiceCompleter(list)` | `completion` | Static value lists |
 | `CallbackCompleter(fn)` | `completion` | Dynamic value list from a `() -> list[str]` |
-| `OptionsCompleter(dict, args)` | `completion` | Custom flag completer (only when a recipe has unusual flag rules — the registry auto-builds this from `arg(...)` flag entries) |
+| `OptionsCompleter(dict, args)` | `completion` | Not constructed by recipes — `Command.options_completer()` builds it on demand from the `arg(...)` flag entries |
+| `OverlayCompleter(base, *extras)` | `completion` | Adding candidates to a `delegate` that leaves some slots unanswered (the `aws` recipe's paths) |
 | Custom `Completer` subclass | — | Live data from subprocesses or files |

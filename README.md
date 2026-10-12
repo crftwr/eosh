@@ -23,7 +23,7 @@
 - **Custom commands** — define Python functions as shell commands with full completion support
 - **Python-backed variables** — `var aws_region=us-east-1` can drive multiple `os.environ` keys via a `Var` subclass; `$NAME` expansion is symmetric
 - **Completion recipes** — opt-in TAB completion for `git`, `make`, `ssh`, `aws`, and more
-- **Protocol fallbacks** — automatic completion for cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …) and argcomplete-based Python CLIs (`pipx`, `conda`, `pre-commit`, `tox`, …) — no recipe needed
+- **Protocol fallbacks** — completion for cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …, opt-in by name) and, automatically, argcomplete-based Python CLIs (`pipx`, `conda`, `pre-commit`, `tox`, …) — no hand-written recipe needed
 - **System command fallback** — anything not a registered command runs through the system shell
 - **Cross-platform** — interactive shell, completion, pipelines, redirects, contexts, and history all work on POSIX and Windows; PTY-backed multiplexing of running native processes is POSIX-only
 - **History** — shared by every eosh window (SQLite): fish-style suggestions of lines you ran in this directory, `Ctrl+R` search that starts from what you've typed, per-context up/down navigation, and a `history` command
@@ -145,10 +145,10 @@ Context subcommands:
 
 Press `Ctrl+]` at the shell prompt (or while a process is running) to open a TUI context picker:
 
-- Arrow keys or `Ctrl+P/N` to navigate
+- Arrow keys or `Ctrl+P` to navigate
 - **Enter** to switch to the selected context
 - **Esc** / `Ctrl+C` to cancel
-- Select `+ new context` to create a new one
+- `Ctrl+N` creates a new context, `Ctrl+D` deletes the highlighted one, `Ctrl+R` renames it
 
 If the target context has a running process, switching to it resumes that process immediately. The original process keeps running in the background — visible as `[bg:1]` in the prompt.
 

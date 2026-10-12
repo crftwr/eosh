@@ -11,7 +11,7 @@ Python `@registry.command` handlers participate in pipelines as worker
 threads sharing the shell process — `_execute_pipeline` looks up each
 stage in the registry, runs registered commands in a thread that rebinds
 `sys.stdin` / `sys.stdout` / `sys.stderr` to the pipe ends via the
-thread-local routers in `shell.py`, and waits on a mixed list of
+thread-local routers in `slots.py`, and waits on a mixed list of
 `subprocess.Popen` and Python-stage handles. No `fork()`; works the
 same on POSIX and Windows.
 
@@ -63,7 +63,8 @@ some flag or use `signal.set_wakeup_fd`-style coordination itself.
 **`ctx.run_interactive` / `ctx.input` / `ctx.input_block` / `ctx.choose` are
 not usable in piped Python commands** — stdin/stdout are wired to pipes, not the terminal, so
 those helpers can't do their job. They raise `RuntimeError` if called
-from inside a pipeline thread. Use plain `subprocess.run` (with the
+from a stage whose stdin/stdout are pipes (`execution.current().piped`);
+a lone stage on a `PipelineSlot` has the slot's PTY and can use them. Use plain `subprocess.run` (with the
 `stdout=sys.stdout` workaround above) for non-interactive children.
 
 ## `@watch` shows one screenful, and `q` waits for the current run
@@ -344,9 +345,10 @@ re-render it on `activate()`.
   lands in the middle of the line editor's display. Post a notification or
   write a file there, but don't print. Handing the call to the main thread
   would need a way to wake the line editor, which it doesn't have.
-- **`on_command_not_found` is asked only for a command run on its own.** A
-  missing command inside a pipeline or with a redirect (`nope | cat`,
-  `nope > out`) is reported by the pipeline path as before.
+- **`on_command_not_found` is asked only for a command run on its own**
+  (redirected or not). A missing command inside a multi-stage pipeline or
+  a decorator body (`nope | cat`, `@time nope`) is reported by the pipeline
+  path as before.
 - **`on_exit` runs on `exit` and Ctrl+D only.** A shell killed by a signal
   (the terminal window closed, `SIGHUP`) ends without it.
 - **A directory change made by a still-running Python command** (a

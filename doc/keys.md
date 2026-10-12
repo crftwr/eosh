@@ -57,8 +57,9 @@ action of that name. A dotted name narrows it to one:
 | `"picker.accept"` | `picker.accept` only. It wins there over an `"accept"` entry, whichever was bound first |
 
 `@keys.action(name)` and `ctx.invoke(name)` read a bare name as `prompt.`
-(the only surface with user actions, and the one `invoke` runs on). Bind a
-user action after defining it: before that, its name is unknown.
+(the only surface with user actions, and the one `invoke` runs on). A user
+action may be bound before or after it is defined: `bind` only records the
+name, which is checked once the config has run.
 
 `prompt.switch_context` is also the key the shell watches for while a command
 runs in the foreground, so rebinding it moves Ctrl+] everywhere.

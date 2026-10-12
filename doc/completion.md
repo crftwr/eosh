@@ -100,15 +100,17 @@ Completes filesystem paths relative to the current directory. Handles:
 
 ### DirCompleter
 
-Like `FileCompleter` but only returns directories. Used for flags that take a directory path (e.g. `du -C DIR`).
+Like `FileCompleter` but only returns directories. Used for flags that take a directory path (e.g. `make -C DIR`, `tar -C DIR`).
 
 ### CommandNameCompleter
 
-Completes command names from two sources:
-1. Registered commands in the `CommandRegistry`
-2. Executable files on `$PATH` (only searched when prefix is non-empty, to avoid flooding)
+Completes command names from these sources:
+1. Registered commands in the `CommandRegistry` (decorators — `@name` — are left out)
+2. Aliases
+3. Executable files on `$PATH` (only searched when prefix is non-empty, to avoid flooding)
+4. Directories in the cwd, and local executables once the prefix names a path (`./tool`) — again only for a non-empty prefix
 
-Results are labeled `"command"` or `"system"` in the description field.
+Results are labeled `"command"`, `"alias → …"`, `"system"`, `"directory"` or `"executable"` in the description field. A completion-only recipe (no handler) is labeled `"system"`.
 
 ### ChoiceCompleter
 
@@ -153,7 +155,7 @@ This replaced a separate multi-select checkbox picker and an after-TAB "arg hint
 `OptionsCompleter` also handles:
 - **Flag deduplication** — flags already present in `ctx.args` are excluded
 - **Short-flag cluster parsing** — `-hs` in `ctx.args` is treated as both `-h` and `-s` already used
-- **Preceding-flag hint** — when the last completed arg is a value-taking flag and the user presses TAB without typing `-`, the engine shows a hint instead of opening a picker
+- **Preceding-flag lookup** — `get_preceding_flag_hint(ctx)` tells the engine that the last completed arg is a value-taking flag and hands back its hint and value completer (if any), which is what the `value` slot completes with
 
 ### OverlayCompleter
 
@@ -243,7 +245,7 @@ Press Enter to apply, or TAB to extend the common prefix explicitly.
 
 ### Nothing is selected until the user selects it
 
-Both completion pickers open with **no row highlighted** (`select_first=False`
+The completion picker opens with **no row highlighted** (`select_first=False`
 on the widget). Enter on a freshly opened list therefore inserts nothing — it
 just dismisses the list, leaving the line exactly as typed. To accept a
 candidate the user makes the choice explicit:
@@ -316,7 +318,7 @@ This design means:
 - Each `arg()` is independent — positionals declared in order, flags can appear anywhere in the list
 - Positionals without a `completer=` (and no `choices=`) fall back to file completion at that index
 - Later completers see earlier args via `ctx.args`
-- All flags collected into a single `OptionsCompleter` under `None` — activated whenever the user types a `-`-prefixed token
+- All flags collected into a single `OptionsCompleter` (`Command.options_completer()`, built on demand) — activated whenever the user types a `-`-prefixed token
 
 External recipes use the same `params=[arg(...)]` form, registered without a handler. The dispatch path treats handler-less Commands as external recipes and falls through to the system-command path:
 
