@@ -292,18 +292,18 @@ eosh> aws ec2 describe-instances --region $aws_region
 
 ### Custom Decorators
 
-A decorator is a command named `@name`: register it with `registry.command("@name", ...)`, exactly as you would a command. The function receives the wrapped `Pipeline` as its first positional argument and the parsed flag namespace as kwargs; call `pipeline.run()` to execute the body and return the exit code.
+A decorator is a command named `@name`: register it with `registry.command("@name", ...)`, exactly as you would a command. The function receives the body as its first positional argument (a `Sequence`: the pipelines inside the braces, joined by `;` / `&&` / `||`) and the parsed flag namespace as kwargs; call `body.run()` to execute it and return the exit code.
 
 ```python
 # ~/.eosh/config.py
 import sys
 import time
 from eosh.commands import arg, registry
-from eosh.pipeline import Pipeline
+from eosh.pipeline import Sequence
 
 @registry.command(
     "@repeat",
-    help="Run the pipeline N times, stopping early on the first failure.",
+    help="Run the body N times, stopping early on the first failure.",
     params=[
         arg("-n", "--count", type=int, default=3, metavar="N",
             help="number of iterations (default 3)"),
@@ -311,11 +311,11 @@ from eosh.pipeline import Pipeline
             help="seconds to sleep between iterations"),
     ],
 )
-def repeat(pipeline: Pipeline, *, count: int, delay: float) -> int:
+def repeat(body: Sequence, *, count: int, delay: float) -> int:
     last = 0
     for i in range(1, count + 1):
         sys.stderr.write(f"@repeat: iteration {i}/{count}\n")
-        last = pipeline.run()
+        last = body.run()
         if last != 0:
             return last
         if delay > 0 and i < count:

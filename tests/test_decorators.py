@@ -119,47 +119,47 @@ def test_parse_bare_decorator_no_flags(watch_deco):
     stage = _decorator_stage("@watch ls")
     assert stage.decorator.name == "watch"
     assert stage.decorator.flag_tokens == []
-    assert [s.text for s in stage.decorator.body.stages] == ["ls"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["ls"]
 
 
 def test_parse_decorator_with_value_flag(watch_deco):
     """`-n 1` consumes both tokens; `df -h` is the body."""
     stage = _decorator_stage("@watch -n 1 df -h")
     assert stage.decorator.flag_tokens == ["-n", "1"]
-    assert [s.text for s in stage.decorator.body.stages] == ["df -h"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["df -h"]
 
 
 def test_parse_decorator_with_boolean_flag(watch_deco):
     stage = _decorator_stage("@watch --no-clear ls")
     assert stage.decorator.flag_tokens == ["--no-clear"]
-    assert [s.text for s in stage.decorator.body.stages] == ["ls"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["ls"]
 
 
 def test_parse_decorator_with_flag_value_then_boolean(watch_deco):
     stage = _decorator_stage("@watch -n 1 --no-clear ls")
     assert stage.decorator.flag_tokens == ["-n", "1", "--no-clear"]
-    assert [s.text for s in stage.decorator.body.stages] == ["ls"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["ls"]
 
 
 def test_parse_decorator_eq_form(watch_deco):
     """`--interval=5` is a single token; argparse already understands it."""
     stage = _decorator_stage("@watch --interval=5 ls")
     assert stage.decorator.flag_tokens == ["--interval=5"]
-    assert [s.text for s in stage.decorator.body.stages] == ["ls"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["ls"]
 
 
 def test_parse_decorator_double_dash(watch_deco):
     """`--` terminates flag parsing; -la is part of ls's args."""
     stage = _decorator_stage("@watch -- ls -la")
     assert stage.decorator.flag_tokens == []
-    assert [s.text for s in stage.decorator.body.stages] == ["ls -la"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["ls -la"]
 
 
 def test_parse_body_with_dash_flags(watch_deco):
     """`@watch -n 5 ls -la` — `-la` belongs to ls, not @watch."""
     stage = _decorator_stage("@watch -n 5 ls -la")
     assert stage.decorator.flag_tokens == ["-n", "5"]
-    assert [s.text for s in stage.decorator.body.stages] == ["ls -la"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["ls -la"]
 
 
 # ---------------------------------------------------------------------------
@@ -168,18 +168,18 @@ def test_parse_body_with_dash_flags(watch_deco):
 
 def test_parse_braced_single_command(watch_deco):
     stage = _decorator_stage("@watch {ls}")
-    assert [s.text for s in stage.decorator.body.stages] == ["ls"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["ls"]
 
 
 def test_parse_braced_multistage_pipeline(watch_deco):
     stage = _decorator_stage("@watch {df -h | grep abc}")
-    assert [s.text for s in stage.decorator.body.stages] == ["df -h", "grep abc"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["df -h", "grep abc"]
 
 
 def test_parse_braced_with_flag(watch_deco):
     stage = _decorator_stage("@watch -n 1 {df -h | grep abc}")
     assert stage.decorator.flag_tokens == ["-n", "1"]
-    assert [s.text for s in stage.decorator.body.stages] == ["df -h", "grep abc"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["df -h", "grep abc"]
 
 
 # ---------------------------------------------------------------------------
@@ -188,17 +188,17 @@ def test_parse_braced_with_flag(watch_deco):
 
 def test_brace_handling_double_quoted_brace(watch_deco):
     stage = _decorator_stage('@watch {echo "}"}')
-    assert [s.text for s in stage.decorator.body.stages] == ['echo "}"']
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ['echo "}"']
 
 
 def test_brace_handling_single_quoted_brace(watch_deco):
     stage = _decorator_stage("@watch {grep '{' file}")
-    assert [s.text for s in stage.decorator.body.stages] == ["grep '{' file"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["grep '{' file"]
 
 
 def test_brace_handling_escaped_brace(watch_deco):
     stage = _decorator_stage(r"@watch {echo \}}")
-    assert [s.text for s in stage.decorator.body.stages] == [r"echo \}"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == [r"echo \}"]
 
 
 def test_brace_handling_var_expansion(watch_deco):
@@ -209,7 +209,7 @@ def test_brace_handling_var_expansion(watch_deco):
     keeps the outer scope intact.
     """
     stage = _decorator_stage("@watch {echo '${X}'}")
-    assert [s.text for s in stage.decorator.body.stages] == ["echo '${X}'"]
+    assert [s.text for s in stage.decorator.body.items[0][1].stages] == ["echo '${X}'"]
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ def test_parse_compose_decorator_with_pipe(watch_deco):
     deco_stage, next_stage = pipeline.stages
     assert deco_stage.decorator is not None
     assert deco_stage.decorator.name == "watch"
-    assert [s.text for s in deco_stage.decorator.body.stages] == ["ls"]
+    assert [s.text for s in deco_stage.decorator.body.items[0][1].stages] == ["ls"]
     assert next_stage.decorator is None
     assert next_stage.text == "grep py"
 
@@ -236,7 +236,7 @@ def test_parse_compose_decorator_with_multistage_body(watch_deco):
     pipeline = stage_seq.items[0][1]
     assert len(pipeline.stages) == 2
     assert pipeline.stages[0].decorator is not None
-    assert [s.text for s in pipeline.stages[0].decorator.body.stages] == [
+    assert [s.text for s in pipeline.stages[0].decorator.body.items[0][1].stages] == [
         "df -h", "grep abc"
     ]
     assert pipeline.stages[1].text == "wc -l"
@@ -247,7 +247,7 @@ def test_parse_compose_decorator_with_flags_and_pipe(watch_deco):
     pipeline = seq.items[0][1]
     deco_stage, next_stage = pipeline.stages
     assert deco_stage.decorator.flag_tokens == ["-n", "1"]
-    assert [s.text for s in deco_stage.decorator.body.stages] == ["ls"]
+    assert [s.text for s in deco_stage.decorator.body.items[0][1].stages] == ["ls"]
     assert next_stage.text == "grep py"
 
 
@@ -309,7 +309,7 @@ def test_a_decorator_after_an_operator(watch_deco):
     seq = parse_line("make && @watch {ls | wc -l}")
     deco = seq.items[1][1].stages[0].decorator
     assert seq.items[1][0] == "&&"
-    assert deco.name == "watch" and [st.text for st in deco.body.stages] == ["ls", "wc -l"]
+    assert deco.name == "watch" and [st.text for st in deco.body.items[0][1].stages] == ["ls", "wc -l"]
 
 
 def test_stacked_decorators_nest_outside_in():
@@ -318,10 +318,10 @@ def test_stacked_decorators_nest_outside_in():
     register_builtins()
     seq = parse_line("@time @retry -n 3 flaky")
     outer = seq.items[0][1].stages[0].decorator
-    inner = outer.body.stages[0].decorator
+    inner = outer.body.items[0][1].stages[0].decorator
     assert (outer.name, inner.name) == ("time", "retry")
     assert inner.flag_tokens == ["-n", "3"]
-    assert inner.body.stages[0].text == "flaky"
+    assert inner.body.items[0][1].stages[0].text == "flaky"
 
 
 def test_stacked_decorators_run_outside_in(capfd):
@@ -397,9 +397,9 @@ def test_decorator_dispatch_passes_pipeline_and_args():
     received = {}
 
     @command_registry.command("@_t_capture", params=[arg("-n", type=int, default=1)])
-    def _capture(pipeline, *, n):
+    def _capture(body, *, n):
         received["n"] = n
-        received["body_texts"] = [s.text for s in pipeline.stages]
+        received["body_texts"] = [s.text for _, p in body.items for s in p.stages]
 
     seq = parse_line("@_t_capture -n 5 echo hi")
     sh._execute_decorator_stage(seq.items[0][1].stages[0])
@@ -578,20 +578,27 @@ def test_watch_frame_fits_the_screen_without_wrapping():
     assert not frame.endswith("\r\n")
 
 
-def test_watch_captured_redirects_the_last_stage_only():
-    """The body is captured by redirecting its last stage's stdout and
-    stderr; the user's pipeline is left as written for the next run."""
+def test_watch_captured_redirects_each_pipelines_last_stage():
+    """The body is captured by appending each pipeline's last stage's stdout
+    and stderr to one file; the user's body is left as written for the next
+    run."""
     from eosh.decorators.watch import _captured
-    from eosh.pipeline import Pipeline, Redirect, Stage
+    from eosh.pipeline import Pipeline, Redirect, Sequence, Stage
 
-    original = Pipeline(stages=[Stage(text="echo hi"), Stage(text="grep h")])
+    original = Sequence(items=[
+        (None, Pipeline(stages=[Stage(text="echo hi"), Stage(text="grep h")])),
+        (";", Pipeline(stages=[Stage(text="date")])),
+    ])
     captured = _captured(original, "/tmp/out")
-    assert [s.redirects for s in original.stages] == [[], []]
-    assert captured.stages[0].redirects == []
-    assert captured.stages[-1].redirects == [
-        Redirect(kind=">", target="/tmp/out"),
-        Redirect(kind="2>&1", target="1"),
-    ]
+    assert [s.redirects for _, p in original.items for s in p.stages] == [[], [], []]
+    assert [op for op, _ in captured.items] == [None, ";"]
+    first, second = (p for _, p in captured.items)
+    assert first.stages[0].redirects == []
+    for p in (first, second):
+        assert p.stages[-1].redirects == [
+            Redirect(kind=">>", target="/tmp/out"),
+            Redirect(kind="2>&1", target="1"),
+        ]
 
 
 def test_thread_local_stdout_isatty_falls_through(monkeypatch):
@@ -730,20 +737,24 @@ def test_retry_invalid_attempts(capsys):
 def test_quiet_silenced_helper_appends_redirect():
     _enable_builtin("quiet")
     from eosh.decorators.quiet import _silenced
-    from eosh.pipeline import Pipeline, Redirect, Stage
+    from eosh.pipeline import Pipeline, Redirect, Sequence, Stage
 
-    original = Pipeline(stages=[Stage(text="echo hi"), Stage(text="grep h")])
+    original = Sequence(items=[
+        (None, Pipeline(stages=[Stage(text="echo hi"), Stage(text="grep h")])),
+        ("&&", Pipeline(stages=[Stage(text="date")])),
+    ])
     silenced = _silenced(original, also_stderr=False)
     # Original untouched.
-    assert [s.redirects for s in original.stages] == [[], []]
-    # Last stage now writes to /dev/null.
-    assert silenced.stages[-1].redirects[0].kind == ">"
-    assert silenced.stages[-1].redirects[0].target == os.devnull
-    assert len(silenced.stages[-1].redirects) == 1
+    assert [s.redirects for _, p in original.items for s in p.stages] == [[], [], []]
+    # Each pipeline's last stage now writes to /dev/null.
+    for _, p in silenced.items:
+        assert p.stages[-1].redirects == [Redirect(kind=">", target=os.devnull)]
+    assert silenced.items[0][1].stages[0].redirects == []
 
     silenced2 = _silenced(original, also_stderr=True)
     # With --stderr, an additional 2>&1 is appended so stderr follows stdout.
-    assert silenced2.stages[-1].redirects[1] == Redirect(kind="2>&1", target="1")
+    for _, p in silenced2.items:
+        assert p.stages[-1].redirects[1] == Redirect(kind="2>&1", target="1")
 
 
 def test_quiet_discards_stdout(tmp_path):
@@ -891,3 +902,88 @@ def test_a_stacked_decorator_completes_like_the_first():
     assert prefix == "@ret" and [c.value for c in comps] == ["@retry"]
     comps, _, _ = sh._get_completions("@time @retry -")
     assert "--attempts" in [c.value for c in comps]
+
+
+# ── `;` / `&&` / `||` inside a braced body ──────────────────────────────────
+
+def test_a_braced_body_is_a_sequence(watch_deco):
+    seq = parse_line("@watch {make && ./run; date || echo no | wc -l}")
+    body = seq.items[0][1].stages[0].decorator.body
+    assert [op for op, _ in body.items] == [None, "&&", ";", "||"]
+    assert [[s.text for s in p.stages] for _, p in body.items] == [
+        ["make"], ["./run"], ["date"], ["echo no", "wc -l"]]
+
+
+def test_a_sequence_in_a_body_still_lets_the_line_go_on(watch_deco):
+    seq = parse_line("@watch {a; b} | grep x && c")
+    assert [op for op, _ in seq.items] == [None, "&&"]
+    deco = seq.items[0][1].stages[0].decorator
+    assert [op for op, _ in deco.body.items] == [None, ";"]
+    assert [s.text for s in seq.items[0][1].stages[1:]] == ["grep x"]
+
+
+def test_a_bare_body_still_refuses_sequencing(watch_deco):
+    with pytest.raises(DecoratorParseError, match="wrap the statement"):
+        parse_line("@watch ls && pwd")
+
+
+def test_a_body_label_shows_its_operators():
+    seq = parse_line("@time -v {make && ./run; date || echo no | wc -l}")
+    assert seq.items[0][1].label() == "@time -v {make && ./run; date || echo no | wc -l}"
+
+
+def test_a_body_runs_as_a_line(tmp_path):
+    sh = Shell()
+    out = tmp_path / "out"
+    status = sh._execute(
+        f"@time {{echo a >> {out}; false && echo skipped >> {out} || echo b >> {out}}}")
+    assert status == 0
+    assert out.read_text() == "a\nb\n"
+
+
+def test_a_body_returns_the_last_status_run(tmp_path):
+    sh = Shell()
+    assert sh._execute("@time {true && false}") == 1
+    assert sh._execute("@time {false || true}") == 0
+
+
+def test_retry_reruns_the_whole_body(tmp_path):
+    sh = Shell()
+    count = tmp_path / "count"
+    status = sh._execute(f"@retry -n 3 {{echo x >> {count} && false}}")
+    assert status == 1
+    assert count.read_text().count("x") == 3
+
+
+def test_an_interrupted_item_ends_the_body(tmp_path):
+    sh = Shell()
+    out = tmp_path / "out"
+    status = sh._execute(f"@time {{sh -c 'exit 130'; echo after >> {out}}}")
+    assert status == 130
+    assert not out.exists()
+
+
+def test_quiet_silences_every_pipeline_of_the_body(tmp_path, capfd):
+    _enable_builtin("quiet")
+    sh = Shell()
+    assert sh._execute("@quiet {echo one; echo two | cat}") == 0
+    assert "one" not in capfd.readouterr().out
+
+
+@pytest.mark.requires_real_stdio
+def test_a_sequence_body_feeds_the_outer_pipe(tmp_path):
+    sh = Shell()
+
+    @command_registry.command("@_t_once_seq")
+    def _once(body):
+        return body.run()
+
+    out = tmp_path / "out"
+    sh._execute(f"@_t_once_seq {{echo apple; echo banana && echo cherry}} | grep an > {out}")
+    assert out.read_text() == "banana\n"
+
+
+def test_completion_inside_a_sequence_body():
+    sh = Shell()
+    comps, prefix, _ = sh._get_completions("@time {true && @ret")
+    assert prefix == "@ret" and [c.value for c in comps] == ["@retry"]

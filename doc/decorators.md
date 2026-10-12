@@ -170,7 +170,9 @@ Everything inside the braces (or, for the un-braced single-command
 form, the bare command) is a normal pipeline — `;`, `&&`, `||`, `|`,
 `>`, `<`, `2>`, globbing, var expansion, backslash continuation all
 work exactly as they do at the top level. The decorator never sees
-raw text; it gets a parsed pipeline AST.
+raw text; it gets the parsed body: a `Sequence` of pipelines joined by
+`;` / `&&` / `||` (`@time {make && ./run}`), which `body.run()` runs as
+the shell runs a line.
 
 Multiple decorators stack from outside in (closest to the pipeline runs
 innermost), matching Python's decorator semantics:
@@ -282,10 +284,8 @@ Parser story (implemented in
 
 The remainder after the closing `}` is fed back through the same
 `split_on_operators` path as a top-level pipeline, so any number of
-`|`-stages can follow.  `;`/`&&`/`||` after the closing `}` are
-explicitly rejected with a clear error — relaxing that needs the
-outer-sequence parser to treat the decorator-stage as one statement,
-which is a separate change.
+`|`-stages can follow, and `;` / `&&` / `||` after the closing `}` start
+the line's next item (#89).
 
 Executor story
 ([shell.py::_execute_pipeline](../src/eosh/shell.py)):
@@ -314,11 +314,10 @@ Three things this unlocks:
 1. **Decorator output as a stream stage** —
    `@watch --no-clear {curl …} | jq '.status'` continuously
    processes results.
-2. **Redirects bind to whichever scope is braced** —
-   `@time {make && ./run} > build.log` times the whole chain and
-   redirects together; `@time {make} > build.log` times only `make`
-   but redirects only `make`'s output.  (`@time` itself isn't
-   shipped yet, but the parsing/execution rule is in place.)
+2. **Redirects stay inside the scope** — a redirect after `}` is
+   refused (#88); `@time {make > build.log && ./run}` puts it on the
+   stage it belongs to, and `@time {make && ./run} | tee build.log`
+   sends the whole chain's output on.
 3. **Decorators on top of decorators on subexpressions** —
    `@retry -n 3 @time {flaky-test}` already works under the existing
    stacking rule; nothing new.
@@ -482,7 +481,7 @@ that's a one-line `try`/`except BrokenPipeError` around
 ## Decorator API sketch
 
 A decorator **is** a command — one named `@name` in the command registry,
-whose handler receives the wrapped `Pipeline` ahead of its parsed flags
+whose handler receives the body (a `Sequence`) ahead of its parsed flags
 (discussion #40). It reuses `arg(...)`, argparse, completion and `reload`;
 the `@` keeps it from colliding with a command (`@time` vs. `time`), and
 command-name completion and `help` keep the two apart.
@@ -498,25 +497,30 @@ from eosh.commands import arg, registry
         arg("--no-clear", action="store_true", help="don't clear screen between runs"),
     ],
 )
-def watch(pipeline, *, interval: float, no_clear: bool):
+def watch(body, *, interval: float, no_clear: bool):
     while True:
         if not no_clear and sys.stdout.isatty():
             sys.stdout.write("\x1b[2J\x1b[H")
-        pipeline.run()              # runs the parsed pipeline; honours redirects, pipes, etc.
+        body.run()                  # runs the parsed body; honours redirects, pipes, etc.
         time.sleep(interval)
 ```
 
-The `pipeline` argument is the same kind of object the shell's normal
-execution path runs. It exposes at least:
+The `body` argument is the same kind of object the shell's normal
+execution path runs — a `Sequence`, the pipelines inside the braces
+joined by `;` / `&&` / `||` (one item for a bare body). It exposes:
 
-- `pipeline.run() -> int` — run synchronously, return exit status
-- `pipeline.run(stdout=..., stderr=...)` — run with redirected stdio
-  (so `@time` can capture)
-- `pipeline.text` — original source text, for display
+- `body.run() -> int` — run synchronously, as a line runs (`&&` / `||`
+  skip on the last status), and return the last status
+- `body.map(fn) -> Sequence` — a copy with `fn` applied to each
+  `Pipeline` (`@quiet` and `@watch` redirect each one's last stage)
+- `body.label() -> str` — how it reads, for display (`@watch`'s header)
+- `body.items` — `(operator, Pipeline)` pairs, the operator `None` for
+  the first
 
 `Ctrl+C` during a decorator's body interrupts the body, and then the
-decorator: when the body ends with status 130, `pipeline.run()` raises
-`KeyboardInterrupt` (`Shell._run_pipeline_from_decorator`), so one rule
+decorator: when the body ends with status 130, `body.run()` raises
+`KeyboardInterrupt` (`Shell._run_body`) — an item ending in 130 also
+ends the rest of the body, as it ends a line — so one rule
 covers every decorator — `@watch` stops instead of ticking on, `@retry`
 doesn't retry an interrupt, and `@time` still prints its timing from its
 `finally`. On a `PipelineSlot` the decorator's own thread also gets a
@@ -618,19 +622,20 @@ Open questions are tracked in
    `@watch -n 5 ls` parses as `flags=["-n", "5"]`, `body="ls"`.
    Composition: any `|`-prefixed remainder after the closing `}` is
    handed back to `parse_line`, which prepends the decorator-stage
-   to a regular multi-stage pipeline.  `;`/`&&`/`||` after the
-   closing `}` are rejected with a focused error.
+   to a regular multi-stage pipeline; `;` / `&&` / `||` after the
+   closing `}` start the line's next item. Inside the braces the body
+   is parsed with `parse_line`, so it is a `Sequence`.
 2. **Registry** — the command registry: a decorator is the `Command`
    `@name` (discussion #40 folded the former `DecoratorRegistry` into
-   it). `Command.invoke(flag_tokens, pipeline)` parses the flags with
-   argparse and passes the `Pipeline` first; the parser's
+   it). `Command.invoke(flag_tokens, body)` parses the flags with
+   argparse and passes the body first; the parser's
    "does this flag take a value?" question is `Command.takes_value`.
    Built-ins are registered by `eosh.decorators.register_builtins()`.
-3. **`Pipeline.run()` indirection** in
-   [pipeline.py](../src/eosh/pipeline.py): `Pipeline.run(stdin=,
-   stdout=, stderr=) -> int` calls into a registered executor. The
-   `Shell.__init__` flow registers
-   `Shell._run_pipeline_from_decorator`, which currently ignores the
+3. **`Sequence.run()` / `Pipeline.run()` indirection** in
+   [pipeline.py](../src/eosh/pipeline.py): `run(stdin=, stdout=,
+   stderr=) -> int` calls into a registered executor. The
+   `Shell.__init__` flow registers `Shell._run_body`, which runs a
+   `Sequence` with the same `_run_items` loop as a line, and refuses the
    stdio kwargs (decorator bodies inherit the decorator's stdio,
    which is already correctly routed by the thread-local stdio).
 4. **Dispatch** in
@@ -670,6 +675,7 @@ Open questions are tracked in
 
 Tracked in
 [discussion #67](https://github.com/crftwr/eosh/discussions/67): more
-built-ins (`@confirm`, `@nice`). Stacking, sequencing after a scope,
+built-ins (`@confirm`, `@nice`). Stacking, sequencing after a scope and
+inside one,
 slot-aware `@watch`, typo suggestions and the history / redirect tests
 have shipped (#80, #88, #89).

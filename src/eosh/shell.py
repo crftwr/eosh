@@ -98,19 +98,6 @@ def _isatty(f) -> bool:
         return False
 
 
-def _stage_label_of(pipeline: Pipeline) -> str:
-    return " | ".join(_stage_label(st) for st in pipeline.stages)
-
-
-def _stage_label(stage: Stage) -> str:
-    """How a stage reads in the switcher and a notification."""
-    call = stage.decorator
-    if call is None:
-        return stage.text
-    body = " | ".join(_stage_label(st) for st in call.body.stages)
-    return " ".join([f"@{call.name}", *call.flag_tokens, f"{{{body}}}"])
-
-
 def _is_continuation(line: str) -> bool:
     """Return True if *line* ends with an unescaped backslash (line continuation).
 
@@ -365,7 +352,7 @@ class Shell(ContextSwitcher):
         self._var_completer = VarCompleter()
 
         # Wire Pipeline.run() so decorator bodies can re-enter execution.
-        set_pipeline_executor(self._run_pipeline_from_decorator)
+        set_pipeline_executor(self._run_body)
 
     def _suggest(self, buf: str) -> str | None:
         """The ghost suggestion for *buf*: the latest line run in this
@@ -1449,7 +1436,7 @@ class Shell(ContextSwitcher):
                     # A line with a shell-wide built-in runs pipeline by
                     # pipeline, each of the others on a slot of its own.
                     last_exit = self._run_on_slot(Sequence(items=[(None, pipeline)]),
-                                                  _stage_label_of(pipeline))
+                                                  pipeline.label())
                 else:
                     last_exit = self._execute_pipeline(pipeline)
                 # `cd proj && make`: the move is reported before make runs.
@@ -1577,10 +1564,30 @@ class Shell(ContextSwitcher):
             return tokens
         return expansion_tokens + tokens[1:]
 
-    def _run_pipeline_from_decorator(
-        self, pipeline: Pipeline, *, stdin=None, stdout=None, stderr=None
+    @staticmethod
+    def _run_items(seq: Sequence, run: Callable[[Pipeline], int],
+                   after: Callable[[], None] | None = None) -> int:
+        """Run *seq*'s pipelines with *run*, as a line runs: `&&` / `||`
+        skip on the last status, and a pipeline ending in 130 (Ctrl+C) ends
+        it.  *after* runs after each pipeline that ran."""
+        last = 0
+        for op, pipeline in seq.items:
+            if op == "&&" and last != 0:
+                continue
+            if op == "||" and last == 0:
+                continue
+            last = run(pipeline)
+            if last == 130:
+                break
+            if after is not None:
+                after()
+        return last
+
+    def _run_body(
+        self, body: Pipeline | Sequence, *, stdin=None, stdout=None, stderr=None
     ) -> int:
-        """Entry point used by ``Pipeline.run()`` from a decorator body.
+        """Entry point used by ``body.run()`` from a decorator: its body,
+        pipelines joined by ``;`` / ``&&`` / ``||``, run as a line is.
 
         The MVP rejects explicit ``stdin``/``stdout``/``stderr`` overrides;
         the body inherits stdio from the decorator's caller via the
@@ -1598,11 +1605,13 @@ class Shell(ContextSwitcher):
         """
         if any(x is not None for x in (stdin, stdout, stderr)):
             raise NotImplementedError(
-                "Pipeline.run(stdin=, stdout=, stderr=) is not supported yet; "
+                "body.run(stdin=, stdout=, stderr=) is not supported yet; "
                 "the decorator body inherits stdio from the decorator's caller."
             )
         in_outer_pipe = getattr(_in_pipeline, "flag", False)
-        status = self._execute_pipeline(pipeline, _in_outer_pipe=in_outer_pipe)
+        seq = body if isinstance(body, Sequence) else Sequence(items=[(None, body)])
+        status = self._run_items(
+            seq, lambda p: self._execute_pipeline(p, _in_outer_pipe=in_outer_pipe))
         if status == 130:
             # The body was interrupted (Ctrl+C): so is the decorator — @watch
             # stops, @retry doesn't retry, @time still prints on the way out.
@@ -1956,20 +1965,13 @@ class Shell(ContextSwitcher):
                         and not seq.items[0][1].stages[0].redirects
                         and seq.items[0][1].stages[0].decorator is None)
 
+        def after() -> None:
+            if not slot.parked:
+                # `cd proj && make`: the move is reported before make runs.
+                self._notice_state_change()
+
         def drive() -> int:
-            last = 0
-            for op, pipeline in seq.items:
-                if op == "&&" and last != 0:
-                    continue
-                if op == "||" and last == 0:
-                    continue
-                last = self._execute_pipeline(pipeline)
-                if last == 130:
-                    break                   # Ctrl+C ends the line
-                if not slot.parked:
-                    # `cd proj && make`: the move is reported before make runs.
-                    self._notice_state_change()
-            return last
+            return self._run_items(seq, self._execute_pipeline, after)
 
         slot.run(drive)
         ctx = self.context_manager.current()

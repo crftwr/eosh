@@ -6,7 +6,7 @@ import os
 import sys
 import time as _time
 
-from ..pipeline import Pipeline
+from ..pipeline import Sequence
 from ..commands import registry as command_registry
 
 
@@ -21,7 +21,7 @@ def register() -> None:
         "@time",
         help="Print elapsed wall/user/sys time after the pipeline finishes.",
     )
-    def time_(pipeline: Pipeline) -> int:
+    def time_(body: Sequence) -> int:
         # ``os.times()`` reports cumulative CPU time for this process and
         # any waited-for children.  We diff before/after so any other
         # subprocess work happening in the same shell doesn't pollute the
@@ -29,7 +29,7 @@ def register() -> None:
         wall_start = _time.monotonic()
         cpu_start = os.times()
         try:
-            return pipeline.run()
+            return body.run()
         finally:
             wall_end = _time.monotonic()
             cpu_end = os.times()
