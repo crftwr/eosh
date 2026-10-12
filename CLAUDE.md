@@ -589,7 +589,7 @@ Two objects, so user code never holds a live internal (`Context`, a slot, the
   one as `CompletionContext.shell_context`.
 - **`CommandContext(ShellView)`** — what a Python command declared with
   `pass_context=True` receives as its **first argument** (ahead of a
-  decorator's `Pipeline`; `Command.invoke(args, *lead, ctx=...)` prepends it
+  decorator's body; `Command.invoke(args, *lead, ctx=...)` prepends it
   only for a node that opted in). Adds `input(prompt)`, `input_block(prompt)`,
   `confirm(prompt, default=False)`, `choose(items, title="")`,
   `run_interactive(argv, **popen_kwargs)`, `set_var(name, value)`,
@@ -981,6 +981,7 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 ```
 @watch ls                              # bare single-command body
 @watch -n 1 {df -h | grep abc}         # braced body required when operators appear
+@time {make && ./run-tests}            # a braced body is a line: ; && || too
 @watch --no-clear {tail -f log}
 ```
 
@@ -998,8 +999,8 @@ A **decorator** is a token of the form `@name [flags]` at the start of a line th
 command's (`_resolve_slot`), `reload` clears config-defined ones with the other
 user commands, and `help` lists them under their own heading. The `@` keeps
 them apart from commands — `@time` and the system `time` never collide, and
-command-name completion leaves `@` names out. The handler gets the wrapped
-`Pipeline` ahead of the parsed flags (`Command.invoke(args, pipeline)`).
+command-name completion leaves `@` names out. The handler gets the body
+ahead of the parsed flags (`Command.invoke(args, body)`).
 
 **Authoring a decorator:**
 
@@ -1014,17 +1015,17 @@ from eosh.commands import arg, registry
         arg("--no-clear", action="store_true"),
     ],
 )
-def watch(pipeline, *, interval, no_clear):
+def watch(body, *, interval, no_clear):
     while True:
         if not no_clear and sys.stdout.isatty():
             sys.stdout.write("\x1b[2J\x1b[H")
-        pipeline.run()
+        body.run()
         time.sleep(interval)
 ```
 
-The decorator function receives a `Pipeline` (the parsed AST of the wrapped body) and the parsed flag namespace as kwargs. `pipeline.run()` re-enters `Shell._execute_pipeline` so redirects, pipes, and Python-stage routing all work the same as at the top level.
+The decorator function receives the body — a `Sequence`: the pipelines inside the braces, joined by `;` / `&&` / `||` (one item for a bare or single-pipeline body) — and the parsed flag namespace as kwargs. `body.run()` runs it as a line runs (`Shell._run_body` → `_run_items`, the loop the line's driver uses too): `&&` / `||` skip on the last status, an item ending in 130 ends it, and each pipeline goes through `Shell._execute_pipeline` so redirects, pipes, and Python-stage routing all work the same as at the top level. A decorator that rewrites its body does it per pipeline with `body.map(fn)` (`@quiet` and `@watch` redirect each pipeline's last stage), and `body.label()` is how it reads (`@watch`'s header).
 
-**Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet` (each in its own `eosh/decorators/<name>.py`). There is no `@bg` (removed in discussion #39): to background something, run it and press `Ctrl+]` — a whole pipeline goes with it (`PipelineSlot`), and so does a lone decorator, which runs on one too. When a body ends with 130 (Ctrl+C), `pipeline.run()` raises `KeyboardInterrupt`: `@watch` stops, `@retry` doesn't retry, `@time` still reports (discussion #76).
+**Built-in decorators:** `@watch`, `@time`, `@retry`, `@quiet` (each in its own `eosh/decorators/<name>.py`). There is no `@bg` (removed in discussion #39): to background something, run it and press `Ctrl+]` — a whole pipeline goes with it (`PipelineSlot`), and so does a lone decorator, which runs on one too. When a body ends with 130 (Ctrl+C), `body.run()` raises `KeyboardInterrupt`: `@watch` stops, `@retry` doesn't retry, `@time` still reports (discussion #76).
 
 **Loading:** `Shell._register_builtins` calls `eosh.decorators.register_builtins()` inside `defining_builtins()`, so the built-ins survive `reload` and a config needs `override=True` to replace one. There is no decorator search path; your own are defined in `config.py` (or a module it imports), like a recipe.
 
@@ -1069,21 +1070,20 @@ def connect(account, region, instance_id):
 
 A decorator is a command named `@name` — register it with
 `registry.command("@name", ...)` and decorate a function. The function
-receives the wrapped `Pipeline` as its first positional argument and the
-parsed flag namespace as kwargs; call `pipeline.run()` to execute the
-body. Return the int exit code (or let the return value of `pipeline.run()`
-propagate).
+receives the body (a `Sequence`) as its first positional argument and the
+parsed flag namespace as kwargs; call `body.run()` to execute it. Return
+the int exit code (or let the return value of `body.run()` propagate).
 
 ```python
 # ~/.eosh/config.py
 import sys
 import time
 from eosh.commands import arg, registry
-from eosh.pipeline import Pipeline
+from eosh.pipeline import Sequence
 
 @registry.command(
     "@repeat",
-    help="Run the pipeline N times, stopping early on the first failure.",
+    help="Run the body N times, stopping early on the first failure.",
     params=[
         arg("-n", "--count", type=int, default=3, metavar="N",
             help="number of iterations (default 3)"),
@@ -1091,11 +1091,11 @@ from eosh.pipeline import Pipeline
             help="seconds to sleep between iterations"),
     ],
 )
-def repeat(pipeline: Pipeline, *, count: int, delay: float) -> int:
+def repeat(body: Sequence, *, count: int, delay: float) -> int:
     last = 0
     for i in range(1, count + 1):
         sys.stderr.write(f"@repeat: iteration {i}/{count}\n")
-        last = pipeline.run()
+        last = body.run()
         if last != 0:
             return last
         if delay > 0 and i < count:
@@ -1160,7 +1160,7 @@ eosh/
 │       │                       # native backends, skip list, `notify` +
 │       │                       # `notify_threshold` Vars
 │       ├── parsing.py          # line tokenization, quote handling, var expansion
-│       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run()
+│       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run() / Sequence.run()
 │       ├── job.py              # PipelineSlot: a line's pipeline on one PTY + job leader client
 │       ├── _job_leader.py      # the job leader: session leader that starts external stages
 │       ├── process.py          # PTY subprocess slots, output buffering, terminal-mode

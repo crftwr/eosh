@@ -6,7 +6,7 @@ import sys
 import time
 
 from ..commands import arg
-from ..pipeline import Pipeline
+from ..pipeline import Sequence
 from ..commands import registry as command_registry
 
 
@@ -21,14 +21,14 @@ def register() -> None:
                 help="seconds to sleep between attempts (default 0)"),
         ],
     )
-    def retry(pipeline: Pipeline, *, attempts: int, delay: float) -> int:
+    def retry(body: Sequence, *, attempts: int, delay: float) -> int:
         if attempts < 1:
             sys.stderr.write("@retry: --attempts must be >= 1\n")
             return 2
         last = 1
         for i in range(1, attempts + 1):
             try:
-                last = pipeline.run()
+                last = body.run()
             except KeyboardInterrupt:
                 return 130
             if last == 0:

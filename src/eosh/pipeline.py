@@ -16,14 +16,15 @@ class DecoratorParseError(ValueError):
 
     * ``@watch ls | grep py`` — operator outside braces (use ``{...}``).
     * ``@watch {ls`` — unmatched opening brace.
-    * ``@watch {ls} ; pwd`` — sequencing operator after the closing brace
-      (only ``|`` composition is supported in the MVP).
+    * ``@watch {ls} pwd`` — text after the closing brace that isn't an
+      operator.
     """
 
 
 @dataclass
 class DecoratorCall:
-    """A decorator wrapping a parsed pipeline.
+    """A decorator wrapping its body: the pipelines inside ``{...}``,
+    joined by ``;`` / ``&&`` / ``||``.
 
     Stored on a :class:`Stage` as ``stage.decorator``.  When set, the
     stage represents "invoke this decorator with this body" rather than
@@ -31,7 +32,11 @@ class DecoratorCall:
     """
     name: str
     flag_tokens: list[str]
-    body: "Pipeline"
+    body: "Sequence"
+
+    def label(self) -> str:
+        """How it reads in the switcher and a notification."""
+        return " ".join([f"@{self.name}", *self.flag_tokens, f"{{{self.body.label()}}}"])
 
 
 @dataclass
@@ -47,32 +52,63 @@ class Stage:
     redirects: list[Redirect] = field(default_factory=list)
     decorator: DecoratorCall | None = None
 
+    def label(self) -> str:
+        return self.text if self.decorator is None else self.decorator.label()
+
+
+def _run(body: "Pipeline | Sequence", stdin, stdout, stderr) -> int:
+    """Execute *body* through the registered executor.
+
+    The executor is registered by :class:`eosh.shell.Shell` on construction
+    so a decorator (or any external caller) can do ``body.run()`` without
+    knowing about Shell.  Without a Shell instance, this raises
+    ``RuntimeError`` — a body always runs *inside* a shell.
+    """
+    if _executor is None:
+        raise RuntimeError(
+            f"{type(body).__name__}.run() called with no executor registered; "
+            "construct a Shell first or call set_pipeline_executor()"
+        )
+    return _executor(body, stdin=stdin, stdout=stdout, stderr=stderr)
+
 
 @dataclass
 class Pipeline:
     stages: list[Stage]
 
     def run(self, stdin=None, stdout=None, stderr=None) -> int:
-        """Execute the pipeline.  Delegates to the registered executor.
+        """Execute the pipeline; the last stage's exit status."""
+        return _run(self, stdin, stdout, stderr)
 
-        The executor is registered by :class:`eosh.shell.Shell` on
-        construction so a decorator body (or any external caller) can do
-        ``pipeline.run()`` without knowing about Shell.  Without a Shell
-        instance, this raises ``RuntimeError`` — Pipeline.run() always
-        runs *inside* a shell.
-        """
-        if _executor is None:
-            raise RuntimeError(
-                "Pipeline.run() called with no executor registered; "
-                "construct a Shell first or call set_pipeline_executor()"
-            )
-        return _executor(self, stdin=stdin, stdout=stdout, stderr=stderr)
+    def label(self) -> str:
+        return " | ".join(st.label() for st in self.stages)
 
 
 @dataclass
 class Sequence:
-    """Pipelines joined by ;, &&, or ||.  operator is None for the first item."""
+    """Pipelines joined by ;, &&, or ||.  operator is None for the first item.
+
+    A decorator's body is one: ``@time {make && ./run}``.
+    """
     items: list[tuple[str | None, Pipeline]]
+
+    def run(self, stdin=None, stdout=None, stderr=None) -> int:
+        """Execute the pipelines in order, as the shell runs a line: ``&&``
+        / ``||`` skip on the last status; the last one run's status."""
+        return _run(self, stdin, stdout, stderr)
+
+    def map(self, fn: Callable[[Pipeline], Pipeline]) -> "Sequence":
+        """A copy with *fn* applied to each pipeline (``@quiet`` redirects
+        each one's output); the operators are kept."""
+        return Sequence(items=[(op, fn(p)) for op, p in self.items])
+
+    def label(self) -> str:
+        out = ""
+        for op, p in self.items:
+            if out:
+                out += "; " if op == ";" else f" {op} "
+            out += p.label()
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -83,10 +119,10 @@ _executor: Optional[Callable[..., int]] = None
 
 
 def set_pipeline_executor(fn: Callable[..., int] | None) -> None:
-    """Register the function that runs a pipeline.
+    """Register the function that runs a :class:`Pipeline` or a
+    :class:`Sequence`.
 
-    Called by ``Shell.__init__`` with a thin wrapper around
-    ``Shell._run_pipeline``.  Passing ``None`` clears the registration
+    Called by ``Shell.__init__``.  Passing ``None`` clears the registration
     (useful in tests).
     """
     global _executor
@@ -527,7 +563,7 @@ def _extract_decorator_prefix(line: str) -> tuple[DecoratorCall | None, str]:
         # outside in, as Python decorators stack; what follows the inner
         # scope follows this one too.
         inner, remainder_after = _extract_decorator_prefix(body_text_stripped)
-        body_pipeline = Pipeline(stages=[Stage(text="", decorator=inner)])
+        body = Sequence(items=[(None, Pipeline(stages=[Stage(text="", decorator=inner)]))])
     elif body_text_stripped.startswith("{"):
         # Find the matching brace
         ws_offset = len(body_text) - len(body_text_stripped)
@@ -539,10 +575,10 @@ def _extract_decorator_prefix(line: str) -> tuple[DecoratorCall | None, str]:
             )
         inner = body_text[open_pos + 1:close_pos]
         remainder_after = body_text[close_pos + 1:]
-        body_pipeline = _parse_braced_body(inner, decorator_name=name)
+        body = _parse_braced_body(inner, decorator_name=name)
     else:
         # Bare single-command body — operators are rejected.
-        body_pipeline = _parse_bare_body(body_text_stripped, decorator_name=name)
+        body = _parse_bare_body(body_text_stripped, decorator_name=name)
 
     # What follows the scope continues the line: more pipe stages
     # (`@deco {…} | next`) or the next item of the sequence (`@deco {…} &&
@@ -554,30 +590,21 @@ def _extract_decorator_prefix(line: str) -> tuple[DecoratorCall | None, str]:
             f"or `||`; got {remainder_stripped!r} (a redirect goes inside the braces)"
         )
 
-    return DecoratorCall(name=name, flag_tokens=flag_tokens, body=body_pipeline), remainder_stripped
+    return DecoratorCall(name=name, flag_tokens=flag_tokens, body=body), remainder_stripped
 
 
-def _parse_braced_body(inner: str, *, decorator_name: str) -> Pipeline:
-    """Parse the inside of a decorator's ``{...}`` as a pipeline.
-
-    Currently accepts a single pipeline (no top-level ``;``/``&&``/``||``);
-    multi-statement bodies inside braces are deferred — flag clearly so
-    a future relaxation has a focused place to land.
-    """
+def _parse_braced_body(inner: str, *, decorator_name: str) -> Sequence:
+    """Parse the inside of a decorator's ``{...}`` as a line: pipelines
+    joined by ``;`` / ``&&`` / ``||`` (``@time {make && ./run}``)."""
     seq = parse_line(inner)
     if not seq.items:
         raise DecoratorParseError(
             f"@{decorator_name}: empty decorator body"
         )
-    if len(seq.items) > 1 or seq.items[0][0] is not None:
-        raise DecoratorParseError(
-            f"@{decorator_name}: ';', '&&', '||' inside decorator body "
-            f"are not supported yet"
-        )
-    return seq.items[0][1]
+    return seq
 
 
-def _parse_bare_body(text: str, *, decorator_name: str) -> Pipeline:
+def _parse_bare_body(text: str, *, decorator_name: str) -> Sequence:
     """Parse an un-braced decorator body (no operators allowed)."""
     if not text:
         raise DecoratorParseError(
@@ -600,7 +627,7 @@ def _parse_bare_body(text: str, *, decorator_name: str) -> Pipeline:
             f"(wrap the statement in {{ ... }})"
         )
     cleaned, redirects = _extract_redirects(text)
-    return Pipeline(stages=[Stage(text=cleaned.strip(), redirects=redirects)])
+    return Sequence(items=[(None, Pipeline(stages=[Stage(text=cleaned.strip(), redirects=redirects)]))])
 
 
 # ---------------------------------------------------------------------------

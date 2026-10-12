@@ -1,4 +1,4 @@
-"""@quiet — discard the wrapped pipeline's stdout (and optionally stderr)."""
+"""@quiet — discard the wrapped body's stdout (and optionally stderr)."""
 
 from __future__ import annotations
 
@@ -6,24 +6,27 @@ import os
 from dataclasses import replace
 
 from ..commands import arg
-from ..pipeline import Pipeline, Redirect
+from ..pipeline import Pipeline, Redirect, Sequence
 from ..commands import registry as command_registry
 
 
-def _silenced(pipeline: Pipeline, *, also_stderr: bool) -> Pipeline:
-    """Return a copy of *pipeline* whose last stage's stdout (and maybe
-    stderr) is redirected to the platform null device.
+def _silenced(body: Sequence, *, also_stderr: bool) -> Sequence:
+    """Return a copy of *body* whose pipelines each send their last stage's
+    stdout (and maybe stderr) to the platform null device.
 
-    The AST is rebuilt rather than mutated so the user's original
-    Pipeline is left intact (matches ``@watch``'s pattern).
+    The AST is rebuilt rather than mutated so the user's original body is
+    left intact (matches ``@watch``'s pattern).
     """
-    new_stages = list(pipeline.stages)
-    last = new_stages[-1]
-    extras = [Redirect(kind=">", target=os.devnull)]
-    if also_stderr:
-        extras.append(Redirect(kind="2>&1", target="1"))
-    new_stages[-1] = replace(last, redirects=list(last.redirects) + extras)
-    return Pipeline(stages=new_stages)
+    def silence(pipeline: Pipeline) -> Pipeline:
+        new_stages = list(pipeline.stages)
+        last = new_stages[-1]
+        extras = [Redirect(kind=">", target=os.devnull)]
+        if also_stderr:
+            extras.append(Redirect(kind="2>&1", target="1"))
+        new_stages[-1] = replace(last, redirects=list(last.redirects) + extras)
+        return Pipeline(stages=new_stages)
+
+    return body.map(silence)
 
 
 def register() -> None:
@@ -35,5 +38,5 @@ def register() -> None:
                 help="also discard stderr"),
         ],
     )
-    def quiet(pipeline: Pipeline, *, stderr: bool) -> int:
-        return _silenced(pipeline, also_stderr=stderr).run()
+    def quiet(body: Sequence, *, stderr: bool) -> int:
+        return _silenced(body, also_stderr=stderr).run()
