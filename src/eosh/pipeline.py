@@ -631,6 +631,146 @@ def _parse_bare_body(text: str, *, decorator_name: str) -> Sequence:
 
 
 # ---------------------------------------------------------------------------
+# Alias expansion — text, before the line is parsed
+# ---------------------------------------------------------------------------
+
+_ASSIGNMENT_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _read_word(text: str, i: int, stops: str) -> tuple[int, bool]:
+    """``(end, quoted)``: where the word starting at *i* ends — at unquoted
+    whitespace or one of *stops* — and whether any of it is quoted or
+    escaped."""
+    n = len(text)
+    quoted = False
+    while i < n and text[i] not in " \t\n" and text[i] not in stops:
+        c = text[i]
+        if c in ("'", '"'):
+            quoted = True
+            i += 1
+            while i < n and text[i] != c:
+                i += 2 if text[i] == "\\" and c == '"' and i + 1 < n else 1
+            i += 1
+        elif c == "\\":
+            quoted = True
+            i += 2
+        else:
+            i += 1
+    return min(i, n), quoted
+
+
+def _decorator_flags_end(text: str, i: int, name: str) -> int:
+    """Where ``@name``'s flags, starting at *i*, end and its body begins —
+    the same walk as :func:`_extract_decorator_prefix`."""
+    n = len(text)
+    while True:
+        while i < n and text[i] in " \t":
+            i += 1
+        if i >= n or text[i] == "{":
+            return i
+        end, _ = _read_word(text, i, "")
+        tok = text[i:end]
+        if tok[0] not in ("-", "+"):
+            return i
+        i = end
+        if tok == "--":
+            return i
+        flag = (_split_tokens_simple(tok) or [tok])[-1]
+        if "=" not in flag and _flag_takes_value(name, flag):
+            while i < n and text[i] in " \t":
+                i += 1
+            if i < n and text[i] != "{":
+                i, _ = _read_word(text, i, "")
+
+
+def expand_aliases(line: str, lookup: Callable[[str], str | None]) -> str:
+    """*line* with its aliases expanded, as text, before it is parsed — so
+    an alias may hold anything a line can: ``|``, ``;``, ``&&``, redirects,
+    ``$VAR``, a decorator (``alias deploy='confirm && make deploy'``).
+
+    As in bash: the word at each command position — the start, after
+    ``;`` / ``&&`` / ``||`` / ``|``, a decorator's body — is replaced when
+    *lookup* knows it and no part of it is quoted or escaped (``\\ls``
+    runs ``ls`` itself).  The expansion is expanded in turn, except for
+    the aliases already being expanded (``alias ls='ls -G'`` stops), and
+    one ending in a space makes the next word a command position too
+    (``alias sudo='sudo '``), as does one ending where a command goes
+    (``alias w='@watch -n 1'``, then ``w ll``).  Leading ``NAME=value``
+    words are skipped.
+    """
+    return _expand_aliases(line, lookup, frozenset())[0]
+
+
+def _expand_aliases(line: str, lookup: Callable[[str], str | None],
+                    seen: frozenset[str]) -> tuple[str, bool, bool]:
+    """:func:`expand_aliases`, plus whether the text ends where a command
+    goes, and where a decorator's ``{`` may open."""
+    out: list[str] = []
+    i, n = 0, len(line)
+    at_cmd = True           # the next word is a command name
+    body_next = False       # … and a `{` here opens a decorator's body
+    while i < n:
+        c = line[i]
+        if c in " \t\n":
+            out.append(c)
+            i += 1
+        elif c == "{" and body_next:
+            out.append(c)
+            i += 1
+            at_cmd, body_next = True, False
+        elif c in ";|&":
+            j = i + 1
+            if j < n and line[j] == c and c in "|&":
+                j += 1
+            out.append(line[i:j])
+            i = j
+            at_cmd, body_next = True, False
+        elif c in "<>":
+            # A redirect and its target: never a command name.
+            j = i + 1
+            while j < n and line[j] in ">&":
+                j += 1
+            while j < n and line[j] in " \t":
+                j += 1
+            j, _ = _read_word(line, j, ";|&<>}")
+            out.append(line[i:j])
+            i = j
+        elif c == "}":
+            out.append(c)
+            i += 1
+            at_cmd = body_next = False
+        else:
+            j, quoted = _read_word(line, i, ";|&<>}")
+            word = line[i:j]
+            i = j
+            body_next = False
+            if not at_cmd or quoted:
+                out.append(word)
+                at_cmd = False
+                continue
+            if word.startswith("@") and _DECORATOR_NAME_RE.match(word):
+                # `@retry -n 3 ll` / `@time {ll}`: the body is a command
+                # position (`{` or not), and so is a stacked decorator.
+                j = _decorator_flags_end(line, i, word[1:])
+                out.append(word + line[i:j])
+                i = j
+                body_next = True
+                continue
+            if _ASSIGNMENT_WORD_RE.match(word):
+                out.append(word)            # `FOO=1 ll`: still a command next
+                continue
+            expansion = None if word in seen else lookup(word)
+            if expansion is None:
+                out.append(word)
+                at_cmd = False
+                continue
+            text, at_cmd, body_next = _expand_aliases(expansion, lookup, seen | {word})
+            out.append(text)
+            at_cmd = at_cmd or expansion.endswith((" ", "\t"))
+    return "".join(out), at_cmd, body_next
+
+
+# ---------------------------------------------------------------------------
 # Top-level parser
 # ---------------------------------------------------------------------------
 

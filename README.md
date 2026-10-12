@@ -87,14 +87,18 @@ Any command not listed above is passed through to the system shell (e.g., `ls`, 
 
 ### Aliases
 
-An alias replaces the first word of a command line. Quote the expansion when it contains spaces:
+An alias replaces a command's name with text, as in bash: at the start of a line, after `;` `&&` `||` `|`, and as a decorator's body. The text can be anything a line can hold — pipes, `;` / `&&`, redirects, `$VAR`, decorators. Quote the expansion when it contains spaces:
 
 ```
 eosh> alias hp='awsut sagemaker hyperpod'
 eosh> hp list                  # runs: awsut sagemaker hyperpod list
+eosh> alias gl='git log --oneline | head -20'
+eosh> alias deploy='confirm "Deploy to prod?" && make deploy'
 eosh> alias                    # list all aliases
 eosh> unalias hp
 ```
+
+`\hp` or `'hp'` runs the command itself, not the alias. An alias may use another (`alias ll='ls -l'` with `alias ls='ls -G'` runs `ls -G -l`), but never itself, so `alias ls='ls -G'` is safe.
 
 ### Importing Variables from Bash
 

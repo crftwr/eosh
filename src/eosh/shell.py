@@ -44,13 +44,14 @@ from .command_context import CommandContext, ShellView, SubshellContext
 from .context import ContextManager
 from .history import HistoryStore, norm_dir
 from .lineedit import CONTEXT_CHANGED_SENTINEL, LineEditor
-from .parsing import expand_vars, split_for_completion, tokenize
+from .parsing import expand_vars, raw_token_start, split_for_completion, tokenize
 from .paths import config_dir
 from .pipeline import (
     DecoratorParseError,
     Sequence,
     Stage,
     Pipeline,
+    expand_aliases,
     expand_globs,
     parse_line,
     set_pipeline_executor,
@@ -504,6 +505,11 @@ class Shell(ContextSwitcher):
         return line[i:]
 
     def _get_completions(self, line_before_cursor: str) -> tuple[list[Completion], str, str]:
+        # Complete what the line will run: aliases before the token being
+        # typed are expanded (`hp <TAB>` completes `awsut sagemaker hyperpod`,
+        # `gl -<TAB>` the end of `git log | head`); the token itself isn't —
+        # `ll<TAB>` still completes a command name.
+        line_before_cursor = self._expand_aliases_before_token(line_before_cursor)
         # Isolate the current pipeline stage so completions for `ls | grep -`
         # are computed against `grep`, not `ls`.
         stage_line = split_on_operators(line_before_cursor, [";", "&&", "||", "|"])[-1][1]
@@ -520,15 +526,6 @@ class Shell(ContextSwitcher):
                 return payload  # (completions, prefix, label)
             # kind == "fallthrough"
             tokens, prefix, line_before_cursor = payload
-
-        # Expand the first token if it is an alias, so completions for
-        # `hp <TAB>` come from the expansion's resolved command.
-        if tokens:
-            expansion = self.registry.get_alias(tokens[0])
-            if expansion is not None:
-                expansion_tokens = tokenize(expansion)
-                if expansion_tokens:
-                    tokens = expansion_tokens + tokens[1:]
 
         if not tokens:
             # Bare KEY=VALUE assignment (e.g. "aws_region=us-<TAB>"): delegate
@@ -650,8 +647,10 @@ class Shell(ContextSwitcher):
             end += 1
         token = buf[start:end]
 
-        # Parse everything before the token to get the command/args context.
-        pre = buf[:start].rstrip()
+        # Parse everything before the token to get the command/args context —
+        # with its aliases expanded, so `hp <args>` reads against
+        # `awsut sagemaker hyperpod`.
+        pre = self._expand_aliases(buf[:start]).rstrip()
         stage_pre = split_on_operators(pre, [";", "&&", "||", "|"])[-1][1]
         tokens_before, _ = split_for_completion(stage_pre + " ")
 
@@ -676,17 +675,6 @@ class Shell(ContextSwitcher):
 
         command_name = tokens_before[0]
         preceding_args = tokens_before[1:]
-
-        # Expand the leading token if it is an alias, so the status bar for
-        # `hp <args>` resolves against the alias's expansion (e.g.
-        # `awsut sagemaker hyperpod`).  Mirrors the alias handling in
-        # _get_completions.
-        expansion = self.registry.get_alias(command_name)
-        if expansion is not None:
-            expansion_tokens = tokenize(expansion)
-            if expansion_tokens:
-                command_name = expansion_tokens[0]
-                preceding_args = expansion_tokens[1:] + preceding_args
 
         slot = _resolve_slot(self.registry.get(command_name), preceding_args, token)
         node = slot.node
@@ -919,9 +907,13 @@ class Shell(ContextSwitcher):
                 "  alias                  list all aliases\n"
                 "  alias NAME             show the expansion of NAME\n"
                 "  alias NAME=EXPANSION   define NAME as a shorthand for EXPANSION\n\n"
-                "Aliases expand the first token of a command line.  Quote the\n"
-                "expansion if it contains spaces:\n"
-                "  alias hp='awsut sagemaker hyperpod'"
+                "An alias replaces a command's name with text before the line is\n"
+                "parsed, so it may hold pipes, ';', '&&', redirects and $VARs.\n"
+                "Quote the expansion if it contains spaces:\n"
+                "  alias hp='awsut sagemaker hyperpod'\n"
+                "  alias gl='git log --oneline | head -20'\n"
+                "  alias deploy='confirm && make deploy'\n"
+                "\\NAME runs NAME itself, not the alias."
             ),
             params=[arg("assignments", nargs="*", metavar="NAME[=EXPANSION]")],
         )
@@ -1427,7 +1419,7 @@ class Shell(ContextSwitcher):
         """Run one line; its exit status, or ``None`` when Ctrl+] sent it to
         the background before it finished."""
         try:
-            seq = parse_line(expand_vars(line))
+            seq = parse_line(expand_vars(self._expand_aliases(line)))
         except DecoratorParseError as e:
             print(f"eosh: {e}", file=sys.stderr)
             return 2
@@ -1566,28 +1558,23 @@ class Shell(ContextSwitcher):
             hooks.fire("on_directory_changed", old_cwd, cwd)
 
     def _tokenize_stage(self, stage: Stage, root_dir: str | None = None) -> list[str]:
-        """Expand variables, tokenize, alias-expand, and glob-expand a stage's
-        text — globs relative to *root_dir* (default: the process's cwd)."""
+        """Tokenize and glob-expand a stage's text — globs relative to
+        *root_dir* (default: the process's cwd).  Aliases were expanded in
+        the line's text before it was parsed (:meth:`_expand_aliases`)."""
         tokens = tokenize(stage.text + " ")
         tokens = [os.path.expanduser(t) for t in tokens]
-        tokens = self._expand_alias(tokens)
         return expand_globs(tokens, root_dir=root_dir)
 
-    def _expand_alias(self, tokens: list[str]) -> list[str]:
-        """Replace the first token with its alias expansion, if any.
+    def _expand_aliases(self, text: str) -> str:
+        """*text* with its aliases expanded, as bash does before parsing a
+        line (:func:`~eosh.pipeline.expand_aliases`)."""
+        return expand_aliases(text, self.registry.get_alias)
 
-        Aliases never chain — the expansion's own first token is not
-        re-expanded — so cycles are impossible.
-        """
-        if not tokens:
-            return tokens
-        expansion = self.registry.get_alias(tokens[0])
-        if expansion is None:
-            return tokens
-        expansion_tokens = tokenize(expansion)
-        if not expansion_tokens:
-            return tokens
-        return expansion_tokens + tokens[1:]
+    def _expand_aliases_before_token(self, text: str) -> str:
+        """:meth:`_expand_aliases` on all of *text* but the token being typed
+        at its end, which completion must see as typed."""
+        start = raw_token_start(text)
+        return self._expand_aliases(text[:start]) + text[start:]
 
     @staticmethod
     def _run_items(seq: Sequence, run: Callable[[Pipeline], int],
