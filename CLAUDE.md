@@ -1257,12 +1257,26 @@ Parse order (all quote-aware, implemented in `pipeline.py` and `shell.py`):
 ```
 raw input (one or more physical lines joined in shell.py)
  └─ backslash-continuation joining (shell.py — before any parsing)
+  └─ alias expansion, as text (pipeline.expand_aliases), then $VAR (expand_vars)
      └─ split on ;          → list of statements
          └─ split on && ||  → conditional chain
              └─ split on |  → list of pipeline stages
                  └─ each stage: extract redirections (>, >>, <, 2>, 2>&1)
                      └─ remaining text: expand $VAR, tokenize, glob
 ```
+
+**Aliases are text, expanded before parsing** (`pipeline.expand_aliases`,
+from `Shell._execute`), as in bash: the word at each command position — the
+start, after `;` / `&&` / `||` / `|`, a decorator's body — is replaced when it
+is an alias and no part of it is quoted or escaped (`\ls`). So an alias may
+hold anything a line can (`alias gl='git log --oneline | head -20'`,
+`alias deploy='confirm && make deploy'`, `alias w='@watch -n 1'`), and `$VAR`
+in it is read when it runs. An expansion is expanded in turn, except for the
+aliases already being expanded (`alias ls='ls -G'` stops); one ending in a
+space, or where a command goes, makes the next word a command position. The
+history keeps the line as typed. Completion and the status bar expand the text
+before the token being typed (`Shell._expand_aliases_before_token`), so
+`hp <TAB>` completes the expansion while `ll<TAB>` still completes a name.
 
 Two execution modes in `shell.py`:
 
