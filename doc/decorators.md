@@ -564,12 +564,13 @@ else.
 `@retry`'s `--delay` is an extension over the original sketch — it
 sleeps between attempts to avoid hammering a flaky service.
 
-Future ideas:
+Two more were considered and dropped (discussion #67):
 
-| Decorator | Purpose |
-|-----------|---------|
-| `@confirm` | prompt before running (e.g. for destructive commands) |
-| `@nice -n N` | run pipeline at a different process priority |
+- `@confirm` — asking before running is not a scope, so it is the
+  built-in command `confirm [MESSAGE]` instead, composed with the
+  operators every shell has: `confirm 'Destroy prod?' && terraform destroy`.
+- `@nice -n N` — the `nice` program already covers a command, and a
+  body's Python stages run in eosh's own process, where it couldn't apply.
 
 ## Resolved UX questions
 
@@ -674,8 +675,7 @@ Open questions are tracked in
 ## What's left for follow-up commits
 
 Tracked in
-[discussion #67](https://github.com/crftwr/eosh/discussions/67): more
-built-ins (`@confirm`, `@nice`). Stacking, sequencing after a scope and
-inside one,
-slot-aware `@watch`, typo suggestions and the history / redirect tests
-have shipped (#80, #88, #89).
+[discussion #67](https://github.com/crftwr/eosh/discussions/67). Stacking,
+sequencing after a scope and inside one, slot-aware `@watch`, typo
+suggestions and the history / redirect tests have shipped (#80, #88, #89,
+#91).

@@ -737,6 +737,31 @@ class Shell(ContextSwitcher):
                 print(f"cd: {e}", file=sys.stderr)
                 return 1
 
+        @self.registry.command(
+            name="confirm",
+            help=(
+                "Ask a yes/no question: status 0 on 'y', 1 otherwise.\n\n"
+                "  confirm 'Destroy prod?' && terraform destroy\n"
+                "  kubectl diff -f app.yaml; confirm && kubectl apply -f app.yaml"
+            ),
+            params=[arg("message", nargs="?", default="Continue?",
+                        help="the question (default: Continue?)")],
+            pass_context=True,
+        )
+        def confirm(ctx, message):
+            # Read off the line's own terminal; keys typed before the
+            # question was asked don't answer it.
+            try:
+                return 0 if ctx.confirm(message) else 1
+            except RuntimeError:
+                # A stage of a pipeline: its stdin is a pipe, no one to ask.
+                print("confirm: can't ask inside a pipeline", file=sys.stderr)
+                return 1
+            except EOFError:
+                # Ctrl+D, or no more input without a terminal: not a yes.
+                print(file=sys.stderr)
+                return 1
+
         @self.registry.command(name="exit", help="Exit the shell.", sync=True)
         def exit_shell():
             # A pipeline stage is a subshell in POSIX terms: `exit | cat`
