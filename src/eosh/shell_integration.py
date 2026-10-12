@@ -30,16 +30,21 @@ One line, in the order VS Code's zsh script emits it::
 everywhere and let the user turn it off; fish 4.0 printed ``;special_key=1``
 in Termux, Guacamole and noVNC that way (fish#11749).  Here a stray mark
 would also break the line editor's width math, so :data:`TERMINALS` is an
-allowlist, matched on the environment.  ``var shell_integration=osc133``
-(or ``osc633`` / ``off``) overrides it, and a config adds terminals to it::
+allowlist, matched on the environment.  When no rule matches — over
+``ssh``, inside ``tmux``, where ``TERM_PROGRAM`` is gone or replaced —
+:func:`probe` asks the terminal its name (XTVERSION) at startup, and
+:data:`TERMINAL_NAMES` is the allowlist for that answer.  ``var shell_integration=osc133`` (or ``osc633`` /
+``off``) overrides both, and a config adds terminals to either::
 
     from eosh import shell_integration
-    shell_integration.TERMINALS.append(("TERM_PROGRAM", "tmux", "osc133"))
+    shell_integration.TERMINALS.append(("KONSOLE_VERSION", None, "osc133"))
+    shell_integration.TERMINAL_NAMES.append(("Konsole", "osc133"))
 """
 
 from __future__ import annotations
 
 import os
+import re
 import socket
 import sys
 from urllib.parse import quote
@@ -68,7 +73,25 @@ DEFAULT_TERMINALS: tuple[tuple[str, str | None, str], ...] = (
 )
 TERMINALS: list[tuple[str, str | None, str]] = list(DEFAULT_TERMINALS)
 
+#: ``(name, dialect)`` for the name a terminal reports for itself (XTVERSION:
+#: ``kitty(0.36.4)``, ``tmux 3.4`` — the word before the version, compared
+#: without case), read only when no :data:`TERMINALS` rule matched.  tmux
+#: reads OSC 133 itself from 3.4 on and ignores it before.  Konsole is left
+#: out for the reason it is left out of :data:`TERMINALS`.
+DEFAULT_TERMINAL_NAMES: tuple[tuple[str, str], ...] = (
+    ("iTerm2", OSC133),
+    ("WezTerm", OSC133),
+    ("ghostty", OSC133),
+    ("kitty", OSC133),
+    ("foot", OSC133),
+    ("tmux", OSC133),
+)
+TERMINAL_NAMES: list[tuple[str, str]] = list(DEFAULT_TERMINAL_NAMES)
+
 _mode = AUTO
+
+# What the terminal answered to XTVERSION in :func:`probe`, or None.
+_reported: str | None = None
 
 # The dialect of the marks that are open, or None.  ``_state`` is "prompt"
 # (A written, line being edited) or "running" (C written, output flowing).
@@ -76,13 +99,46 @@ _open: str | None = None
 _state = "idle"
 
 
-def detect() -> str | None:
-    """The dialect :data:`TERMINALS` names for this environment, or None."""
+def _detect_env() -> str | None:
     for var, value, dialect in TERMINALS:
         actual = os.environ.get(var)
         if actual and (value is None or actual == value):
             return dialect
     return None
+
+
+def terminal_name(reply: str) -> str:
+    """The name in an XTVERSION reply: ``kitty(0.36.4)`` → ``kitty``."""
+    return re.split(r"[\s(]", reply.strip(), maxsplit=1)[0]
+
+
+def detect() -> str | None:
+    """The dialect :data:`TERMINALS` names for this environment, or else
+    :data:`TERMINAL_NAMES` for the name the terminal reported; or None."""
+    found = _detect_env()
+    if found is not None or not _reported:
+        return found
+    name = terminal_name(_reported).lower()
+    for known, dialect in TERMINAL_NAMES:
+        if known.lower() == name:
+            return dialect
+    return None
+
+
+def probe() -> None:
+    """Ask the terminal its name, once at startup — only in ``auto`` mode,
+    when the environment names no terminal and both ends are a terminal."""
+    global _reported
+    if _mode != AUTO or _detect_env() is not None:
+        return
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return
+        fd = sys.stdin.fileno()
+    except (AttributeError, ValueError, OSError):
+        return
+    from . import terminal
+    _reported = terminal.query_terminal_version(fd)
 
 
 def dialect() -> str | None:
@@ -111,9 +167,11 @@ def set_mode(mode: str) -> None:
 
 
 def reset_config() -> None:
-    """``reload``: :data:`TERMINALS` back to the defaults.  The mode stays,
-    like ``notify``'s values — ``var`` sets it at the prompt too."""
+    """``reload``: :data:`TERMINALS` and :data:`TERMINAL_NAMES` back to the
+    defaults.  The mode stays, like ``notify``'s values — ``var`` sets it at
+    the prompt too — and so does what the terminal reported."""
     TERMINALS[:] = DEFAULT_TERMINALS
+    TERMINAL_NAMES[:] = DEFAULT_TERMINAL_NAMES
 
 
 def escape_value(text: str) -> str:
@@ -204,7 +262,9 @@ def command_finished(status: int | None) -> None:
 
 
 def startup() -> None:
-    """Tell the terminal where eosh starts, before the first prompt."""
+    """Ask the terminal its name if need be (:func:`probe`), and tell it
+    where eosh starts, before the first prompt."""
+    probe()
     kind = dialect()
     if kind is not None:
         _write(_cwd_report(kind))
@@ -229,6 +289,8 @@ def register_vars() -> None:
         @property
         def description(self) -> str:
             found = detect() or "none"
+            if _reported:
+                found += f", terminal: {_reported}"
             return f"Prompt marks for the terminal: auto/osc133/osc633/off (detected: {found})"
 
         def get(self) -> str | None:

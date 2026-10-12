@@ -272,12 +272,16 @@ re-render it on `activate()`.
   genuine with `VSCODE_NONCE`, which it gives only to the shell it started
   — and that shell's script unsets it. Features that rerun a reported line
   may treat eosh's as untrusted.
-- **The terminal is recognised by environment variables only.** Over
-  `ssh` or inside `tmux` / `screen` they are usually gone or replaced, so
-  nothing is marked (`TERM=xterm-kitty` / `xterm-ghostty` are the
-  exception: `TERM` survives `ssh`). Add a rule to `shell_integration.TERMINALS` or force
-  `var shell_integration=osc133`. Asking the terminal itself (XTVERSION,
-  as fish does) would work there too — see [discussion #69](https://github.com/crftwr/eosh/discussions/69).
+- **Inside `tmux`, the terminal outside it is not known.** When no
+  environment rule matches, eosh asks the terminal its name (XTVERSION) at
+  startup, which works over `ssh`; inside `tmux` it is `tmux` that answers,
+  so eosh marks for tmux (which reads OSC 133 from 3.4 on), not for the
+  terminal around it. `screen`, and terminals that don't answer XTVERSION
+  or aren't on the list, get nothing. The name is
+  read once at startup: attaching the same eosh to another terminal (`tmux
+  attach` from elsewhere) keeps the first answer. Add a rule to
+  `shell_integration.TERMINALS` / `TERMINAL_NAMES`, or force
+  `var shell_integration=osc133`.
 - **Windows Terminal under WSL gets no cwd it reads.** Windows Terminal
   takes the directory from `OSC 9;9` with a *Windows* path, which eosh
   sends on native Windows only; under WSL it would need `wslpath -w` on

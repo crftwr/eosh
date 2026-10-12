@@ -850,6 +850,14 @@ osc133:  A <prompt> B <line>                        C <output> D;<status> OSC 7 
   list of `(env var, value or None, dialect)` rules, first match wins, VS
   Code first. A config appends to it (`reload` restores the defaults, as
   `notify.SKIP_COMMANDS`). Nothing unless stdout is a tty.
+- **Asking the terminal when the environment says nothing.** Over `ssh` or
+  inside `tmux`, no `TERMINALS` rule matches; `startup()` then calls
+  `probe()`, which asks once with XTVERSION (`terminal.query_terminal_version`:
+  `CSI > q` followed by a DSR, so a terminal that doesn't answer is known by
+  the cursor report arriving alone) and matches the name it reports against
+  `TERMINAL_NAMES` (`(name, dialect)`; `kitty(0.36.4)` → `kitty`, case-
+  insensitive). Only in `auto` mode, never when an env rule matched, POSIX
+  only. The environment always wins over the answer.
 - `var shell_integration=auto|osc133|osc633|off` (a `GlobalVar`; unset →
   `auto`) forces a dialect or turns marks off. Gaps are in
   `doc/limitations.md`, follow-ups in discussion #69.
