@@ -291,6 +291,7 @@ eosh/
 │       ├── _config.py          # bundled default ~/.eosh/config.py template
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
 │       ├── switcher.py         # Ctrl+] context switcher (a Shell mixin)
+│       ├── execution.py        # Execution record (ContextVar): runner, slot, ctx, stage
 │       ├── slots.py            # Python stages, thread-local stdio, run_handler
 │       ├── commands.py         # command registry, @command decorator, arg() builder, CmdParser, sub-command tree
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
@@ -357,7 +358,6 @@ eosh/
 These are not bugs and they are not blocking work. They are the architectural rough edges that have accumulated as features (Python pipelines, decorators, passthrough subprocesses) layered on top of the original PTY-multiplexing core. Each is tracked in more detail in [discussion #70](https://github.com/crftwr/eosh/discussions/70).
 
 - **`shell.py` is ~2400 lines** and still hosts two concerns that are conceptually separate: the pipeline executor (`_execute_pipeline`, `_execute_stage`, `_run_on_slot`, redirect plumbing) and the actual REPL + built-ins + completion glue. (The Python-command plumbing moved to `slots.py`, the line slot to `job.py`, the Ctrl+] switcher to `switcher.py`.) Everything else in the package is right-sized.
-- **Module-global callback registration is the hidden contract between layers.** `pipeline.set_pipeline_executor` and the `_in_pipeline` / `_job_local` thread-locals consumed by `CommandContext`'s methods (via `slots._run_interactive` / `_read_from_user` / `_choose`) are independent global setters wired from `Shell.__init__`. Works, but: two `Shell` instances cannot coexist in one process, tests must reset the globals, and the real interface between `Pipeline.run` and `Shell._run_pipeline_from_decorator` is implicit.
 - **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.
 
-The shape of the relief is sketched in [discussion #70](https://github.com/crftwr/eosh/discussions/70): extract `dispatch.py` (the pipeline executor), and replace the global setters with a single `ExecutionEnvironment` interface that `Shell` constructs and passes down. None of this is a one-shot refactor — it is a sequence of medium-risk moves, each independently valuable.
+The shape of the relief is sketched in [discussion #70](https://github.com/crftwr/eosh/discussions/70): extract `dispatch.py` (the pipeline executor). The global setters that used to be the hidden contract between layers (`pipeline.set_pipeline_executor`, the `_in_pipeline` / `_job_local` thread-locals) are already one record, `execution.Execution` in a `ContextVar`.

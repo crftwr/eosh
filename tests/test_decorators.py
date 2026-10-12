@@ -16,7 +16,6 @@ from eosh.pipeline import (
     Pipeline,
     Stage,
     parse_line,
-    set_pipeline_executor,
 )
 from eosh.shell import Shell
 
@@ -348,14 +347,10 @@ def test_empty_body_is_rejected(watch_deco):
 # ---------------------------------------------------------------------------
 
 def test_pipeline_run_without_shell_raises():
-    set_pipeline_executor(None)
-    try:
+    from eosh import execution
+    with execution.entered(runner=None):
         with pytest.raises(RuntimeError, match="no executor"):
             Pipeline(stages=[Stage(text="echo hi")]).run()
-    finally:
-        # leave the slot clean for the next test (any test instantiating
-        # Shell will re-register).
-        pass
 
 
 def test_pipeline_run_with_shell_routes_to_executor(tmp_path):
