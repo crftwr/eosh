@@ -28,6 +28,8 @@ def _clean(monkeypatch):
     monkeypatch.setattr(si, "_open", None)
     monkeypatch.setattr(si, "_state", "idle")
     monkeypatch.setattr(si, "TERMINALS", list(si.DEFAULT_TERMINALS))
+    monkeypatch.setattr(si, "TERMINAL_NAMES", list(si.DEFAULT_TERMINAL_NAMES))
+    monkeypatch.setattr(si, "_reported", None)
 
 
 def _tty(monkeypatch):
@@ -99,6 +101,106 @@ def test_config_extends_the_allowlist(monkeypatch):
     assert si.detect() == si.OSC133
     si.reset_config()
     assert si.detect() is None
+
+
+# ── asking the terminal (XTVERSION) ─────────────────────────────────────────
+
+@pytest.mark.parametrize("reply, expected", [
+    ("kitty(0.36.4)", "kitty"),
+    ("tmux 3.4", "tmux"),
+    ("iTerm2 3.5.0", "iTerm2"),
+    ("  foot(1.18.1) ", "foot"),
+])
+def test_terminal_name(reply, expected):
+    assert si.terminal_name(reply) == expected
+
+
+@pytest.mark.parametrize("reply, expected", [
+    ("iTerm2 3.5.0", si.OSC133),                      # over ssh
+    ("WezTerm 20240203-110809-5046fc22", si.OSC133),
+    ("ghostty 1.1.0", si.OSC133),
+    ("kitty(0.36.4)", si.OSC133),
+    ("foot(1.18.1)", si.OSC133),
+    ("tmux 3.4", si.OSC133),
+    ("Konsole 24.02.1", None),                        # left out, as in TERMINALS
+    ("xterm(390)", None),
+])
+def test_detect_by_reported_name(monkeypatch, reply, expected):
+    monkeypatch.setattr(si, "_reported", reply)
+    assert si.detect() == expected
+
+
+def test_environment_wins_over_the_reported_name(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+    monkeypatch.setattr(si, "_reported", "tmux 3.4")
+    assert si.detect() == si.OSC633
+
+
+def test_config_extends_the_name_allowlist(monkeypatch):
+    monkeypatch.setattr(si, "_reported", "Konsole 24.02.1")
+    si.TERMINAL_NAMES.append(("konsole", si.OSC133))  # case doesn't matter
+    assert si.detect() == si.OSC133
+    si.reset_config()
+    assert si.detect() is None
+
+
+class _TtyIn(io.StringIO):
+    def isatty(self):
+        return True
+
+    def fileno(self):
+        return 0
+
+
+def _asked(monkeypatch, answer="tmux 3.4"):
+    """Stub the round trip; the list records each question asked."""
+    asked = []
+
+    def query(fd):
+        asked.append(fd)
+        return answer
+    monkeypatch.setattr("eosh.terminal.query_terminal_version", query)
+    monkeypatch.setattr("sys.stdin", _TtyIn())
+    return asked
+
+
+def test_probe_asks_when_the_environment_says_nothing(monkeypatch):
+    _tty(monkeypatch)
+    asked = _asked(monkeypatch)
+    si.probe()
+    assert asked == [0]
+    assert si.dialect() == si.OSC133
+
+
+def test_probe_doesnt_ask_when_the_environment_says(monkeypatch):
+    _tty(monkeypatch)
+    asked = _asked(monkeypatch)
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    si.probe()
+    assert asked == []
+
+
+def test_probe_doesnt_ask_when_the_mode_is_set(monkeypatch):
+    _tty(monkeypatch)
+    asked = _asked(monkeypatch)
+    for mode in (si.OFF, si.OSC133):
+        si.set_mode(mode)
+        si.probe()
+    assert asked == []
+
+
+def test_probe_doesnt_ask_without_a_terminal(monkeypatch):
+    asked = _asked(monkeypatch)
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    si.probe()
+    assert asked == []
+
+
+def test_startup_probes_then_reports_the_cwd(monkeypatch):
+    out = _tty(monkeypatch)
+    _asked(monkeypatch, "kitty(0.36.4)")
+    si.startup()
+    assert out.getvalue() == _osc7()
 
 
 # ── the sequences ────────────────────────────────────────────────────────────
@@ -254,5 +356,7 @@ def test_the_var():
 def test_reload_restores_the_allowlist():
     sh = Shell()
     si.TERMINALS.append(("TERM_PROGRAM", "tmux", si.OSC133))
+    si.TERMINAL_NAMES.append(("Konsole", si.OSC133))
     sh._clear_user_config()
     assert si.TERMINALS == list(si.DEFAULT_TERMINALS)
+    assert si.TERMINAL_NAMES == list(si.DEFAULT_TERMINAL_NAMES)

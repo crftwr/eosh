@@ -424,6 +424,72 @@ def query_cursor_position(fd: int, timeout: float = 0.2) -> tuple[int, int] | No
         buf += chunk
 
 
+# XTVERSION reply: DCS > | <name and version> ST (ST is ESC \, BEL from some)
+_XTVERSION_REPLY_RE = re.compile(rb"\x1bP>\|(.*?)(?:\x1b\\|\x07)", re.DOTALL)
+
+
+def query_terminal_version(fd: int, timeout: float = 0.5) -> str | None:
+    """Ask the terminal its name and version (XTVERSION, ``CSI > q``), as in
+    ``kitty(0.36.4)`` or ``tmux 3.4``; ``None`` when it doesn't say.
+
+    The question travels with the output, so it reaches the terminal through
+    ``ssh`` and is answered by ``tmux`` inside one — where the environment
+    no longer names the terminal.  A DSR follows it: terminals answer in
+    order, so the cursor report arriving alone means "no XTVERSION here",
+    and *timeout* is only spent on a terminal that answers neither.
+
+    Enters raw mode for the round trip itself (the reply must not be echoed
+    or line-buffered), so it is for a caller outside the line editor — the
+    shell at startup.  Other bytes that arrive meanwhile (keys typed ahead)
+    go to the pending-input buffer, for the next :func:`read_key`.
+    POSIX-only, like :func:`query_cursor_position`.
+    """
+    global _pending_input
+    if IS_WINDOWS:
+        return None
+    try:
+        saved = termios.tcgetattr(fd)
+    except (termios.error, OSError):
+        return None
+    tty.setraw(fd, termios.TCSANOW)
+    try:
+        sys.stdout.write("\033[>q\033[6n")
+        sys.stdout.flush()
+        buf = b""
+        deadline = time.monotonic() + timeout
+        while True:
+            dsr = _DSR_REPLY_RE.search(buf)
+            if dsr:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            r, _, _ = select.select([fd], [], [], remaining)
+            if not r:
+                break
+            try:
+                chunk = os.read(fd, 256)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, saved)
+
+    version = None
+    reply = _XTVERSION_REPLY_RE.search(buf)
+    if reply:
+        version = reply.group(1).decode("utf-8", "replace").strip() or None
+        buf = buf[: reply.start()] + buf[reply.end():]
+    dsr = _DSR_REPLY_RE.search(buf)
+    if dsr:
+        buf = buf[: dsr.start()] + buf[dsr.end():]
+    if buf:
+        _pending_input += buf
+    return version
+
+
 # ── resize handling ─────────────────────────────────────────────────────────
 
 
