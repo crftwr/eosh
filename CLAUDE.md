@@ -198,7 +198,7 @@ Methods:
 - `clear_user_commands()` — back to the built-in set: drops config commands and aliases and restores any built-in a config overrode
 
 Dispatch order:
-1. Built-in commands (cd, exit, reload, var, unset, help, context)
+1. Built-in commands (cd, exit, reload, var, help, context, …)
 2. Registered Python function commands
 3. System commands (via PTY subprocess)
 
@@ -908,7 +908,7 @@ Available built-in recipes: `aws`, `chmod`, `chown`, `cobra`, `cp`, `curl`, `df`
 
 Every subprocess run at completion time gets `stdin=subprocess.DEVNULL`, so a misbehaving child can never take over the terminal.
 
-Each recipe calls `registry.command(name, help=..., params=[...])` (with no handler attached) to register completion + flag metadata for an external command.  The shell's dispatch path (`shell.py:_execute`) treats handler-less Commands as external recipes and falls through to the system-command path.
+Each recipe calls `registry.command(name, help=..., params=[...])` (with no handler attached) to register completion + flag metadata for an external command.  The shell's dispatch path (`Shell._stage_command`, `_execute_stage`) treats handler-less Commands as external recipes and falls through to the system-command path.
 
 **Recipes don't check `PATH` themselves.** After a recipe's `register()`, `enable()` drops every *completion-only* command it added whose name isn't on `PATH` (`recipes._drop_absent_tools`) — so `enable("tar")` without `tar` is a no-op, and the `grep` recipe keeps `egrep` but not a missing `rgrep`. A command with a Python handler (an add-on's) always stays.
 
@@ -994,7 +994,7 @@ addons/awsut/      →  import eosh_addons.awsut      enable("awsut")
   It also rejects relative imports that leave the add-on, imports of another
   add-on, and add-on directories without an entry point. Something an add-on
   needs that isn't public is made public in the core first.
-- **awsut** (`addons/awsut/`) — `whoami`, `console`, `credentials`, `ec2`,
+- **awsut** (`addons/awsut/`) — `whoami`, `console`, `credentials`, `recent-cost`, `ec2`,
   `logs`, `cloudformation`, `sagemaker {jobs,hub,studio,hyperpod}`,
   `bedrock-agentcore {harness,memory}`. Layout and its output contract
   (`common.py`: `print_header` / `print_table` / `guard` …) are in
@@ -1166,12 +1166,13 @@ eosh/
 │   └── eosh/
 │       ├── __init__.py         # public API exports + __version__ (single source)
 │       ├── __main__.py         # entry point (`eosh`, `eosh --version`)
+│       ├── _config.py          # template copied to ~/.eosh/config.py on first run
 │       ├── paths.py            # config_dir() — the one place naming ~/.eosh
 │       ├── user_errors.py      # traceback of a config/recipe error, eosh
 │       │                       # frames stripped
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
 │       ├── switcher.py         # Ctrl+] context switcher (a Shell mixin)
-│       ├── execution.py        # Execution record (ContextVar): runner, slot, ctx, stage
+│       ├── execution.py        # Execution record (ContextVar): runner, job, ctx, stage
 │       ├── slots.py            # Python stages: thread-local stdio, run_handler,
 │       │                       # the CommandContext I/O implementations
 │       ├── commands.py         # command registry, @command decorator
@@ -1181,6 +1182,7 @@ eosh/
 │       ├── context.py          # Context, ContextManager, ContextState
 │       ├── history.py          # HistoryStore: shared SQLite history (~/.eosh/history.db)
 │       ├── lineedit.py         # DIY raw-mode line editor, ghost suggestion, TAB completion glue
+│       ├── terminal.py         # cross-platform terminal layer (raw mode, read_key, resize)
 │       ├── command_context.py  # CommandContext / ShellView: what user code sees
 │       ├── hooks.py            # event hooks: @hooks.on_directory_changed, …
 │       ├── shell_integration.py # OSC 633 / 133 prompt and command marks
@@ -1196,11 +1198,16 @@ eosh/
 │       │                       # tracking, ExitCallbackMixin (one-shot slot-done hook)
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
 │       ├── tui.py              # InlinePicker, InlineArgPrompt
+│       ├── scrollbar.py        # sub-cell scrollbar rendering for the pickers
 │       ├── colors.py           # ColorScheme (dark/light/mono), paint(), NO_COLOR
 │       ├── recipes/
 │       │   ├── __init__.py     # enable(*names) helper
 │       │   ├── aws.py
+│       │   ├── chmod.py
+│       │   ├── chown.py
 │       │   ├── cobra.py       # opt-in list of cobra CLIs + enable_cobra()
+│       │   ├── cp.py
+│       │   ├── curl.py
 │       │   ├── df.py
 │       │   ├── du.py
 │       │   ├── find.py
@@ -1208,9 +1215,20 @@ eosh/
 │       │   ├── grep.py
 │       │   ├── kill.py
 │       │   ├── ls.py
+│       │   ├── lsof.py
 │       │   ├── make.py
+│       │   ├── mv.py
+│       │   ├── ps.py
+│       │   ├── rm.py
+│       │   ├── rsync.py
+│       │   ├── scp.py
 │       │   ├── ssh.py
-│       │   └── tail.py
+│       │   ├── tail.py
+│       │   ├── tar.py
+│       │   ├── terraform.py
+│       │   ├── top.py
+│       │   ├── unzip.py
+│       │   └── zip.py
 │       └── decorators/
 │           ├── __init__.py     # register_builtins()
 │           ├── watch.py        # @watch built-in
@@ -1229,24 +1247,47 @@ eosh/
     ├── addons/
     │   ├── test_boundary.py    # add-ons use the public API only
     │   └── awsut/
+    ├── conftest.py         # autouse: no user config, in-memory history
+    ├── test_alias_expansion.py
+    ├── test_argcomplete_fallback.py
+    ├── test_aws_recipe.py
+    ├── test_cobra_completion.py
+    ├── test_colors.py
     ├── test_command_context.py
     ├── test_command_input.py
     ├── test_commands.py
     ├── test_completion.py
     ├── test_completion_cache.py
+    ├── test_completion_picker.py
+    ├── test_confirm.py
     ├── test_context.py
     ├── test_decorators.py
+    ├── test_env_prefix.py
+    ├── test_execution.py
+    ├── test_forwarding.py
     ├── test_history.py
     ├── test_hooks.py
+    ├── test_job.py
     ├── test_keys.py
+    ├── test_make_recipe.py
     ├── test_notify.py
     ├── test_parsing.py
+    ├── test_piped_python_commands.py
     ├── test_pipeline.py
     ├── test_process.py
     ├── test_recipe_missing.py
     ├── test_recipes.py
+    ├── test_redirects.py
+    ├── test_run_handler.py
+    ├── test_s3_completion.py
+    ├── test_scrollbar.py
+    ├── test_sequence_park.py
     ├── test_shell_continuation.py
     ├── test_shell_integration.py
+    ├── test_source_bash.py
+    ├── test_subcommands.py
+    ├── test_tar_recipe.py
+    ├── test_terminal_query.py
     ├── test_user_config.py
     └── test_variables.py
 
@@ -1375,7 +1416,7 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 ## Key Design Decisions
 
-1. **DIY raw-mode line editor** — `lineedit.py` drives the terminal directly with `termios`/`tty`/`select`. This avoids external dependencies, keeps the codebase self-contained, and gives full control over the completion UI and resize handling.
+1. **DIY raw-mode line editor** — `lineedit.py` drives the terminal directly (raw mode and key reads through `terminal.py`). This avoids external dependencies, keeps the codebase self-contained, and gives full control over the completion UI and resize handling.
 
 2. **Completer receives full context** — the `CompletionContext` dataclass carries all parsed state so completers can make decisions based on command name, preceding args, and shell context without global state.
 
@@ -1393,8 +1434,8 @@ Conventions follow the author's other packages (puikit): setuptools ≥ 77,
 
 9. **One reader for real stdin** — when a Python command spawns an interactive subprocess, the child must not inherit fd 0 directly. The main forwarding thread is already reading stdin in raw mode; a second reader (the subprocess) splits keystrokes unpredictably between them. `ctx.run_interactive` enforces the rule by starting the child on the command's slot PTY, so the chain stays `stdin → main → master → subprocess` — the same path every external command takes — and `ctx.input` / `ctx.choose` read that PTY too.
 
-10. **Decorators as a sigil-prefixed grammar, not a built-in command** — `@name [flags] body` is parsed *before* the normal pipeline grammar runs (`pipeline.py::_extract_decorator_prefix`), so the syntax is unambiguous to the parser and can never collide with a POSIX command name. Borrowed from IPython's magics (`%name args`); see [doc/decorators.md](doc/decorators.md). The `{...}` body delimiter is required when the wrapped pipeline contains operators, which makes the decorator's scope visible at a glance and side-steps the `watch -n 5 ls | grep abc` ambiguity that POSIX `watch` is famous for. `Pipeline.run()` lets a decorator body re-enter `Shell._execute_pipeline` so redirects/pipes/Python-stage routing all work the same as at the top level.
+10. **Decorators as a sigil-prefixed grammar, not a built-in command** — `@name [flags] body` is parsed *before* the normal pipeline grammar runs (`pipeline.py::_extract_decorator_prefix`), so the syntax is unambiguous to the parser and can never collide with a POSIX command name. Borrowed from IPython's magics (`%name args`); see [doc/decorators.md](doc/decorators.md). The `{...}` body delimiter is required when the wrapped pipeline contains operators, which makes the decorator's scope visible at a glance and side-steps the `watch -n 5 ls | grep abc` ambiguity that POSIX `watch` is famous for. `body.run()` (`Sequence.run()`) lets a decorator body re-enter `Shell._execute_pipeline` so redirects/pipes/Python-stage routing all work the same as at the top level.
 
-11. **TTL cache + command-boundary invalidation for completer fetches** — TAB completion runs the completer on every keystroke while the picker is open (see `lineedit.py::refresh_fn`). Completers that hit AWS APIs (e.g. `aws_completer`, `_HyperpodNodeIdCompleter`) would otherwise issue the same boto3 call four or five times for a single typed token. `completion_cache.py` provides `get_or_fetch(key, fn, ttl=60)` with a process-global store. Keys are tuples that include the active `(AWS_PROFILE, AWS_REGION)` via `aws_env_key()` so the cache doesn't bleed across profiles. `Shell._execute()` calls `completion_cache.invalidate_all()` after each pipeline finishes, so a freshly-mutated resource (e.g. after `awsut sagemaker hyperpod scale`) is re-fetched on the next TAB — TTL handles the within-session repeats, the invalidation hook handles correctness across commands.
+11. **TTL cache + command-boundary invalidation for completer fetches** — TAB completion runs the completer on every keystroke while the picker is open (see `lineedit.py::refresh_fn`). Completers that hit AWS APIs (e.g. `aws_completer`, `_HyperpodNodeIdCompleter`) would otherwise issue the same boto3 call four or five times for a single typed token. `completion_cache.py` provides `get_or_fetch(key, fn, ttl=60)` with a process-global store. Keys are tuples that include the active `(AWS_PROFILE, AWS_REGION)` via `aws_env_key()` so the cache doesn't bleed across profiles. `Shell._execute()` calls `completion_cache.invalidate_all()` after each line finishes, so a freshly-mutated resource (e.g. after `awsut sagemaker hyperpod scale`) is re-fetched on the next TAB — TTL handles the within-session repeats, the invalidation hook handles correctness across commands.
 
 12. **Notify from the place that knows the work ended, and only from one of them** — the shell has three ways a command can finish (a foreground line, a slot exiting in a context nobody is looking at, a backgrounded slot resumed and watched to completion), and a naive "notify on completion" hook either misses cases or double-reports them. The rule is that `Shell._execute` owns *foreground* timing and steps aside via `self._backgrounded` the moment a line parks its work on a context (`_park`), and the slot's exit handler — wired at construction — owns everything after that, reporting a slot only if it was parked. Backends stay dependency-free (native helper per platform, terminal bell as the floor), fire on a daemon thread so the prompt never waits on a subprocess spawn, and swallow every error — a missed notification is a nuisance, a shell that dies delivering one is a bug. See [doc/notifications.md](doc/notifications.md).

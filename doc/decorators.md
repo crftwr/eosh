@@ -19,8 +19,8 @@ four built-in decorators (`@watch`, `@time`, `@retry`, `@quiet`)
 are in place; `@deco {body} | next` composition runs the body's stdout
 through the outer pipeline, the line goes on after a braced scope
 (`@deco {body} && next`, `make; @deco {body}`), and decorators stack
-(`@time @retry -n 3 cmd`). Open follow-ups (more built-ins) are tracked in
-[discussion #67](https://github.com/crftwr/eosh/discussions/67).
+(`@time @retry -n 3 cmd`). The follow-ups (more built-ins) were settled in
+[discussion #67](https://github.com/crftwr/eosh/discussions/67), now closed.
 
 **Shipped:**
 
@@ -29,13 +29,13 @@ through the outer pipeline, the line goes on after a braced scope
 - Composition: `@deco {body} | next-stage` parses as a two-stage
   pipeline; the executor runs the decorator body in a worker thread
   whose stdio is wired to the outer pipe via the thread-local routers
-  (`shell.py::_start_decorator_stage_thread`,
-  `_run_pipeline_from_decorator`).
-- Decorator registry mirroring `CommandRegistry` / `VarRegistry`
-  (`eosh/decorators/__init__.py`).
-- `Pipeline.run()` indirection so decorator bodies can re-enter
-  execution (`execution.current().runner`, set by the shell).
-- Dispatch in `Shell._execute_decorator_stage`.
+  (`shell.py::_start_stage_thread` with `decorator=True`, and
+  `_run_body`).
+- A decorator is the command `@name` in the one command registry
+  (discussion #40); built-ins come from `eosh/decorators/__init__.py`.
+- `Sequence.run()` / `Pipeline.run()` indirection so decorator bodies can
+  re-enter execution (`execution.current().runner`, set by the shell).
+- Dispatch in `Shell._invoke_decorator`.
 - Built-ins: `@watch`, `@time`, `@retry`, `@quiet`
   (`eosh/decorators/*.py`).
 - `@<TAB>` completion: decorator-name list, decorator-flag picker, and
@@ -143,10 +143,10 @@ mark the scope.
 @watch -n 5 df -h | grep abc        # parse error: ambiguous scope; use { ... }
 ```
 
-The rule: **any pipeline that contains `|`, `;`, `&&`, `||`, or a
-redirect (`>`, `<`, `2>`, …) and is wrapped by a decorator must be
-enclosed in `{...}`**. A decorator wrapping a single bare command works
-without braces.
+The rule: **any pipeline that contains `|`, `;`, `&&` or `||` and is
+wrapped by a decorator must be enclosed in `{...}`**. A decorator
+wrapping a single bare command works without braces, and a redirect
+there binds to the body (`@time make > log`).
 
 This is enforced at parse time, not silently coerced — the error
 message points at the operator and suggests the fix.
@@ -291,15 +291,16 @@ Executor story
 ([shell.py::_execute_pipeline](../src/eosh/shell.py)):
 
 * The decorator-call stage runs on a worker thread spawned by
-  `_start_decorator_stage_thread` — analogous to
-  `_start_python_stage_thread` for ordinary Python commands.  The
+  `_start_stage_thread(decorator=True)` — the same helper ordinary
+  Python command stages use.  The
   thread's `sys.stdin`/`sys.stdout` are rebound (via the
   thread-local routers) to the boundary pipe ends so anything the
   decorator body writes via `print` flows downstream.
-* When the decorator body does `pipeline.run()`, the registered
-  executor (`_run_pipeline_from_decorator`) detects the in-pipe
-  context, dups the thread-local stdio fds, and forces the multi-stage
-  codepath in `_execute_pipeline` so the body's first/last stage
+* When the decorator body does `body.run()`, the registered
+  executor (`_run_body`) detects the in-pipe context
+  (`execution.current().stage`), and `_execute_pipeline` dups the
+  thread-local stdio fds and takes the multi-stage
+  codepath so the body's first/last stage
   read/write those fds directly.  Without this the body would route
   through the standalone-command path (its own `PipelineSlot`) and grab
   the real terminal — wrong from a
@@ -556,8 +557,9 @@ The run itself gets the cooked terminal, so Ctrl+C stops a slow body at
 once (a run ending in 130 ends the loop, in either mode); `q` is read
 between runs. See [limitations.md](limitations.md#watch-shows-one-screenful-and-q-waits-for-the-current-run).
 
-`@quiet` is implemented by appending `> /dev/null` (and `2>&1` with
-`--stderr`) to the body's last stage via the same `Redirect` AST the
+`@quiet` is implemented by appending `> /dev/null` (`os.devnull`; and
+`2>&1` with `--stderr`) to the last stage of each of the body's
+pipelines (`body.map`) via the same `Redirect` AST the
 shell already understands, so it composes naturally with everything
 else.
 
@@ -594,8 +596,8 @@ Two more were considered and dropped (discussion #67):
    `override=True` to replace one), config-defined ones are cleared and
    re-registered by the re-run config.
 
-Open questions are tracked in
-[discussion #67](https://github.com/crftwr/eosh/discussions/67).
+The remaining open questions were settled in
+[discussion #67](https://github.com/crftwr/eosh/discussions/67), now closed.
 
 ## Non-goals (for the first cut)
 
@@ -640,20 +642,23 @@ Open questions are tracked in
    stdio kwargs (decorator bodies inherit the decorator's stdio,
    which is already correctly routed by the thread-local stdio).
 4. **Dispatch** in
-   [shell.py::_execute_decorator_stage](../src/eosh/shell.py):
-   resolves the decorator, runs its argparse, calls
-   `deco.func(body_pipeline, **kwargs)`. `SystemExit` propagates;
-   `KeyboardInterrupt` exits 130; other exceptions print and exit 1;
+   [shell.py::_invoke_decorator](../src/eosh/shell.py):
+   resolves the decorator and calls `deco.invoke(flag_tokens, body,
+   ctx=...)`, which runs its argparse and passes the body first; the
+   status comes from `slots.run_handler`, as for any command
+   (`SystemExit` is its code, `KeyboardInterrupt` 130, other exceptions
+   print and exit 1); an
    unknown decorator name returns 127, naming the closest one (`@watche` →
-   did you mean `@watch`?).  On a POSIX terminal a lone
-   decorator stage doesn't come here: like any pipeline it runs on a
+   did you mean `@watch`?).  `_execute_decorator_stage` runs a lone
+   decorator on the main thread, but on a POSIX terminal a lone
+   decorator stage doesn't go there: like any pipeline it runs on a
    `PipelineSlot` (one PTY, parkable with Ctrl+]), on a stage thread whose
    stdio is that PTY — so its body, and `ctx.input` / `ctx.choose` /
    `ctx.run_interactive` in a Python command inside it, still have a
    terminal (discussion #76).  In a multi-stage pipeline
    (`@deco {...} | next`) the decorator runs on a worker thread via
-   `_start_decorator_stage_thread`; `_run_pipeline_from_decorator`
-   detects the in-pipe context and forces the body onto the
+   `_start_stage_thread(decorator=True)`; `_run_body` detects the
+   in-pipe context and forces the body onto the
    pipeline-execution path so its first/last stage read/write the
    thread's rebound stdio (the outer pipe ends).
 5. **`@watch` built-in** in
@@ -666,16 +671,15 @@ Open questions are tracked in
    `OptionsCompleter`, and body-command delegation through the
    normal command-completion path.
 7. **Tests** in
-   [tests/test_decorators.py](../tests/test_decorators.py): 50 tests
-   covering registry, parser (all brace-handling cases from the
+   [tests/test_decorators.py](../tests/test_decorators.py), covering registry, parser (all brace-handling cases from the
    "Brace handling" subsection plus error-path coverage),
    composition (parser + execution), executor indirection,
    dispatch, and completion.
 
 ## What's left for follow-up commits
 
-Tracked in
-[discussion #67](https://github.com/crftwr/eosh/discussions/67). Stacking,
+None open: [discussion #67](https://github.com/crftwr/eosh/discussions/67)
+is closed. Stacking,
 sequencing after a scope and inside one, slot-aware `@watch`, typo
 suggestions and the history / redirect tests have shipped (#80, #88, #89,
-#91).
+#91); `@confirm` and `@nice` were dropped (see "Built-in decorators").

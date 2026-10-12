@@ -24,7 +24,7 @@
 ├─────────────────────────────────────────────────────┤
 │  Variable Registry (variables.py)                   │
 │  ├── Var ABC — Python-backed shell variables       │
-│  ├── EnvVar — single-key passthrough               │
+│  ├── EnvVar / PyVar / GlobalVar — the three kinds  │
 │  └── VarCompleter — KEY=VALUE TAB completion       │
 ├─────────────────────────────────────────────────────┤
 │  Completion Engine (completion.py)                  │
@@ -86,7 +86,7 @@ Entry point and orchestrator. Owns the REPL cycle: read input, parse, dispatch, 
 - Uses a DIY raw-mode line editor (`lineedit.py`) — no external dependencies
 - Registers built-in commands: `cd`, `exit`, `reload`, `config`, `var`, `alias`, `unalias`, `source-bash`, `help`, `context`, `history`, `confirm`
 - Loads user configuration at startup; `reload` re-loads without restarting the shell
-- Falls back to PTY subprocess (`process.py`) for unrecognized commands
+- Falls back to a PTY-backed `PipelineSlot` (`job.py`) for unrecognized commands
 - Executes pipelines (`|`), sequences (`;`, `&&`, `||`), and redirections (`>`, `>>`, `<`, `2>`, `2>&1`)
 - Handles `Ctrl+]` context-switch picker (shows all contexts + running process names)
 
@@ -201,7 +201,7 @@ Cobra-based tools (`docker`, `kubectl`, `helm`, `gh`, …) need no hand-written 
 
 ### decorators/ — Pipeline Decorators
 
-A decorator is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how it runs. A decorator is a command named `@name` in the command registry: authors register a function with `@registry.command("@name", params=[...])` that receives a parsed `Pipeline` AST and the parsed flag namespace. Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, registered by `eosh.decorators.register_builtins()`. Pipelines that contain `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. See [decorators.md](decorators.md).
+A decorator is a token of the form `@name [flags]` at the start of a line that wraps the rest of the line as a pipeline and modifies how it runs. A decorator is a command named `@name` in the command registry: authors register a function with `@registry.command("@name", params=[...])` that receives the body (a `Sequence`; `body.run()` runs it) and the parsed flag namespace. Built-ins: `@watch`, `@time`, `@retry`, `@quiet`, registered by `eosh.decorators.register_builtins()`. Pipelines that contain `|`, `;`, `&&`, `||`, or a redirect must be enclosed in `{...}`. See [decorators.md](decorators.md).
 
 ### parsing.py — Line Tokenization
 
@@ -223,7 +223,7 @@ Quote-aware parser for the full operator set.
 ### Command Execution
 
 ```
-User input → expand_vars() → parse_line() → Sequence of Pipelines
+User input → expand_aliases() → expand_vars() → parse_line() → Sequence of Pipelines
   → On a POSIX terminal, the whole Sequence on one PipelineSlot: a driver
     thread runs the pipelines (&&, ||, ;) — OS pipes between stages, the
     slot's PTY at the terminal-facing ends, external stages started by its
@@ -259,9 +259,10 @@ User presses TAB
 Ctrl+] pressed (or "context switch <name>")
   → _save_current(): snapshot cwd into current context
   → _unapply_env(): restore os.environ from backup
-  → _activate(name):
+  → _activate(name) → _restore(target):
       → os.chdir(target.cwd)
       → _apply_env(target): export target.variables, backup originals
+      → restore target's PyVar values
   → If target context has a live slot: resume forwarding mode
 ```
 
@@ -277,12 +278,17 @@ eosh/
 │   ├── completion.md
 │   ├── context.md
 │   ├── decorators.md
+│   ├── history.md
+│   ├── hooks.md
+│   ├── keys.md
+│   ├── notifications.md
 │   ├── recipes.md
 │   ├── addons.md
 │   ├── subcommands.md
 │   ├── cobra.md
 │   ├── argcomplete-fallback.md
 │   ├── terminal-resize.md
+│   ├── windows-setup.md
 │   └── limitations.md
 ├── src/
 │   └── eosh/
@@ -293,19 +299,27 @@ eosh/
 │       ├── switcher.py         # Ctrl+] context switcher (a Shell mixin)
 │       ├── execution.py        # Execution record (ContextVar): runner, slot, ctx, stage
 │       ├── slots.py            # Python stages, thread-local stdio, run_handler
+│       ├── command_context.py  # CommandContext / ShellView: what user code sees
 │       ├── commands.py         # command registry, @command decorator, arg() builder, CmdParser, sub-command tree
 │       ├── variables.py        # Var ABC, VarRegistry, EnvVar, VarCompleter
 │       ├── completion.py       # Completer ABC, CompletionContext, built-in completers, cobra/argcomplete fallbacks
+│       ├── completion_cache.py # TTL store for completer fetches
 │       ├── context.py          # Context, ContextManager, ContextState
 │       ├── history.py          # HistoryStore: shared SQLite history (~/.eosh/history.db)
 │       ├── lineedit.py         # DIY raw-mode line editor, ghost suggestion, TAB completion glue
 │       ├── parsing.py          # line tokenization, quote handling, var expansion
 │       ├── pipeline.py         # quote-aware operator parser: parse_line(), expand_globs(), decorator extraction, Pipeline.run()
-│       ├── job.py              # PipelineSlot: a line's pipeline on one PTY; _job_leader.py starts its stages
+│       ├── job.py              # PipelineSlot: a line's pipeline on one PTY
+│       ├── _job_leader.py      # the job leader: session leader that starts external stages
 │       ├── process.py          # PTY subprocess slots, output buffering, terminal-mode tracking
 │       ├── prompt.py           # set_prompt / get_prompt_func / default_prompt
 │       ├── colors.py           # ColorScheme + set_color_scheme (dark/light/mono), NO_COLOR
 │       ├── keys.py             # key bindings: action table, keys.bind, @keys.action
+│       ├── hooks.py            # event hooks: @hooks.on_directory_changed, …
+│       ├── notify.py           # OS notification when a slow command finishes
+│       ├── shell_integration.py # OSC 633 / 133 prompt and command marks
+│       ├── paths.py            # config_dir() — the one place naming ~/.eosh
+│       ├── user_errors.py      # config/recipe error tracebacks, eosh frames stripped
 │       ├── terminal.py         # cross-platform raw-mode + key reading
 │       ├── tui.py              # InlinePicker, InlineArgPrompt
 │       ├── recipes/            # external-command completion recipes (28+ files)
@@ -316,7 +330,7 @@ eosh/
 │           ├── watch.py        # @watch built-in
 │           ├── time.py         # @time built-in
 │           ├── retry.py        # @retry built-in
-│           ├── quiet.py        # @quiet built-in
+│           └── quiet.py        # @quiet built-in
 └── tests/
     ├── test_alias_expansion.py
     ├── test_argcomplete_fallback.py
@@ -339,7 +353,7 @@ eosh/
 
 ## Design Decisions
 
-1. **DIY raw-mode line editor** — `lineedit.py` drives the terminal directly with `termios`/`tty`/`select`. This avoids external dependencies, keeps the codebase self-contained, and gives full control over the completion UI and resize handling.
+1. **DIY raw-mode line editor** — `lineedit.py` drives the terminal directly (raw mode and key reads through `terminal.py`). This avoids external dependencies, keeps the codebase self-contained, and gives full control over the completion UI and resize handling.
 
 2. **Completer receives full context** — `CompletionContext` carries all parsed state so completers make decisions based on command name, preceding args, and shell context without global state.
 
@@ -355,9 +369,6 @@ eosh/
 
 ## Known structural smells
 
-These are not bugs and they are not blocking work. They are the architectural rough edges that have accumulated as features (Python pipelines, decorators, passthrough subprocesses) layered on top of the original PTY-multiplexing core. Each is tracked in more detail in [discussion #70](https://github.com/crftwr/eosh/discussions/70).
+These are not bugs and they are not blocking work.
 
-- **`shell.py` is ~2400 lines** and still hosts two concerns that are conceptually separate: the pipeline executor (`_execute_pipeline`, `_execute_stage`, `_run_on_slot`, redirect plumbing) and the actual REPL + built-ins + completion glue. (The Python-command plumbing moved to `slots.py`, the line slot to `job.py`, the Ctrl+] switcher to `switcher.py`.) Everything else in the package is right-sized.
-- **Redirect-open code is duplicated** inside `_execute_pipeline` and `_execute_stage` with subtly different sentinels (`subprocess.STDOUT` vs the string `"stdout"` for `2>&1`). A single `_open_redirects(stage)` helper would unify both call sites.
-
-The shape of the relief is sketched in [discussion #70](https://github.com/crftwr/eosh/discussions/70): extract `dispatch.py` (the pipeline executor). The global setters that used to be the hidden contract between layers (`pipeline.set_pipeline_executor`, the `_in_pipeline` / `_job_local` thread-locals) are already one record, `execution.Execution` in a `ContextVar`.
+- **`shell.py` is ~2400 lines** and still hosts two concerns that are conceptually separate: the pipeline executor (`_execute` … `_execute_external`: `_run_on_slot`, `_execute_pipeline`, `_execute_stage`, redirect plumbing) and the REPL + built-ins + completion glue. (The Python-command plumbing moved to `slots.py`, the line slot to `job.py`, the Ctrl+] switcher to `switcher.py`, and the hidden global contract between layers to one `execution.Execution` record in a `ContextVar`.) Extracting the executor into a `dispatch.py` was considered and dropped ([discussion #70](https://github.com/crftwr/eosh/discussions/70), closed); it would be revisited only if the executor itself changes (`$(…)`, `&`, here-documents).

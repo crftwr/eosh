@@ -74,8 +74,9 @@ already know zsh.
   handler (`_slot_finished`) when its work actually ends. `_park` records the
   line on the slot (`slot.line`), so the hook still gets the line as typed.
 - **`on_command_not_found`** is asked by `Shell._command_not_found`, from the
-  paths that run one external command on its own (`_execute_external`, and
-  the Windows variant after its `cmd /c` retry).
+  paths that run one external command on its own (a one-stage pipeline in
+  `_execute_pipeline`, `_execute_external`, and the Windows variant after its
+  `cmd /c` retry).
 
 Known gaps are listed in [limitations.md](limitations.md#event-hooks--what-they-dont-see).
 

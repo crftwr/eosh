@@ -13,12 +13,12 @@ Implemented. See [src/eosh/completion.py](../src/eosh/completion.py) (`Argcomple
 
 `ArgcompleteCompleter` drives the protocol directly so eosh can complete these tools without any per-command recipe and without depending on the bash-completion package.
 
-Combined with [cobra.md](cobra.md) (Go CLIs, opt-in by name) and [`recipes/aws.py`](../src/eosh/recipes/aws.py) (AWS CLI v2's `aws_completer`), three protocol fallbacks cover the vast majority of modern CLI tools out of the box.
+Combined with [cobra.md](cobra.md) (Go CLIs, opt-in by name) and [`recipes/aws.py`](../src/eosh/recipes/aws.py) (AWS CLI v2's `aws_completer`), three protocol drivers cover the vast majority of modern CLI tools out of the box.
 
 ## Goals
 
 - Provide TAB completions for any argcomplete-marked tool with zero per-tool config.
-- Activate **only when no recipe / `@registry.command` completer produced candidates** — recipes always win.
+- Activate **only where no recipe / `@registry.command` completer is registered for the slot** — recipes always win, even when they return nothing.
 - **Never invoke a tool that isn't argcomplete-marked.** Detection happens by inspecting the executable, not by trial-running it. (Some tools have dangerous side effects when run.)
 - Bound the cost: a TAB press should never block the prompt for more than a small, configurable timeout.
 - Fail silently when the tool isn't installed or isn't argcomplete-aware — fall back to `FileCompleter`.
@@ -106,7 +106,7 @@ The fd-8 plumbing has a subtle constraint: `pass_fds` only works for fds that ar
 ```
 1. Recipe / @registry.command completer for this position?  → use it
    (cobra tools are recipes too — their delegate is CobraCompleter)
-2. None-key OptionsCompleter and prefix starts with "-"?     → use it
+2. The node has flags (from `params`) and prefix starts with "-"? → use them
 3. No completer registered at this slot, and the command is
    an argcomplete-marked Python script?                      → try it
    - non-empty result            → use it

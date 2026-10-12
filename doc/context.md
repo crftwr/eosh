@@ -26,6 +26,8 @@ class Context:
     variables: dict[str, str | None]    # exported to os.environ; None = unset here
     cwd: str                            # saved working directory
     process_slot: PipelineSlot | None   # the line parked here
+    history: list[str]                  # per-context Up/Down history (in memory)
+    py_values: dict[str, str | None]    # PyVar values, saved on leave / restored on enter
 
     @property
     def state(self) -> ContextState: ...  # derived from process_slot
@@ -34,7 +36,7 @@ class Context:
 A context captures:
 - **Variables**: exported to `os.environ` on activation, restored on deactivation. Subprocesses inherit these automatically.
 - **Working directory**: saved when leaving, restored when entering. Each context remembers where you were.
-- **Process slot**: an optional PTY-backed subprocess. When a context has a live process and is switched away from, the process keeps running and its output is buffered until you switch back.
+- **Process slot**: the line parked here, if any — a `PipelineSlot` (one PTY for the whole line, external and Python commands alike). When a context has a live process and is switched away from, the process keeps running and its output is buffered until you switch back.
 
 ### ContextManager
 
@@ -226,9 +228,9 @@ The `[bg:N]` indicator shows how many other contexts (not the current one) have 
 
 ## Design Rationale
 
-**Why named collection + stack instead of just a stack?**
+**Why a named collection in MRU order instead of a stack?**
 
-A pure stack forces linear navigation — you must pop through intermediates to reach a distant context. Named contexts allow direct `switch` to any context at any time. The stack remains available as a convenience for the common "briefly enter context X, then return" pattern.
+A pure stack forces linear navigation — you must pop through intermediates to reach a distant context. Named contexts allow direct `switch` to any context at any time, and the most-recently-used order still answers "where do I go back to" when a context is closed (discussion #41).
 
 **Why export to os.environ?**
 

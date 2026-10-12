@@ -90,7 +90,7 @@ From the repo root, in a **new** terminal (so the `PATH` changes above are
 picked up):
 
 ```
-make install   # bootstraps .venv, installs eosh + pytest
+make install   # bootstraps .venv, installs eosh with its [dev] extra (pytest + awsut's deps)
 make test      # runs the test suite
 make run       # launches eosh itself
 ```
