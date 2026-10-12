@@ -97,12 +97,9 @@ def test_exit_requests_the_shell_end_instead_of_raising():
 
 
 def test_exit_in_a_pipeline_stage_is_a_subshell_exit():
-    from eosh.slots import _in_pipeline
+    from eosh import execution
 
     sh = Shell()
-    _in_pipeline.flag = True
-    try:
+    with execution.entered(stage=True):
         sh.registry.get("exit").invoke([])
-    finally:
-        _in_pipeline.flag = False
     assert sh._exit_requested is False

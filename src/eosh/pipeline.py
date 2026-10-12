@@ -6,7 +6,7 @@ import glob
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable
 
 
 class DecoratorParseError(ValueError):
@@ -57,19 +57,20 @@ class Stage:
 
 
 def _run(body: "Pipeline | Sequence", stdin, stdout, stderr) -> int:
-    """Execute *body* through the registered executor.
+    """Execute *body* on the shell it runs in (``execution.current().runner``).
 
-    The executor is registered by :class:`eosh.shell.Shell` on construction
-    so a decorator (or any external caller) can do ``body.run()`` without
-    knowing about Shell.  Without a Shell instance, this raises
-    ``RuntimeError`` — a body always runs *inside* a shell.
+    So a decorator (or any external caller) can do ``body.run()`` without
+    knowing about Shell.  Without a Shell, this raises ``RuntimeError`` — a
+    body always runs *inside* a shell.
     """
-    if _executor is None:
+    from . import execution
+    runner = execution.current().runner
+    if runner is None:
         raise RuntimeError(
-            f"{type(body).__name__}.run() called with no executor registered; "
-            "construct a Shell first or call set_pipeline_executor()"
+            f"{type(body).__name__}.run() called with no executor: "
+            "it runs inside a Shell"
         )
-    return _executor(body, stdin=stdin, stdout=stdout, stderr=stderr)
+    return runner(body, stdin=stdin, stdout=stdout, stderr=stderr)
 
 
 @dataclass
@@ -109,24 +110,6 @@ class Sequence:
                 out += "; " if op == ";" else f" {op} "
             out += p.label()
         return out
-
-
-# ---------------------------------------------------------------------------
-# Pipeline.run() executor indirection
-# ---------------------------------------------------------------------------
-
-_executor: Optional[Callable[..., int]] = None
-
-
-def set_pipeline_executor(fn: Callable[..., int] | None) -> None:
-    """Register the function that runs a :class:`Pipeline` or a
-    :class:`Sequence`.
-
-    Called by ``Shell.__init__``.  Passing ``None`` clears the registration
-    (useful in tests).
-    """
-    global _executor
-    _executor = fn
 
 
 def _flag_takes_value(decorator_name: str, flag: str) -> bool:

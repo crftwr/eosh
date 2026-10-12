@@ -14,7 +14,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,21 +53,19 @@ from .pipeline import (
     expand_aliases,
     expand_globs,
     parse_line,
-    set_pipeline_executor,
     split_on_operators,
 )
 from . import hooks, notify, shell_integration
 from . import keys as keymap
 from . import job as job_mod
 from .job import PipelineSlot
+from . import execution
 from .colors import set_color_scheme
 from .prompt import get_prompt_func, set_prompt
 from .switcher import ContextSwitcher
 from .slots import (
     _PyStageHandle,
     _dup_threadlocal_override_fd,
-    _in_pipeline,
-    _job_local,
     _read_from_user,
     _run_interactive,
     _stdin_is_tty,
@@ -352,8 +349,8 @@ class Shell(ContextSwitcher):
         self._file_completer = FileCompleter()
         self._var_completer = VarCompleter()
 
-        # Wire Pipeline.run() so decorator bodies can re-enter execution.
-        set_pipeline_executor(self._run_body)
+        # body.run() from a decorator re-enters this shell's execution.
+        execution.set_runner(self._run_body)
 
     def _suggest(self, buf: str) -> str | None:
         """The ghost suggestion for *buf*: the latest line run in this
@@ -754,7 +751,7 @@ class Shell(ContextSwitcher):
         def exit_shell():
             # A pipeline stage is a subshell in POSIX terms: `exit | cat`
             # does not end the shell.
-            if getattr(_in_pipeline, "flag", False):
+            if execution.current().stage:
                 return
             running = self._running_contexts()
             if running and not self._confirm_exit(running):
@@ -1417,7 +1414,12 @@ class Shell(ContextSwitcher):
 
     def _execute(self, line: str, history_id: int | None = None) -> int | None:
         """Run one line; its exit status, or ``None`` when Ctrl+] sent it to
-        the background before it finished."""
+        the background before it finished.  Decorator bodies in it run on
+        this shell (``execution.current().runner``)."""
+        with execution.entered(runner=self._run_body):
+            return self._execute_line(line, history_id)
+
+    def _execute_line(self, line: str, history_id: int | None) -> int | None:
         try:
             seq = parse_line(expand_vars(self._expand_aliases(line)))
         except DecoratorParseError as e:
@@ -1522,14 +1524,10 @@ class Shell(ContextSwitcher):
 
     @staticmethod
     def _thread_ctx() -> CommandContext | None:
-        """The ctx this thread's work runs in, when it isn't simply the
-        current context: a pipeline stage's (a subshell, for a decorator
-        body), else its line's on a slot (``job.ctx``)."""
-        ctx = getattr(_job_local, "ctx", None)
-        if ctx is None:
-            job = getattr(_job_local, "job", None)
-            ctx = job.ctx if job is not None else None
-        return ctx
+        """The ctx this work runs in, when it isn't simply the current
+        context: a pipeline stage's (a subshell, for a decorator body), else
+        its line's on a slot."""
+        return execution.current().ctx
 
     # --- hooks ----------------------------------------------------------------
 
@@ -1608,7 +1606,7 @@ class Shell(ContextSwitcher):
         When the decorator itself is a stage of an outer pipeline
         (composition: ``@deco {body} | next``), the body's stdout must
         feed into the outer pipe — not the real terminal.  We detect that
-        case via ``_in_pipeline.flag`` and pipe the body's last stage to
+        case via ``execution.current().stage`` and pipe the body's last stage to
         the thread's rebound ``sys.stdout`` (which is the outer pipe's
         write end).  Without this, a body like ``@watch {ls}`` running
         under ``@watch {ls} | grep py`` would route through the
@@ -1620,7 +1618,7 @@ class Shell(ContextSwitcher):
                 "body.run(stdin=, stdout=, stderr=) is not supported yet; "
                 "the decorator body inherits stdio from the decorator's caller."
             )
-        in_outer_pipe = getattr(_in_pipeline, "flag", False)
+        in_outer_pipe = execution.current().stage
         seq = body if isinstance(body, Sequence) else Sequence(items=[(None, body)])
         status = self._run_items(
             seq, lambda p: self._execute_pipeline(p, _in_outer_pipe=in_outer_pipe))
@@ -1639,7 +1637,7 @@ class Shell(ContextSwitcher):
         """Execute a pipeline; return exit code of last stage.
 
         On a slot — a line's driver thread, or a decorator body on one of
-        its stage threads (:data:`_job_local`) — the pipeline joins it:
+        its stage threads (``execution.current().job``) — the pipeline joins it:
         external stages go through its job leader, terminal-facing ends to
         its PTY, and the cwd, environment and variables are those of the
         context the line started in (``job.ctx``), whichever is current now.
@@ -1663,7 +1661,7 @@ class Shell(ContextSwitcher):
         # ``sys.stdout`` under every other thread.  Decorator stages keep
         # the direct path — their redirects live inside the braced body.
         # On a slot nothing takes the terminal for itself: the slot has it.
-        job: PipelineSlot | None = getattr(_job_local, "job", None)
+        job: PipelineSlot | None = execution.current().job
         if (
             single is not None
             and job is None
@@ -1919,7 +1917,7 @@ class Shell(ContextSwitcher):
 
         if not workers:
             return unstarted_status
-        if job is not None and getattr(_job_local, "driver", False):
+        if job is not None and execution.current().driver:
             return job.wait_for(workers)    # the ones Ctrl+C interrupts
         return self._wait_for_stages(workers)
 
@@ -2099,10 +2097,6 @@ class Shell(ContextSwitcher):
                 handle._io_objs.append(w)
 
         def _target():
-            _in_pipeline.flag = True
-            _in_pipeline.on_terminal = on_terminal
-            _job_local.job = job        # a decorator body joins the slot
-            _job_local.ctx = ctx        # … and runs in the stage's ctx
             try:
                 if in_wrapper is not None:
                     sys.stdin.set_override(in_wrapper)
@@ -2134,13 +2128,12 @@ class Shell(ContextSwitcher):
                             w.close()
                         except Exception:
                             pass
-                _in_pipeline.flag = False
-                _in_pipeline.on_terminal = False
-                _job_local.job = None
-                _job_local.ctx = None
                 handle.done.set()
 
-        t = threading.Thread(target=_target, name=f"pipe-{label}", daemon=True)
+        # A stage: a decorator body on it joins the slot (job) and runs in the
+        # stage's ctx; one with pipes for stdio can't talk to the user.
+        t = execution.thread(_target, name=f"pipe-{label}", job=job, ctx=ctx,
+                             driver=False, stage=True, on_terminal=on_terminal)
         handle.thread = t
         t.start()
         return handle

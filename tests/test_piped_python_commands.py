@@ -15,7 +15,7 @@ import pytest
 from eosh.commands import registry
 from eosh.command_context import CommandContext
 from eosh.shell import Shell
-from eosh.slots import _in_pipeline
+from eosh import execution
 
 
 # All tests in this module exercise the in-process pipeline whose worker
@@ -203,8 +203,7 @@ def test_systemexit_in_python_stage_does_not_kill_shell(shell):
 def test_talking_to_the_user_refuses_inside_pipeline_thread():
     """ctx.run_interactive / ctx.input / ctx.choose must error out when stdin/stdout
     are wired to pipes."""
-    _in_pipeline.flag = True
-    try:
+    with execution.entered(stage=True):
         ctx = CommandContext(None, None, None)
         with pytest.raises(RuntimeError, match="ctx.run_interactive"):
             ctx.run_interactive(["true"])
@@ -212,8 +211,6 @@ def test_talking_to_the_user_refuses_inside_pipeline_thread():
             ctx.input("> ")
         with pytest.raises(RuntimeError, match="ctx.choose"):
             ctx.choose(["a"])
-    finally:
-        _in_pipeline.flag = False
 
 
 # ---------------------------------------------------------------------------

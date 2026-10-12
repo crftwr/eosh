@@ -577,7 +577,27 @@ slot's PTY (or pipes / files). This module is that plumbing, kept out of
 - `run_handler` — a handler's end as an exit status, for every path.
 - `_run_interactive` / `_read_from_user` / `_choose` — the bodies of
   `CommandContext`'s methods (below), reaching the user through the stage's
-  PTY (`_job_local.job`) or, on the main thread, the terminal.
+  PTY (`execution.current().job`) or, on the main thread, the terminal.
+
+### execution.py — What the running code is part of
+
+One frozen record, `Execution`, in a `ContextVar`, instead of a module global
+and two thread-locals set field by field: `runner` (the shell's `_run_body`,
+which `body.run()` calls), `job` (the line's slot), `ctx` (the line's context,
+or a pipeline stage's subshell), `driver` (this thread runs the line's
+pipelines and waits on their stages), `stage` / `on_terminal` (a pipeline
+stage, and whether its stdin and stdout are a terminal — `piped` is a stage
+that isn't, where `ctx.input` & co. refuse).
+
+- `current()` reads it; `entered(**changes)` changes it for a `with` block
+  (`Shell._execute` enters `runner=self._run_body`, so two shells in one
+  process each run their own bodies; `Shell()` also `set_runner`s it, for a
+  `body.run()` outside a line).
+- `thread(target, name=…, **changes)` makes the threads the shell starts — a
+  line's driver (`PipelineSlot.run`), a pipeline stage
+  (`Shell._start_stage_thread`) — start from a copy of their parent's record
+  and state what they are on top. A thread started any other way starts from
+  the empty record.
 
 ### command_context.py — What user code sees of the shell
 
@@ -634,7 +654,7 @@ programs it starts see them, the context never does. So `cd x | cat` and
 `var X=1 | cat` change nothing (discussion #85). A lone stage — redirected
 (`cd x > log`) or a decorator body — runs in the shell itself. A decorator
 that is a stage gets the subshell too, and its body runs in it
-(`_job_local.ctx`, read by `Shell._thread_ctx`).
+(`execution.current().ctx`, read by `Shell._thread_ctx`).
 
 #### Why the user-facing methods exist: one reader for real stdin
 
@@ -645,7 +665,7 @@ External commands typed at the prompt (e.g. plain `aws ssm start-session`) don't
 - **`ctx.run_interactive(argv)`** runs the program on the command's slot: the job leader starts it on the slot's PTY, as its controlling terminal, exactly like an external stage. The main thread keeps reading real stdin in raw mode, intercepts Ctrl+] for context switching, and forwards every other byte to the PTY master. Ctrl+C is the program's alone while it runs (`PipelineSlot.interactive()` keeps the Python thread from being interrupted). Window resizes reach it through the slot. On the main thread (a `sync` command) there is no slot and no competing reader, so it is plain `subprocess.run`.
 - **`ctx.input` / `ctx.input_block`** read the **raw key stream** of the command's terminal — the slot's PTY, or on the main thread the real terminal — in raw-input / cooked-output mode. `slots._read_typed` does the echo, Backspace / Ctrl+U / Ctrl+W editing, CRLF folding and blank-line detection for both. Ctrl+C raises `KeyboardInterrupt` in the command (with ISIG off the PTY passes it as a key, and the forwarding loop leaves the thread alone), and Ctrl+D on an empty line `EOFError`. Nothing goes through cooked mode, whose canonical line buffer is capped at `MAX_CANON` — 1024 bytes on macOS, where an over-long line is **discarded whole**, which a pasted `AWS_SESSION_TOKEN` line exceeds on its own. On a slot, a single-line read drops keys typed before the question was asked (`tcflush`), so a stray `y` can't answer a delete prompt; a block keeps a paste that landed before it. Without a terminal (and on Windows) both fall back to `input()`.
 - **`ctx.choose`** runs an `InlinePicker` on the command's terminal (the slot's PTY: its `sys.stdin` / `sys.stdout`). Ctrl+C sets `picker.interrupted` and becomes `KeyboardInterrupt`. Esc returns `None`. Without a terminal it falls back to a numbered list.
-- All of them raise `RuntimeError` in a pipeline stage whose stdin/stdout are pipes (`_in_pipeline.on_terminal` is false).
+- All of them raise `RuntimeError` in a pipeline stage whose stdin/stdout are pipes (`execution.current().piped`).
 
 **When you don't need `run_interactive`.** Three cases that look like subprocesses but don't race for stdin:
 
@@ -1029,7 +1049,7 @@ The decorator function receives the body — a `Sequence`: the pipelines inside 
 
 **Loading:** `Shell._register_builtins` calls `eosh.decorators.register_builtins()` inside `defining_builtins()`, so the built-ins survive `reload` and a config needs `override=True` to replace one. There is no decorator search path; your own are defined in `config.py` (or a module it imports), like a recipe.
 
-**Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `ctx.run_interactive` / `ctx.input` / `ctx.choose` raise `RuntimeError` from a piped decorator. A lone decorator on a `PipelineSlot` is not "piped": its stdin and stdout are the slot's PTY, so they work (`_in_pipeline.on_terminal`).
+**Caveats inherited from in-process Python pipelines.** A decorator body is a Python command in everything but syntax, so the constraints from `doc/limitations.md` ("Python commands in pipelines — caveats of the in-process model") apply: nested `subprocess.run` writes to the real terminal unless given `stdout=sys.stdout`, pure-CPU loops can't be `Ctrl+C`-interrupted in a piped context, and `ctx.run_interactive` / `ctx.input` / `ctx.choose` raise `RuntimeError` from a piped decorator. A lone decorator on a `PipelineSlot` is not "piped": its stdin and stdout are the slot's PTY, so they work (`execution.current().on_terminal`).
 
 See [doc/decorators.md](doc/decorators.md) for the full design rationale, IPython-magic precedent, parser/executor walkthrough, and resolved UX questions; remaining follow-ups (more built-ins) are in [discussion #67](https://github.com/crftwr/eosh/discussions/67).
 
@@ -1143,6 +1163,7 @@ eosh/
 │       │                       # frames stripped
 │       ├── shell.py            # main loop, command dispatch, pipeline execution
 │       ├── switcher.py         # Ctrl+] context switcher (a Shell mixin)
+│       ├── execution.py        # Execution record (ContextVar): runner, slot, ctx, stage
 │       ├── slots.py            # Python stages: thread-local stdio, run_handler,
 │       │                       # the CommandContext I/O implementations
 │       ├── commands.py         # command registry, @command decorator
@@ -1310,7 +1331,7 @@ its session and process group — `/dev/tty` works for `| less` / `| sudo` /
 group. eosh can't be that leader: its children are in its own session. A line costs ~20 ms over a plain `Popen` (the warm leader saves the ~30 ms
 interpreter start). Ctrl+C also
 interrupts the Python stages (`interrupt_python_stages`) unless a stage turned
-ISIG off. A decorator body on a stage thread joins the slot (`_job_local`).
+ISIG off. A decorator body on a stage thread joins the slot (`execution.current().job`).
 Keys typed ahead that no stage read are drained from the PTY before the leader
 exits and handed back to the prompt (`take_unread` → `terminal.unread`).
 

@@ -34,7 +34,7 @@ through the outer pipeline, the line goes on after a braced scope
 - Decorator registry mirroring `CommandRegistry` / `VarRegistry`
   (`eosh/decorators/__init__.py`).
 - `Pipeline.run()` indirection so decorator bodies can re-enter
-  execution (`pipeline.py::set_pipeline_executor`).
+  execution (`execution.current().runner`, set by the shell).
 - Dispatch in `Shell._execute_decorator_stage`.
 - Built-ins: `@watch`, `@time`, `@retry`, `@quiet`
   (`eosh/decorators/*.py`).

@@ -34,7 +34,7 @@ IS_WINDOWS = os.name == "nt"
 if not IS_WINDOWS:
     import termios
 
-from . import terminal
+from . import execution, terminal
 
 # ---------------------------------------------------------------------------
 # Thread-local stdio routing
@@ -244,16 +244,6 @@ def run_handler(
         return 1
 
 
-# Set on threads spawned by _execute_pipeline for Python-command stages.
-# The CommandContext methods that talk to the user check this and refuse,
-# since stdin and stdout are wired to pipe ends, not the terminal.
-_in_pipeline = threading.local()
-
-# Set on a pipeline stage's thread when the pipeline runs on a
-# PipelineSlot: a decorator body re-entering the executor there joins that
-# slot (its job leader, its PTY) instead of taking the terminal.
-_job_local = threading.local()
-
 
 def _dup_threadlocal_override_fd(stream) -> int | None:
     """Duplicate the underlying pipe fd of a thread-local stdio override.
@@ -291,7 +281,7 @@ def _dup_threadlocal_override_fd(stream) -> int | None:
 def _refuse_in_pipeline(what: str) -> None:
     # A stage whose stdin and stdout are both a terminal — a lone decorator
     # on a PipelineSlot, and its body — can still talk to the user.
-    if getattr(_in_pipeline, "flag", False) and not getattr(_in_pipeline, "on_terminal", False):
+    if execution.current().piped:
         raise RuntimeError(
             f"{what} cannot be used inside a piped Python command "
             f"(stdin/stdout are wired to pipes, not the terminal)"
@@ -308,7 +298,7 @@ def _run_interactive(argv: list[str], **popen_kwargs) -> int:
     slot and nobody else is reading: plain ``subprocess.run``.
     """
     _refuse_in_pipeline("ctx.run_interactive")
-    job = getattr(_job_local, "job", None)
+    job = execution.current().job
     if job is not None:
         # A command on its slot's terminal: the program gets the slot's PTY,
         # through its job leader — as a controlling terminal, so it can open
@@ -340,7 +330,7 @@ def _read_from_user(prompt: str, *, block: bool, what: str = "input") -> str:
     """
     _refuse_in_pipeline(what)
     if _stdin_is_tty() and not IS_WINDOWS:
-        on_slot = getattr(_job_local, "job", None) is not None
+        on_slot = execution.current().job is not None
         if on_slot and not block:
             # Keys typed while the command was busy were not meant as the
             # answer to a question it hadn't asked yet ("y" to a delete
@@ -379,7 +369,7 @@ def _choose(items: list[str], title: str) -> str | None:
         return _choose_by_number(items, title)
     from .tui import InlinePicker
 
-    if getattr(_job_local, "job", None) is not None:
+    if execution.current().job is not None:
         _drop_typed_ahead()             # typed before the question: not an answer
     if title:
         print(title)

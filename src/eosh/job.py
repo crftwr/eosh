@@ -274,10 +274,13 @@ class PipelineSlot(PtySlot):
     def run(self, driver) -> None:
         """Run *driver* — the line: its pipelines, one after another — on a
         thread of the slot's own, whose stdio is the PTY and on which
-        :data:`~eosh.slots._job_local` names this slot, so everything it
-        starts joins the slot.  Its return value is the slot's status."""
-        threading.Thread(target=self._drive, args=(driver,), daemon=True,
-                         name="eosh-line").start()
+        the execution record names this slot (and the line's ``ctx``), so
+        everything it starts joins the slot.  Its return value is the slot's
+        status."""
+        from . import execution
+        execution.thread(lambda: self._drive(driver), name="eosh-line",
+                         job=self, ctx=getattr(self, "ctx", None), driver=True,
+                         stage=False, on_terminal=False).start()
 
     def start(self, workers: list) -> None:
         """Stages already running: the slot ends when they do."""
@@ -299,12 +302,9 @@ class PipelineSlot(PtySlot):
         return status
 
     def _drive(self, driver) -> None:
-        from .slots import _job_local
         streams = [io.TextIOWrapper(os.fdopen(self.terminal_fd(), "wb", buffering=0),
                                     encoding="utf-8", errors="replace", write_through=True)
                    for _ in range(2)]
-        _job_local.job = self
-        _job_local.driver = True
         try:
             if hasattr(sys.stdout, "set_override"):
                 sys.stdout.set_override(streams[0])
@@ -316,8 +316,6 @@ class PipelineSlot(PtySlot):
                 traceback.print_exc()
                 self._status = 1
         finally:
-            _job_local.job = None
-            _job_local.driver = False
             if hasattr(sys.stdout, "clear_override"):
                 sys.stdout.clear_override()
                 sys.stderr.clear_override()
