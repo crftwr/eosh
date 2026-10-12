@@ -77,6 +77,7 @@ eosh
 | `alias [NAME[=EXPANSION] ...]` | List aliases, show one, or define a shorthand for a command |
 | `unalias NAME [NAME ...]` | Remove aliases |
 | `source-bash [FILE [ARG ...]]` | Run a bash script (or a pasted block) and import its variables and cwd |
+| `confirm [MESSAGE]` | Ask `MESSAGE [y/N]` (default `Continue?`); exit 0 on `y`, 1 otherwise — `confirm 'Destroy prod?' && terraform destroy` |
 | `history [-n N] [--here] [KEYWORD ...]` | List past command lines (every window, every context), filtered by keywords or this directory |
 | `reload` | Reload `~/.eosh/config.py` without restarting |
 | `config edit` | Open `~/.eosh/config.py` in `$VISUAL` / `$EDITOR`, then reload it |
