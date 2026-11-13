@@ -89,7 +89,9 @@ def arg(*names: str, completer: Completer | None = None, **kwargs) -> Arg:
           and ``choices=`` is set, a :class:`ChoiceCompleter` is derived
           automatically.
         - For a **value-taking flag** (``-t``, ``--timeout``, …), it
-          completes the value the user types after the flag.
+          completes the value the user types after the flag.  If omitted
+          and ``choices=`` is set, a :class:`ChoiceCompleter` is derived
+          automatically, as for a positional.
         - Ignored for **boolean flags** (``action="store_true"`` etc.).
 
     Examples::
@@ -156,7 +158,11 @@ def options_completer(params: list[Arg]) -> OptionsCompleter | None:
         for name in a.names:
             options[name] = a.kwargs.get("help", "")
         if _takes_value(a):
-            hint: str | tuple = (_metavar(a), a.completer) if a.completer else _metavar(a)
+            value_completer = a.completer
+            if value_completer is None and "choices" in a.kwargs:
+                value_completer = ChoiceCompleter(list(a.kwargs["choices"]))
+            hint: str | tuple = ((_metavar(a), value_completer) if value_completer
+                                 else _metavar(a))
             for name in a.names:
                 value_flags[name] = hint
     if not options:
