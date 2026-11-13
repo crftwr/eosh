@@ -204,6 +204,27 @@ def _hyperpod_event_failure_message(sagemaker_client, cluster_name: str,
     return None
 
 
+def _hyperpod_next_event_watermark(events: list[dict]):
+    """Next ``(EventTimeAfter, ids-already-reported)`` pair after *events*.
+
+    ``ListClusterEvents`` truncates ``EventTimeAfter`` to whole seconds and
+    then filters inclusively, so the effective server-side predicate is
+    ``EventTime >= floor(EventTimeAfter)``: a watermark of ``12:15:14.232``
+    still returns the events at ``12:15:14.120`` and ``12:15:14.214``.  The
+    de-dup set therefore has to hold every id in the watermark's *second* —
+    keeping only the ids whose timestamp equals the newest one leaves the
+    earlier events of that second to be re-reported on every later tick,
+    which is what made a provisioning event repeat once per poll until a
+    newer second's event finally moved the watermark along.
+
+    *events* must be non-empty.
+    """
+    newest = max(e["EventTime"] for e in events)
+    boundary = newest.replace(microsecond=0)
+    return newest, {e["EventId"] for e in events
+                    if e["EventTime"] >= boundary}
+
+
 def _hyperpod_transitions_finished(cluster: dict, nodes: list[dict]) -> bool:
     """Return True when the cluster has no in-flight transitions left.
 
@@ -1252,8 +1273,9 @@ def register_hyperpod(sagemaker) -> None:
         #     than "now" are never fetched or reported, and
         #   * each tick advances it to the newest event seen, so subsequent
         #     calls only return events that arrived since.
-        # ``seen_events`` holds just the event ids sitting exactly on the
-        # watermark, to de-dup the inclusive-boundary event(s) between ticks.
+        # ``seen_events`` holds the event ids inside the watermark's second,
+        # to de-dup the inclusive boundary between ticks — see
+        # :func:`_hyperpod_next_event_watermark`.
         event_watermark = datetime.datetime.now(datetime.timezone.utc)
         seen_events: set[str] = set()
         prev_cluster_status: str | None = None
@@ -1425,14 +1447,11 @@ def register_hyperpod(sagemaker) -> None:
                             emit(f"  Failure message: {line}")
 
             # Advance the watermark to the newest event time seen so the next
-            # call only returns events after it.  Keep the ids sitting exactly
-            # on the new watermark in ``seen_events`` to de-dup the inclusive
-            # boundary next tick.
+            # call only returns events from its second onwards, and remember
+            # the ids in that second to de-dup the inclusive boundary.
             if events:
-                newest = max(e["EventTime"] for e in events)
-                event_watermark = newest
-                seen_events = {e["EventId"] for e in events
-                               if e["EventTime"] == newest}
+                event_watermark, seen_events = \
+                    _hyperpod_next_event_watermark(events)
 
             first = False
 
