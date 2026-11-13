@@ -2146,6 +2146,68 @@ def test_logs_list_shows_what_streams_the_space_has(
 
 
 # ---------------------------------------------------------------------------
+# hyperpod watch — each event is reported exactly once
+# ---------------------------------------------------------------------------
+
+def _event(when, event_id):
+    return {"EventId": event_id, "EventTime": when}
+
+
+def _list_cluster_events(all_events, event_time_after):
+    """``ListClusterEvents``' real filter: it truncates to whole seconds.
+
+    Pinned by a live call: ``EventTimeAfter=12:15:14.232`` still returned the
+    events at ``12:15:14.120`` and ``.214``, and only ``12:15:15.000``
+    excluded them — i.e. ``EventTime >= floor(EventTimeAfter)``, inclusive.
+    """
+    floor = event_time_after.replace(microsecond=0)
+    return [e for e in all_events if e["EventTime"] >= floor]
+
+
+def test_watch_event_watermark_covers_the_whole_boundary_second():
+    """Three events inside one second: all three must land in the de-dup set.
+
+    Keeping only the newest timestamp's id left the earlier two to come back
+    through the second-granularity filter on every later tick, which is how a
+    single "successfully provisioned" event got printed once per poll.
+    """
+    events = [_event(utc(2026, 11, 13, 12, 15, 14, us), f"e{us}")
+              for us in (120000, 214000, 232000)]
+    watermark, seen = hyperpod._hyperpod_next_event_watermark(events)
+    assert watermark == utc(2026, 11, 13, 12, 15, 14, 232000)
+    assert seen == {"e120000", "e214000", "e232000"}
+
+
+def test_watch_reports_each_event_once_across_ticks():
+    """Drive the watermark the way the loop does, against the real filter.
+
+    The shape that broke is the one a cluster creation really produces: a
+    burst of same-second events, then several polls with nothing new before
+    the next event arrives.  Those quiet polls are where the duplicates came
+    from, so the timeline has to include them.
+    """
+    # (tick the event becomes visible, event)
+    timeline = [
+        (0, _event(utc(2026, 11, 13, 12, 15, 14, 120000), "provisioned-a")),
+        (0, _event(utc(2026, 11, 13, 12, 15, 14, 214000), "provisioned-b")),
+        (0, _event(utc(2026, 11, 13, 12, 15, 14, 232000), "provisioned-c")),
+        (4, _event(utc(2026, 11, 13, 12, 16, 36, 887000), "lifecycle-started")),
+    ]
+    watermark = utc(2026, 11, 13, 12, 15, 0)
+    seen: set[str] = set()
+    reported = []
+    for tick in range(6):
+        visible = [e for born, e in timeline if born <= tick]
+        events = _list_cluster_events(visible, watermark)
+        reported += [e["EventId"] for e in events if e["EventId"] not in seen]
+        if events:
+            watermark, seen = hyperpod._hyperpod_next_event_watermark(events)
+
+    assert reported == ["provisioned-a", "provisioned-b", "provisioned-c",
+                        "lifecycle-started"]
+
+
+# ---------------------------------------------------------------------------
 # Completers degrade to silence, never to a traceback
 # ---------------------------------------------------------------------------
 
