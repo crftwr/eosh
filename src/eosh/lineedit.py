@@ -1036,6 +1036,11 @@ class LineEditor:
             self._buf = selected.cmd
             self._cursor = len(self._buf)
             self._hist_idx = 0
+        elif picker.accepted:
+            # Enter on "(no matches)": keep the query as the line rather
+            # than throwing it away (#97).  Only Esc / Ctrl+C restore.
+            self._buf = picker.typed
+            self._cursor = len(self._buf)
         else:
             self._buf = saved_buf
             self._cursor = saved_cursor

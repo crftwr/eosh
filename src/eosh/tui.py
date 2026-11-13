@@ -251,6 +251,7 @@ class InlinePicker(Generic[T]):
         self.apply_backspace = False  # set True when backspace pressed with no typed chars
         self.closed_empty = False     # set True when narrowing left no candidates
         self.interrupted = False      # set True when Ctrl+C (not Esc) cancelled it
+        self.accepted = False         # set True when Enter closed it, even with no row to pick
         self.action: str | None = None  # set when run() exits via a key in key_actions
 
         self._selected = self._no_selection
@@ -311,6 +312,7 @@ class InlinePicker(Generic[T]):
                     # With no row highlighted this returns None — Enter then
                     # just dismisses the list instead of picking a candidate
                     # the user never selected.
+                    self.accepted = True
                     result = self._current()
                     break
                 if action in ("cancel", "interrupt"):
