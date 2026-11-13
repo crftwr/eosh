@@ -305,6 +305,19 @@ def test_options_completer_value_taking_flags():
     assert oc.args["-o"] == "OUTPUT"       # metavar derived from --output
 
 
+def test_options_completer_flag_value_from_choices():
+    explicit = ChoiceCompleter(["x"])
+    oc = options_completer([
+        arg("--format", choices=["table", "csv", "jsonl"], default="table"),
+        arg("--mode", choices=["a", "b"], completer=explicit),
+    ])
+    comp = oc._value_completers["--format"]
+    assert isinstance(comp, ChoiceCompleter)
+    assert comp.choices == ["table", "csv", "jsonl"]
+    assert oc.args["--format"] == "FORMAT"
+    assert oc._value_completers["--mode"] is explicit   # explicit wins
+
+
 def test_registry_command_derives_completion_from_params():
     reg = CommandRegistry()
 
