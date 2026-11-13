@@ -204,6 +204,7 @@ def test_ctrl_r_opens_filtered_by_the_buffer(monkeypatch, capsys):
         def __init__(self, items, **kw):
             seen["items"] = [e.cmd for e in items]
             seen["typed"] = kw.get("typed")
+            self.accepted = False                   # closed with Esc
 
         def run(self):
             return None
@@ -214,6 +215,27 @@ def test_ctrl_r_opens_filtered_by_the_buffer(monkeypatch, capsys):
     ed._history_search()
     assert seen == {"items": ["git commit -m a", "git status"], "typed": "git"}
     assert ed._buf == "git"                         # Esc restores the line
+    capsys.readouterr()
+
+
+def test_enter_on_no_matches_keeps_the_query(monkeypatch, capsys):
+    """#97: Enter while "(no matches)" is shown must not wipe the line."""
+    import eosh.tui as tui
+
+    store = HistoryStore(None)
+    store.add("git status", cwd="/r")
+    keys = iter([b"x", b"y", b"z", b"\r"])
+    real = tui.InlinePicker
+    monkeypatch.setattr(
+        tui, "InlinePicker",
+        lambda items, **kw: real(items, key_source=lambda t: next(keys), **kw))
+    monkeypatch.setattr(tui.terminal, "terminal_size", lambda: (80, 24))
+    monkeypatch.setattr(tui.os, "get_terminal_size", lambda *a: os.terminal_size((80, 24)))
+    monkeypatch.setattr(tui.sys, "stdin", type("In", (), {"fileno": lambda s: 0})())
+    ed = _editor(history=store)
+    ed._buf, ed._cursor = "git ", 4
+    ed._history_search()
+    assert (ed._buf, ed._cursor) == ("git xyz", 7)
     capsys.readouterr()
 
 
