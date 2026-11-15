@@ -1,31 +1,30 @@
 VENV := .venv
 
+# The venv is made from the newest Python found, so a new release is picked up
+# without editing this file; `make install PYTHON_BOOTSTRAP=python3.13` picks
+# one by hand. `?=` keeps it lazy: the search runs only when a target uses it.
 ifeq ($(OS),Windows_NT)
     # Windows: venv scripts live in Scripts/, executables end in .exe.
-    # Prefer python3.14 if it's already on PATH; otherwise fall back to the
-    # `py` launcher.
-    PY_ON_PATH := $(shell where python3.14 2>/dev/null)
-    ifneq ($(strip $(PY_ON_PATH)),)
-        PYTHON_BOOTSTRAP := python3.14
-    else
-        PYTHON_BOOTSTRAP := py
-    endif
+    # The `py` launcher runs the newest installed Python by default.
+    PYTHON_BOOTSTRAP ?= py
     VENV_BIN := $(VENV)/Scripts
     PYTHON := $(VENV_BIN)/python.exe
     PIP := $(VENV_BIN)/pip.exe
     PYTEST := $(VENV_BIN)/pytest.exe
     VENV_STAMP := $(VENV_BIN)/activate
 else
-    # Unix: venv binaries live in bin/
-    PYTHON_BOOTSTRAP := python3.14
+    # Unix: venv binaries live in bin/. The bootstrap is the highest
+    # python3.N on PATH, chosen by name (nothing is run to find it), or plain
+    # python3 when there is none.
+    PYTHON_BOOTSTRAP ?= $(or $(shell echo "$$PATH" | tr ':' '\n' | \
+        while IFS= read -r d; do ls "$$d" 2>/dev/null; done | \
+        grep -E '^python3\.[0-9]+$$' | sort -t. -k2,2n | tail -1),python3)
     VENV_BIN := $(VENV)/bin
     PYTHON := $(VENV_BIN)/python
     PIP := $(VENV_BIN)/pip
     PYTEST := $(VENV_BIN)/pytest
     VENV_STAMP := $(VENV_BIN)/activate
 endif
-
-$(info Using Python bootstrap: $(PYTHON_BOOTSTRAP))
 
 .PHONY: help install test clean run demo banner install-launcher build publish-testpypi tag release-github release-whl release-status
 
@@ -50,6 +49,7 @@ help:
 	@echo "  make publish-testpypi  - rehearsal: upload dist/* to TestPyPI ([testpypi] token in ~/.pypirc)"
 
 $(VENV_STAMP):
+	@echo "Creating $(VENV) with $(PYTHON_BOOTSTRAP)"
 	"$(PYTHON_BOOTSTRAP)" -m venv $(VENV)
 	"$(PYTHON)" -m pip install --upgrade pip
 	"$(PYTHON)" -m pip install -e ".[dev]"
