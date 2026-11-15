@@ -31,9 +31,10 @@ py -3.14        # run a specific version
 in `%LOCALAPPDATA%\Microsoft\WindowsApps\` that transparently redirects to the
 real install above — this is expected and not the broken Microsoft Store stub.
 
-The project `Makefile` bootstraps its venv from `python3.14` if that exact name
-is found on `PATH`, otherwise falls back to the `py` launcher — so neither name
-needs to be on `PATH` for `make install` to work.
+The project `Makefile` bootstraps its venv through the `py` launcher, which
+runs the newest installed Python — so no `python3.x` name needs to be on `PATH`
+for `make install` to work. `make install PYTHON_BOOTSTRAP=...` picks another
+interpreter.
 
 ## make (GNU Make)
 

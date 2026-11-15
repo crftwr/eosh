@@ -14,6 +14,8 @@ dynamic = ["version", "readme"]
 description = "A lightweight but powerful terminal shell with rich TAB completion and context switching"
 license = "MIT"
 authors = [{ name = "craftware" }]
+# No upper bound and no per-version classifiers: requires-python is the one
+# statement of support, and the release tests decide which versions are run.
 requires-python = ">=3.12"
 keywords = ["shell", "terminal", "completion", "repl", "aws"]
 classifiers = [
@@ -24,10 +26,7 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX",
     "Operating System :: Microsoft :: Windows",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
     "Topic :: System :: Shells",
     "Topic :: Terminals",
 ]
