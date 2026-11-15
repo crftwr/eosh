@@ -34,6 +34,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .paths import ensure_private_dir, ensure_private_file
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
     id       INTEGER PRIMARY KEY,
@@ -82,7 +84,11 @@ class HistoryStore:
     def _open(self, path: Path | None) -> sqlite3.Connection:
         if path is not None:
             try:
-                path.parent.mkdir(parents=True, exist_ok=True)
+                # Every line typed is in here, secrets included: the file is
+                # created 0600 before SQLite opens it (which would use the
+                # umask), and SQLite gives its journal the database's mode.
+                ensure_private_dir(path.parent)
+                ensure_private_file(path)
                 return self._connect(str(path))
             except (OSError, sqlite3.Error):
                 pass        # unwritable / corrupt — keep a history for this session

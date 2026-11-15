@@ -5,6 +5,10 @@ eosh keeps one command history, shared by every eosh process, in
 suggestion**, **Ctrl+R**, and the **`history`** command. Up/Down walks a
 per-context list instead (discussion #37).
 
+The file is created `0600` (and `~/.eosh` `0700`) whatever the umask: it
+holds every line typed, secrets included. SQLite gives its `-journal` the
+database's mode. An existing file keeps the mode it has (`paths.py`).
+
 ## What the user sees
 
 | Recall | Scope | How |

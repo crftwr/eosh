@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import sys
+
+import pytest
 
 from eosh import shell as shell_mod
 from eosh.shell import Shell
@@ -25,6 +29,42 @@ def test_first_launch_writes_and_loads_the_starter_config(tmp_path, monkeypatch)
 
     assert (home / ".eosh" / "config.py").read_text() == starter.read_text()
     assert sys._eosh_test_config_loaded is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_first_launch_creates_the_config_private(tmp_path, monkeypatch):
+    """~/.eosh is 0700 and config.py 0600 whatever the umask: a config is
+    where tokens and account ids end up."""
+    starter = tmp_path / "starter.py"
+    starter.write_text("")
+    home = tmp_path / "home"
+    monkeypatch.setattr(shell_mod, "config_dir", lambda: home / ".eosh")
+    monkeypatch.setattr(shell_mod, "_DEFAULT_CONFIG_PATH", starter)
+
+    old = os.umask(0o022)
+    try:
+        _real_load_user_config(Shell.__new__(Shell))
+    finally:
+        os.umask(old)
+
+    assert stat.S_IMODE((home / ".eosh").stat().st_mode) == 0o700
+    assert stat.S_IMODE((home / ".eosh" / "config.py").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_an_existing_config_keeps_its_mode(tmp_path, monkeypatch):
+    """Only creation sets a mode: a dotfiles checkout stays as the user left it."""
+    cfg_dir = tmp_path / "home" / ".eosh"
+    cfg_dir.mkdir(parents=True, mode=0o755)
+    cfg = cfg_dir / "config.py"
+    cfg.write_text("")
+    cfg.chmod(0o644)
+    monkeypatch.setattr(shell_mod, "config_dir", lambda: cfg_dir)
+
+    _real_load_user_config(Shell.__new__(Shell))
+
+    assert stat.S_IMODE(cfg_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(cfg.stat().st_mode) == 0o644
 
 
 def test_config_imports_its_own_modules_and_reload_runs_them_again(tmp_path, monkeypatch):
