@@ -698,6 +698,11 @@ window is suggested in another at once (discussion #37).
   lack); 2 s busy timeout; every `sqlite3.Error` swallowed, and an unopenable
   file degrades to `:memory:` — a history must never fail a command. Tests get
   an in-memory store from an autouse fixture in `tests/conftest.py`.
+- **Private on creation** (`paths.ensure_private_dir` / `ensure_private_file`
+  / `write_private_text`): `~/.eosh` is made `0700`, `history.db` and the
+  starter `config.py` `0600`, whatever the umask — the history holds every
+  line typed. Only creation sets a mode; an existing file or directory keeps
+  its own.
 
 See [doc/history.md](doc/history.md).
 
@@ -1167,7 +1172,8 @@ eosh/
 │       ├── __init__.py         # public API exports + __version__ (single source)
 │       ├── __main__.py         # entry point (`eosh`, `eosh --version`)
 │       ├── _config.py          # template copied to ~/.eosh/config.py on first run
-│       ├── paths.py            # config_dir() — the one place naming ~/.eosh
+│       ├── paths.py            # config_dir() — the one place naming ~/.eosh;
+│       │                       # creates what's in it private (0700 / 0600)
 │       ├── user_errors.py      # traceback of a config/recipe error, eosh
 │       │                       # frames stripped
 │       ├── shell.py            # main loop, command dispatch, pipeline execution

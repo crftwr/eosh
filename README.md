@@ -584,6 +584,8 @@ registry.command(
 | `~/.eosh/history.db` | Command history, shared by every eosh process (SQLite) |
 | `~/.eosh/*.py` | Your own modules (recipes, commands, decorators) — on `sys.path` while `config.py` runs |
 
+What eosh creates there is yours alone — the directory `0700`, `config.py` and `history.db` `0600`, whatever your umask — since the history holds every line you type (a pasted token included) and a config is where account ids end up. A directory or file that already exists keeps its mode, so a symlinked dotfiles checkout is left as you set it.
+
 ## Platform Support
 
 The interactive shell — line editing, completion, all TUI pickers, history, pipelines, redirects, built-ins, decorators, and `Ctrl+]` context switching at the prompt — runs natively on both POSIX and Windows. Path separators are normalized to `/` on every platform (Git-Bash style) so a path can never be mistaken for a `\`-line-continuation.

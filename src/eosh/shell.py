@@ -44,7 +44,7 @@ from .context import ContextManager
 from .history import HistoryStore, norm_dir
 from .lineedit import CONTEXT_CHANGED_SENTINEL, LineEditor
 from .parsing import expand_vars, raw_token_start, split_for_completion, tokenize
-from .paths import config_dir
+from .paths import config_dir, ensure_private_dir, write_private_text
 from .pipeline import (
     DecoratorParseError,
     Sequence,
@@ -1214,8 +1214,10 @@ class Shell(ContextSwitcher):
         if not config_path.exists():
             # First launch: write the starter config, then load it like any
             # other — a fresh install should not need a restart to get recipes.
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(_DEFAULT_CONFIG_PATH.read_text())
+            # Private (0700 / 0600, see paths.py): a config is where tokens
+            # and account ids end up.
+            ensure_private_dir(config_path.parent)
+            write_private_text(config_path, _DEFAULT_CONFIG_PATH.read_text())
 
         import importlib
         import importlib.util

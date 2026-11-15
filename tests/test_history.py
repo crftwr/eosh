@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import stat
+import sys
 
 import pytest
 
@@ -92,6 +94,31 @@ def test_an_unopenable_database_degrades_to_memory(tmp_path):
     s = HistoryStore(blocker / "history.db")      # parent is a file
     s.add("still works", cwd="/r")
     assert [e.cmd for e in s.entries()] == ["still works"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_a_new_database_is_private(tmp_path):
+    """Every line typed is in the history, secrets included: 0600 (and its
+    directory 0700) whatever the umask."""
+    path = tmp_path / "eosh" / "history.db"
+    old = os.umask(0o022)
+    try:
+        s = HistoryStore(path)
+        s.add("var AWS_SESSION_TOKEN=secret", cwd="/r")
+        s.close()
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_an_existing_database_keeps_its_mode(tmp_path):
+    path = tmp_path / "history.db"
+    HistoryStore(path).close()
+    path.chmod(0o644)
+    HistoryStore(path).close()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
 
 
 def _write_many(path: str, tag: str, n: int) -> None:
