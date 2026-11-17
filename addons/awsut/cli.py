@@ -76,6 +76,7 @@ from eosh.completion import Completer, Completion, CompletionContext, FileComple
 from eosh.completion_cache import aws_env_key, get_or_fetch
 from eosh.variables import PyVar, registry as var_registry
 from .common import (
+    Heartbeat,
     RED,
     RESET,
     YELLOW,
@@ -89,6 +90,7 @@ from .common import (
     print_labeled,
     print_table,
     section,
+    sleep_with_dots,
 )
 from eosh.recipes.aws import AWS_REGIONS, AwsProfileCompleter
 
@@ -605,22 +607,71 @@ def _account_alias(session) -> str:
         return ""
 
 
-# ─── progress dots used by `cloudformation watch` ───────────────────────────
+# ─── resource events used by `cloudformation watch` ─────────────────────────
 
-class _ProgressDots:
-    def __init__(self):
-        self.status = None
+def _cf_new_events(cf_client, stack_id: str, since, seen: set[str]) -> list[dict]:
+    """A stack's events newer than ``since`` and not in ``seen``, oldest first.
 
-    def tick(self, status):
-        if self.status != status:
-            if self.status is not None:
-                print()
-            self.status = status
-            if self.status is not None:
-                print(self.status, end=" ", flush=True)
-            return
-        if self.status is not None:
-            print(".", end="", flush=True)
+    ``describe_stack_events`` pages newest-first, so paging stops at the first
+    event that is already reported or older than ``since`` — a long-lived stack's
+    history is never walked past what the watch has already shown. ``seen`` is
+    updated in place. ``stack_id`` is the ARN, not the name: a stack that reached
+    DELETE_COMPLETE can only be addressed by its id.
+    """
+    fresh: list[dict] = []
+    params = {"StackName": stack_id}
+    while True:
+        response = cf_client.describe_stack_events(**params)
+        done = False
+        for event in response.get("StackEvents", []):
+            if event["EventId"] in seen or event["Timestamp"] < since:
+                done = True
+                break
+            fresh.append(event)
+        token = response.get("NextToken")
+        if done or not token:
+            break
+        params["NextToken"] = token
+    seen.update(e["EventId"] for e in fresh)
+    fresh.reverse()
+    return fresh
+
+
+def _cf_status_color(status: str) -> str | None:
+    if status.endswith("_FAILED"):
+        return RED
+    if "ROLLBACK" in status:
+        return YELLOW
+    return None
+
+
+def _cf_event_line(stack_name: str, event: dict, *, tty: bool = False) -> str:
+    """``stack · LogicalId (Type) · STATUS · reason`` for one stack event."""
+    status = event.get("ResourceStatus", "")
+    color = _cf_status_color(status) if tty else None
+    shown = f"{color}{status}{RESET}" if color else status
+    parts = [stack_name,
+             f"{event.get('LogicalResourceId', '')} "
+             f"({event.get('ResourceType', '')})",
+             shown]
+    reason = event.get("ResourceStatusReason")
+    if reason:
+        parts.append(reason)
+    return " · ".join(parts)
+
+
+def _cf_resources_in_progress(cf_client, stack_id: str) -> list[dict]:
+    """The stack's resources currently in an ``*_IN_PROGRESS`` state."""
+    found: list[dict] = []
+    params = {"StackName": stack_id}
+    while True:
+        response = cf_client.list_stack_resources(**params)
+        found += [r for r in response.get("StackResourceSummaries", [])
+                  if r.get("ResourceStatus", "").endswith("_IN_PROGRESS")]
+        token = response.get("NextToken")
+        if not token:
+            return found
+        params["NextToken"] = token
 
 
 # ─── completers ─────────────────────────────────────────────────────────────
@@ -1449,30 +1500,78 @@ def _register_cf(awsut) -> None:
                 print()
                 _report_cf_failure(cf_client, stack)
 
-    @cf.command("watch", help="Watch CloudFormation operations until they finish")
+    @cf.command(
+        "watch",
+        help="Watch CloudFormation operations resource by resource until they "
+             "finish",
+        params=[arg("--interval", type=int, default=5,
+                    help="Seconds between polls (default 5)")],
+    )
     @guard
-    def _cf_watch():
+    def _cf_watch(interval):
         cf_client = _get_boto3_client("cloudformation")
-        progress = _ProgressDots()
-        stacks: list[dict] = []
-        while True:
-            status_list = []
-            stacks = _list_cf_stacks(cf_client, include_nested=True)
-            for stack in stacks:
-                if stack["StackStatus"].endswith("_IN_PROGRESS"):
-                    status_list.append(f"{stack['StackName']}:{stack['StackStatus']}")
-            progress.tick(", ".join(status_list))
-            if not status_list:
-                progress.tick(None)
-                break
-            time.sleep(5)
+        tty = color_enabled(sys.stdout)
+        beat = Heartbeat()
 
-        # Report any stacks that ended in a failed state (e.g. DELETE_FAILED),
-        # including the failure reason and a clickable console hyperlink.
-        failed = [s for s in stacks if s["StackStatus"].endswith("_FAILED")]
-        for stack in failed:
-            print()
-            _report_cf_failure(cf_client, stack)
+        def emit(line: str, when=None) -> None:
+            # An event line carries the event's own time, not the poll's: one
+            # poll often reads several events that happened minutes apart.
+            beat.clear()
+            when = when.astimezone() if when else datetime.datetime.now()
+            stamp = when.strftime("%H:%M:%S")
+            print(f"[{stamp}] {line}", flush=True)
+
+        def in_progress() -> dict[str, dict]:
+            return {s["StackId"]: s
+                    for s in _list_cf_stacks(cf_client, include_nested=True)
+                    if s["StackStatus"].endswith("_IN_PROGRESS")}
+
+        # Events older than the watch are history, not progress: the baseline
+        # is a snapshot of what is in flight right now, and from then on every
+        # resource transition is one line.
+        since = datetime.datetime.now(datetime.timezone.utc)
+        active = in_progress()
+        print_header(f"{len(active)} stack(s) in progress",
+                     f"region {_region_label()}")
+        if not active:
+            return
+        for stack in active.values():
+            print(f"{stack['StackName']} · {stack['StackStatus']}")
+            for res in _cf_resources_in_progress(cf_client, stack["StackId"]):
+                print(f"  {res['LogicalResourceId']} ({res['ResourceType']})"
+                      f" · {res['ResourceStatus']}")
+        print("\nCtrl+C to detach\n", flush=True)
+
+        tracked: dict[str, dict] = dict(active)     # stack id -> last summary
+        seen: dict[str, set[str]] = {sid: set() for sid in tracked}
+        while active:
+            sleep_with_dots(interval, beat)
+            # List first, then read events: a stack that just left
+            # *_IN_PROGRESS still gets its final events read this tick.
+            current = in_progress()
+            for sid, stack in current.items():
+                if sid not in tracked:          # started mid-watch (or nested)
+                    seen[sid] = set()
+                tracked[sid] = stack
+            for sid in set(active) | set(current):
+                name = tracked[sid]["StackName"]
+                for event in _cf_new_events(cf_client, sid, since, seen[sid]):
+                    emit(_cf_event_line(name, event, tty=tty),
+                         event["Timestamp"])
+            active = current
+        beat.clear()
+        emit("All operations finished.")
+
+        # Report any watched stack that ended in a failed state (e.g.
+        # DELETE_FAILED), with the failure reason and a console hyperlink.
+        final = {s["StackId"]: s for s in _list_cf_stacks(
+            cf_client, include_deleted=True,
+            include_successfully_completed=True, include_nested=True)}
+        for sid in tracked:
+            stack = final.get(sid)
+            if stack and stack["StackStatus"].endswith("_FAILED"):
+                print()
+                _report_cf_failure(cf_client, stack)
 
     @cf.command(
         "open", help="Open the CloudFormation management console",
