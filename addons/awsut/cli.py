@@ -685,33 +685,6 @@ class _ConsolePageCompleter(Completer):
         ]
 
 
-class _CostServiceCompleter(Completer):
-    """Completes service names from Cost Explorer (last 30 days)."""
-
-    def complete(self, ctx: CompletionContext) -> list[Completion]:
-        try:
-            values = get_or_fetch(
-                ("awsut.cost_services", aws_env_key()),
-                self._fetch,
-            )
-        except Exception:
-            return []
-        return [Completion(value=v) for v in values if v.startswith(ctx.prefix)]
-
-    @staticmethod
-    def _fetch() -> list[str]:
-        today = datetime.datetime.now().date()
-        client = _get_boto3_client("ce")
-        response = client.get_dimension_values(
-            TimePeriod={
-                "Start": (today - datetime.timedelta(days=30)).strftime("%Y-%m-%d"),
-                "End":   (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d"),
-            },
-            Dimension="SERVICE",
-        )
-        return [d["Value"] for d in response.get("DimensionValues", [])]
-
-
 def _describe_instances() -> dict:
     return _get_boto3_client("ec2").describe_instances()
 
@@ -979,7 +952,6 @@ def register() -> None:
     _register_whoami(awsut)
     _register_console(awsut)
     _register_credentials(awsut)
-    _register_recent_cost(awsut)
     _register_ec2(awsut)
     _register_logs(awsut)
     _register_cf(awsut)
@@ -987,7 +959,9 @@ def register() -> None:
     # Lazy: these subpackages do `from .. import awsut`, so they can only be
     # imported once this module is fully loaded.  Each registers its own Vars.
     from .agentcore import register_agentcore
+    from .cost import register_recent_cost
     from .sagemaker import register_sagemaker
+    register_recent_cost(awsut)
     register_sagemaker(awsut)
     register_agentcore(awsut)
 
@@ -1136,140 +1110,6 @@ def _register_credentials(awsut) -> None:
         if profile != _get_profile():
             print(f"(current profile is {_get_profile()!r} — "
                   f"switch with `var aws_profile={profile}`)")
-
-
-def _register_recent_cost(awsut) -> None:
-    @awsut.command(
-        "recent-cost",
-        help="Show recent cost",
-        params=[
-            arg("--days", type=int, default=14, metavar="N",
-                help="Number of days to show"),
-            arg("--filter", nargs="+", metavar="SERVICE",
-                completer=_CostServiceCompleter(),
-                help="Filter by service name(s) and show usage type breakdown"),
-            arg("--min", type=float, default=0.1, dest="min_amount",
-                metavar="AMOUNT",
-                help="Hide rows/columns with total below this amount"),
-        ],
-    )
-    @guard
-    def _recent_cost(days, filter, min_amount):
-        client = _get_boto3_client("ce")
-
-        today = datetime.datetime.now().date()
-        period_end = today + datetime.timedelta(days=1)
-        period_start = period_end - datetime.timedelta(days=days)
-
-        ce_params = {
-            "TimePeriod": {
-                "Start": period_start.strftime("%Y-%m-%d"),
-                "End":   period_end.strftime("%Y-%m-%d"),
-            },
-            "Granularity": "MONTHLY",
-            "Metrics": ["AmortizedCost"],
-        }
-
-        if filter:
-            ce_params["Filter"] = {"Dimensions": {"Key": "SERVICE", "Values": filter}}
-            ce_params["GroupBy"] = [
-                {"Type": "DIMENSION", "Key": "USAGE_TYPE"},
-                {"Type": "DIMENSION", "Key": "REGION"},
-            ]
-            row_label = "USAGE TYPE"
-        else:
-            ce_params["GroupBy"] = [
-                {"Type": "DIMENSION", "Key": "SERVICE"},
-                {"Type": "DIMENSION", "Key": "REGION"},
-            ]
-            row_label = "SERVICE"
-
-        response = client.get_cost_and_usage(**ce_params)
-
-        data: dict[str, dict[str, float]] = {}
-        region_totals: dict[str, float] = {}
-        row_totals: dict[str, float] = {}
-
-        for item in response["ResultsByTime"]:
-            for group in item["Groups"]:
-                row_key = group["Keys"][0]
-                region = group["Keys"][1]
-                amount = float(group["Metrics"]["AmortizedCost"]["Amount"])
-                if amount < 0.01:
-                    continue
-                data.setdefault(row_key, {})[region] = (
-                    data.get(row_key, {}).get(region, 0.0) + amount
-                )
-                region_totals[region] = region_totals.get(region, 0.0) + amount
-                row_totals[row_key]   = row_totals.get(row_key, 0.0) + amount
-
-        regions = sorted(
-            [r for r, t in region_totals.items() if t >= min_amount],
-            key=lambda r: region_totals[r], reverse=True,
-        )
-        rows = sorted(
-            [r for r, t in row_totals.items() if t >= min_amount],
-            key=lambda s: row_totals[s], reverse=True,
-        )
-
-        print_header(
-            f"{len(rows)} {row_label.lower()}(s) × {len(regions)} region(s)",
-            f"last {days} days",
-            f"service {', '.join(filter)}" if filter else "",
-            "amortized cost",
-        )
-        if not regions or not rows:
-            print(f"nothing above --min {min_amount} in this period")
-            return
-
-        all_values = sorted(
-            [v for row_data in data.values() for v in row_data.values()],
-            reverse=True,
-        )
-        max_val = all_values[0] if all_values else 0
-        top_10_pct_idx = max(1, len(all_values) // 10)
-        yellow_threshold = all_values[top_10_pct_idx - 1] if all_values else 0
-
-        def colorize(val, text):
-            if not color_enabled(sys.stdout):
-                return text
-            if val >= max_val:
-                return f"{RED}{text}{RESET}"
-            if val >= yellow_threshold:
-                return f"{YELLOW}{text}{RESET}"
-            return text
-
-        # A cross-tab, not a resource listing: the cells are money, so they are
-        # right-aligned, and the last row is the column totals below a second
-        # rule.  print_table expresses neither, so the frame is drawn here — to
-        # the same shape it draws (labels, '-' rule, two-space gaps).
-        label_w = max([len(row_label), len("TOTAL")] + [len(r) for r in rows])
-        col_w = {region: max(len(region), 10) for region in regions}
-        total_w = max(len("TOTAL"), 10)
-        widths = [label_w] + [col_w[r] for r in regions] + [total_w]
-
-        def rule():
-            print("  ".join("-" * w for w in widths))
-
-        def render(label, cells):
-            print("  ".join([label.ljust(label_w)] + cells))
-
-        render(row_label, [region.rjust(col_w[region]) for region in regions]
-                          + ["TOTAL".rjust(total_w)])
-        rule()
-        for row_key in rows:
-            cells = []
-            for region in regions:
-                w = col_w[region]
-                val = data.get(row_key, {}).get(region, 0.0)
-                cells.append(colorize(val, f"{val:{w}.2f}") if val >= 0.01
-                             else " " * w)
-            cells.append(f"{row_totals[row_key]:{total_w}.2f}")
-            render(row_key, cells)
-        rule()
-        render("TOTAL",
-               [f"{region_totals[r]:{col_w[r]}.2f}" for r in regions]
-               + [f"{sum(row_totals.values()):{total_w}.2f}"])
 
 
 def _register_ec2(awsut) -> None:
