@@ -194,6 +194,14 @@ class InlinePicker(Generic[T]):
     terminal's only reader (``CommandContext.choose``).  The picker then
     leaves the terminal mode alone too: whoever feeds it keys owns the mode,
     and a save/restore from this thread would race the forwarding loop's.
+
+    ``ghost_fn(item, typed)`` previews the highlighted row on the prompt
+    line: the text applying it would add after the caret, drawn dimmed the
+    way the line editor draws a history suggestion, or ``None`` when it
+    can't be shown as a plain continuation.  ``picker.accept_suggestion``
+    (Right / Ctrl-F / Ctrl-E / End, as at the prompt) then chooses that row;
+    with no ghost shown it does nothing.  The caller passes it only when the
+    caret is at the end of the line — a ghost there overwrites nothing.
     """
 
     def __init__(
@@ -220,8 +228,11 @@ class InlinePicker(Generic[T]):
         empty_placeholder: str = "",
         key_source: Callable[[float], bytes] | None = None,
         typed: str = "",
+        ghost_fn: Callable[[T, str], str | None] | None = None,
     ):
         self._items = items
+        self._ghost_fn = ghost_fn
+        self._ghost_shown = False   # a ghost is on the prompt row (cleanup erases it)
         self._key_source = key_source
         self._display_fn = display_fn
         self._meta_fn = meta_fn
@@ -308,6 +319,14 @@ class InlinePicker(Generic[T]):
                     result = self._current()
                     break
                 action = self._dispatch(key_bytes)
+                if action == "accept_suggestion":
+                    # Only when a ghost is showing: what the user takes is
+                    # what they saw.  Otherwise the key does nothing.
+                    if self._ghost() is not None:
+                        self.accepted = True
+                        result = self._current()
+                        break
+                    continue
                 if action == "accept":
                     # With no row highlighted this returns None — Enter then
                     # just dismisses the list instead of picking a candidate
@@ -417,6 +436,7 @@ class InlinePicker(Generic[T]):
             out.append(f"\033[{self._rows_above}A")
         caret_col_now = self._col + self._initial_offset + len(self._typed)
         out.append(f"\033[{caret_col_now + 1}G")
+        out.append(self._format_ghost(caret_col_now))
 
         # Draw status bar at the bottom line, then return to caret via anchor.
         # When a status label is set it takes the whole bar — hints are
@@ -432,6 +452,28 @@ class InlinePicker(Generic[T]):
 
         sys.stdout.write("".join(out))
         sys.stdout.flush()
+
+    def _ghost(self) -> str | None:
+        """The highlighted row's ghost text, or None when there is none."""
+        item = self._current()
+        if self._ghost_fn is None or item is None:
+            return None
+        try:
+            return self._ghost_fn(item, self._typed)
+        except Exception:
+            return None
+
+    def _format_ghost(self, caret_col: int) -> str:
+        """Erase the previous ghost and draw the current one after the caret,
+        cut to what fits on the row (it never wraps), caret left in place."""
+        if self._ghost_fn is None:
+            return ""
+        ghost = self._ghost() or ""
+        text = _wcs_clip(ghost, max(0, self._cols - caret_col - 1))
+        self._ghost_shown = bool(text)
+        if not text:
+            return "\033[K"
+        return f"\033[K\033[2m{text}\033[22m\033[{caret_col + 1}G"
 
     def _format_placeholder(self) -> str:
         """Render the ``empty_placeholder`` text as a single dim row.
@@ -585,6 +627,13 @@ class InlinePicker(Generic[T]):
         until the picker chain finally exits.
         """
         prefix = "\x1b[?25l" if self._cancelled else ""
+        if self._ghost_shown and not self._cancelled:
+            # The ghost is on the prompt row, above the anchor: wipe it, or a
+            # reopened picker (TAB-extend) would type over a stale preview.
+            caret_col = self._col + self._initial_offset + len(self._typed)
+            up = f"\033[{self._rows_above}A" if self._rows_above > 0 else ""
+            prefix += f"\0338{up}\033[{caret_col + 1}G\033[K"
+            self._ghost_shown = False
         sys.stdout.write(f"{prefix}\0338\033[J")
 
     # ── char input ──────────────────────────────────────────────────────────
@@ -687,6 +736,7 @@ class InlinePicker(Generic[T]):
     # picker.* action → what run() acts on.
     _ACTIONS = {
         "picker.accept": "accept",
+        "picker.accept_suggestion": "accept_suggestion",
         "picker.cancel": "cancel",
         "picker.interrupt": "interrupt",
         "picker.previous": "up",

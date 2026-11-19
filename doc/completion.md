@@ -253,6 +253,24 @@ candidate the user makes the choice explicit:
 - `Down` / `Ctrl+N` (or `Up` / `Ctrl+P` to enter at the bottom), then `Enter`
 - `TAB` on a list narrowed to a single candidate accepts it outright
 
+### The highlighted row is previewed on the line
+
+Once a row is highlighted, what applying it would add is drawn **dimmed after
+the caret**, exactly like the history ghost suggestion — including what the
+label doesn't show (a directory's trailing `/`, the space after a word, the
+`-d ` of a value-taking flag). `Right` / `Ctrl+F` / `Ctrl+E` / `End`
+(`picker.accept_suggestion`) then applies it, the same keys that take the
+history ghost at the prompt: dim text after the caret is always taken with
+`Right`. `Enter` still applies too.
+
+- Only with the caret at the **end of the line**, as for the history ghost;
+  inside a line the preview would cover the text after the caret, and `Right`
+  does nothing.
+- A row that rewrites the token instead of extending it (a case fix, a value
+  that gets quoted) has no ghost, and `Right` does nothing on it: what you
+  take is what you saw.
+- Cut at the end of the row, never wrapped.
+
 The alternative — highlighting the first candidate on open — means a reflexive
 Enter silently rewrites the argument the user just typed.
 

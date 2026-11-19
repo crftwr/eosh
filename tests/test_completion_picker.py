@@ -391,3 +391,87 @@ def test_a_value_flag_without_candidates_just_leaves_the_flag(monkeypatch, tmp_p
     assert ed._buf == "make -j "
     assert _StubPicker.instances == []
     capsys.readouterr()
+
+
+# ── The highlighted row is previewed on the line, taken with Right ───────────
+
+
+def _ghost_fn_for(monkeypatch, tmp_path, buf, completions=_two_candidates):
+    ed = _editor(monkeypatch, tmp_path, completions)
+    ed._buf, ed._cursor = buf, len(buf)
+    _StubPicker.script = [{"selected": None}]
+    ed._complete()
+    return _StubPicker.instances[0].kwargs["ghost_fn"]
+
+
+def test_ghost_is_what_applying_the_row_adds(monkeypatch, tmp_path, capsys):
+    ghost = _ghost_fn_for(monkeypatch, tmp_path, "ls al")
+    assert ghost(Completion(value="alpha"), "") == "pha "     # trailing space too
+    assert ghost(Completion(value="alpha"), "ph") == "a "     # after the typed chars
+    assert ghost(Completion(value="alps/"), "") == "ps/"      # a directory: no space
+    capsys.readouterr()
+
+
+def test_a_row_that_rewrites_the_token_has_no_ghost(monkeypatch, tmp_path, capsys):
+    ghost = _ghost_fn_for(monkeypatch, tmp_path, "ls al")
+    assert ghost(Completion(value="Alpha"), "") is None       # case fix
+    assert ghost(Completion(value="al pha"), "") is None      # gets quoted
+    capsys.readouterr()
+
+
+def test_no_ghost_with_the_caret_inside_the_line(monkeypatch, tmp_path, capsys):
+    ed = _editor(monkeypatch, tmp_path, _two_candidates)
+    ed._buf, ed._cursor = "ls al rest", 5
+    _StubPicker.script = [{"selected": None}]
+    ed._complete()
+    assert _StubPicker.instances[0].kwargs["ghost_fn"] is None
+    capsys.readouterr()
+
+
+def _ghost_picker(**kw):
+    p = InlinePicker(["alpha", "beta"], select_first=False,
+                     ghost_fn=lambda item, typed: item[len("al") + len(typed):]
+                     if item.startswith("al" + typed) else None, **kw)
+    p._cols, p._lines = 80, 24
+    return p
+
+
+def test_right_keys_dispatch_to_accept_suggestion():
+    p = _ghost_picker()
+    for key in (b"\x1b[C", b"\x06", b"\x05", b"\x1b[F"):
+        assert p._dispatch(key) == "accept_suggestion"
+
+
+def test_ghost_is_drawn_dimmed_after_the_caret_and_erased_without_one():
+    p = _ghost_picker(col=3)
+    assert p._format_ghost(5) == "\033[K"         # nothing highlighted: just erase
+    assert not p._ghost_shown
+    p._move(1)                                     # alpha
+    assert p._format_ghost(5) == "\033[K\033[2mpha\033[22m\033[6G"
+    assert p._ghost_shown
+    p._move(1)                                     # beta: no continuation
+    assert p._format_ghost(5) == "\033[K"
+
+
+def test_ghost_is_cut_at_the_end_of_the_row():
+    p = _ghost_picker()
+    p._move(1)
+    p._cols = 8
+    assert "\033[2mph\033[22m" in p._format_ghost(5)
+
+
+def test_without_ghost_fn_nothing_is_drawn_on_the_line():
+    p = InlinePicker(["alpha"], select_first=False)
+    p._move(1)
+    assert p._format_ghost(5) == ""
+    assert p._ghost() is None                      # so Right does nothing
+
+
+def test_closing_erases_a_shown_ghost(capsys):
+    p = _ghost_picker(col=3, rows_above=1)
+    p._move(1)
+    p._format_ghost(3)
+    p._cleanup()
+    out = capsys.readouterr().out
+    assert out == "\0338\033[1A\033[4G\033[K\0338\033[J"
+    assert not p._ghost_shown

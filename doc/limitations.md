@@ -300,6 +300,8 @@ re-render it on `activate()`.
 - **The ghost suggestion is cut at the end of the row.** Only as much as fits
   after the buffer on its row is drawn (a wrapping ghost would complicate
   every redraw's row bookkeeping). Accepting it still inserts the whole line.
+  The same goes for the TAB picker's preview of the highlighted row, which
+  is also drawn only with the caret at the end of the line.
 - **Ctrl+R starts empty when the line is too long to fit on the prompt row**
   next to the prompt.
 
