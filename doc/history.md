@@ -30,6 +30,12 @@ of the line. It is never inserted without a key: → at the end of the line
 Only as much as fits on the row the buffer ends on is drawn. Accepting it
 inserts the whole line.
 
+Ctrl+R's query starts as the line itself, so editing the query edits the
+line: closing the list without picking a row — Esc, Backspace past the start
+of the query, Enter on "(no matches)" — leaves the line as the query was left.
+Only Ctrl+C puts back the line as it was before Ctrl+R. A line too long to
+seed the query is never touched, so Esc returns it unchanged.
+
 TAB is ordinary completion again. Past lines are no longer mixed into the
 picker.
 
