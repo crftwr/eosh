@@ -56,6 +56,7 @@ from .pipeline import (
     split_on_operators,
 )
 from . import hooks, notify, shell_integration
+from .paste import PastedBlock, eosh_lines
 from . import keys as keymap
 from . import job as job_mod
 from .job import PipelineSlot
@@ -1427,6 +1428,42 @@ class Shell(ContextSwitcher):
         except DecoratorParseError as e:
             print(f"eosh: {e}", file=sys.stderr)
             return 2
+        return self._execute_sequence(seq, line, history_id)
+
+    def _run_paste(self, block: PastedBlock) -> None:
+        """Run a paste held at the prompt (see paste.py).
+
+        A bash block goes to ``source-bash -c`` whole — built as a parsed
+        stage, not a line, because eosh's own ``$VAR`` expansion would
+        reach into a quoted body containing a ``'``.  It isn't recorded in
+        history: it is usually credentials, and a multi-line entry can't be
+        recalled onto one line anyway.  An eosh block runs line by line,
+        each recorded and run as if typed.
+        """
+        if block.bash:
+            n = block.count("\n") + 1
+            label = f"source-bash  # pasted {n} line{'s' if n != 1 else ''}"
+            seq = Sequence(items=[(None, Pipeline(stages=[
+                Stage(text="source-bash -c " + shlex.quote(str(block)))]))])
+            shell_integration.command_started(label)
+            with execution.entered(runner=self._run_body):
+                status = self._execute_sequence(seq, label, None)
+            shell_integration.command_finished(status)
+            return
+        for line in eosh_lines(block):
+            history_id = self._record_history(line)
+            shell_integration.command_started(line)
+            status = self._execute(line, history_id=history_id)
+            shell_integration.command_finished(status)
+            if self._exit_requested:
+                return
+            if status is None:
+                print("eosh: the rest of the paste was not run: "
+                      "a line went to the background", file=sys.stderr)
+                return
+
+    def _execute_sequence(self, seq: Sequence, line: str,
+                          history_id: int | None) -> int | None:
         last_exit = 0
         started = time.monotonic()
         # Cleared per line; set by whichever path hands the work to a
@@ -2386,6 +2423,11 @@ class Shell(ContextSwitcher):
                 # Collect the primary line (history managed here, not inside the editor).
                 text = self._line_editor.prompt()
                 if text == CONTEXT_CHANGED_SENTINEL:
+                    continue
+                if isinstance(text, PastedBlock):
+                    self._run_paste(text)
+                    if self._exit_requested:
+                        break
                     continue
 
                 # Handle backslash line continuation: keep prompting with "> "

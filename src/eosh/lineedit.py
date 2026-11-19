@@ -10,7 +10,7 @@ import time
 import unicodedata
 from typing import Callable
 
-from . import keys, shell_integration, terminal
+from . import keys, paste, shell_integration, terminal
 from .completion import Completion
 from .history import HistoryEntry, HistoryStore
 from .parsing import raw_token_start
@@ -217,6 +217,9 @@ class LineEditor:
         # a line an action asked to finish with (ctx.invoke("accept")).
         self._invoking: set[str] = set()
         self._pending_result: str | None = None
+        # A paste held until Enter (see paste.py), and the buffer it replaced.
+        self._paste: paste.PastedBlock | None = None
+        self._paste_saved: tuple[str, int] = ("", 0)
 
     def add_to_history(self, line: str) -> None:
         """Append *line* to the current context's Up/Down list (the caller
@@ -273,6 +276,7 @@ class LineEditor:
         self._cursor = 0
         self._hist_idx = 0
         self._saved_buf = ""
+        self._paste = None
         self._prompt_str = prompt_str if prompt_str is not None else self._get_prompt()
         self._prompt_len = _visible_len(self._prompt_str)
         # A continuation line ("> ") is the middle of a command, which no
@@ -290,6 +294,10 @@ class LineEditor:
             self._update_cols()
             self._cursor_row = 0
             terminal.set_raw(fd)
+            # Bracketed paste on while *we* read keys only: a child program
+            # run between prompts gets a paste as plain keys, as it expects.
+            if not terminal.IS_WINDOWS:
+                sys.stdout.write(paste.ENABLE)
             self._redraw()
 
             while True:
@@ -311,6 +319,9 @@ class LineEditor:
             sys.stdout.flush()
             raise
         finally:
+            if not terminal.IS_WINDOWS:
+                sys.stdout.write(paste.DISABLE)
+                sys.stdout.flush()
             terminal.restore_mode(fd, old_attrs)
             terminal.restore_resize_handler(old_sigwinch)
 
@@ -448,6 +459,9 @@ class LineEditor:
             sys.stdout.write(f"\033[{self._cursor_row}A")
         sys.stdout.write("\r\033[J")
         mark_start, mark_end = self._prompt_marks
+        if self._paste is not None:
+            self._redraw_paste(mark_start + self._prompt_str + mark_end)
+            return
         sys.stdout.write(mark_start + self._prompt_str + mark_end + self._buf)
         ghost = self._ghost_suffix(total_char)
         if ghost:
@@ -503,6 +517,30 @@ class LineEditor:
         sys.stdout.write("\x1b[?25h\x1b[?2026l")
         sys.stdout.flush()
 
+    def _redraw_paste(self, prompt: str) -> None:
+        """The rest of :meth:`_redraw` for a held paste: its lines under the
+        prompt, each on one row (``> `` before the second and later ones),
+        the caret after the last, and the hint in the status bar."""
+        from .tui import _statusbar
+        rows = self._paste_preview()
+        sys.stdout.write(prompt)
+        for i, row in enumerate(rows):
+            if i:
+                sys.stdout.write("\r\n\033[2m> \033[22m")
+            if row.startswith("\x00"):
+                sys.stdout.write(f"\033[2m{row[1:]}\033[22m")
+            else:
+                sys.stdout.write(row)
+        self._cursor_row = len(rows) - 1
+        bar = None if self._suppress_statusbar else _statusbar(
+            self._paste_hint(), "", self._cols)
+        if bar is not None:
+            sys.stdout.write("\n\033[A\0337")
+            sys.stdout.write(f"\033[{self._lines};1H{bar}\0338")
+            self._status_bar_visible = True
+        sys.stdout.write("\x1b[?25h\x1b[?2026l")
+        sys.stdout.flush()
+
     def _clear_status_bar(self) -> None:
         """Wipe the status bar from the bottom row before yielding the terminal.
 
@@ -523,6 +561,12 @@ class LineEditor:
         """Return a result string to finish, or None to keep editing."""
         self._suppress_statusbar = False  # bring the bar back on user activity
 
+        if key == paste.PASTE_START:
+            self._on_paste(self._read_paste(fd))
+            return None
+        if self._paste is not None:
+            return self._held_paste_key(key)
+
         name = keys.lookup("prompt", key)
         if name is not None:
             return self.run_action(name)
@@ -534,6 +578,96 @@ class LineEditor:
             if ch.isprintable():
                 self._insert(ch)
         return None
+
+    # ── bracketed paste ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_paste(fd: int) -> str:
+        """Read the rest of a bracketed paste, up to its end marker."""
+        data = b""
+        while True:
+            key = terminal.read_key(fd)
+            if not key or key == paste.PASTE_END:
+                break
+            data += key
+        return data.decode("utf-8", errors="replace")
+
+    def _on_paste(self, raw: str) -> None:
+        """Insert a one-line eosh paste; hold anything else until Enter.
+
+        A held paste takes the buffer with it (the text around the caret
+        joins the pasted lines), and a second paste while one is held adds
+        to it.
+        """
+        text = paste.normalize(raw)
+        if self._paste is not None:
+            text = self._paste + text
+            before, after = "", ""
+        else:
+            self._paste_saved = (self._buf, self._cursor)
+            before, after = self._buf[: self._cursor], self._buf[self._cursor :]
+        whole = (before + text + after).strip("\n")
+        if not whole.strip():
+            return
+        bash = paste.needs_bash(whole)
+        if "\n" not in whole and not bash:
+            self._paste = None
+            self._buf, self._cursor = whole, len(before + text.strip("\n"))
+            return
+        self._erase_ghost()
+        self._paste = paste.PastedBlock(whole, bash)
+        self._buf, self._cursor = "", 0
+
+    def _held_paste_key(self, key: bytes) -> str | None:
+        """Keys while a paste is held: Enter runs it, Ctrl+C drops the line,
+        Esc / Backspace let it go — a one-line paste back into the buffer to
+        edit (where it runs as eosh), a block back to the buffer as it was.
+        Every other key is ignored: nothing may edit a block it can't show."""
+        name = keys.lookup("prompt", key)
+        if name == "prompt.accept":
+            return self._paste
+        if name == "prompt.interrupt":
+            self._paste = None
+            return self.run_action(name)
+        if key == b"\x1b" or name == "prompt.backward_delete_char":
+            held, self._paste = self._paste, None
+            if "\n" in held:
+                self._buf, self._cursor = self._paste_saved
+            else:
+                self._buf, self._cursor = str(held), len(held)
+        return None
+
+    def _paste_preview(self) -> list[str]:
+        """The held paste as screen rows: one row per line, cut to the
+        width, and at most a screenful (a block taller than the terminal
+        would scroll the prompt's top out of reach of every redraw)."""
+        assert self._paste is not None
+        lines = self._paste.split("\n")
+        room = max(3, self._lines - 3)
+        if len(lines) > room:
+            hidden = len(lines) - (room - 1)
+            lines = lines[: room - 2] + [f"\x00… {hidden} more lines"] + lines[-1:]
+        rows = []
+        for i, line in enumerate(lines):
+            width = max(1, self._cols - 1 - (self._prompt_len if i == 0 else 2))
+            if _wcswidth(line) > width:
+                out, used = "", 0
+                for ch in line:
+                    used += _wcswidth(ch)
+                    if used > width - 1:
+                        break
+                    out += ch
+                line = out + "…"
+            rows.append(line)
+        return rows
+
+    def _paste_hint(self) -> str:
+        assert self._paste is not None
+        n = self._paste.count("\n") + 1
+        lines = f"{n} line{'s' if n != 1 else ''}"
+        where = "bash (source-bash)" if self._paste.bash else "eosh, line by line"
+        back = "Esc edit" if n == 1 else "Esc discard"
+        return f"pasted {lines} → {where}   Enter run · {back}"
 
     def run_action(self, name: str) -> str | None:
         """Run the action *name* (a user action first, then the built-in) and

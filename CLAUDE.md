@@ -172,6 +172,18 @@ variable **names only** — a sourced script is exactly where an
 suppresses the summary. Shell functions, aliases and shell options cannot come
 back (eosh has no equivalent) — see `doc/limitations.md`.
 
+**Pasting at the prompt (`paste.py`).** `LineEditor.prompt` turns bracketed
+paste on (`ESC[?2004h`, POSIX only) while it reads keys, and off again before a
+child runs. A paste of one eosh line is inserted into the buffer. Anything
+else (several lines, or a line `paste.needs_bash` flags: `export`, `source`,
+`for`, heredocs, backticks, …) is *held* as a `PastedBlock`. The prompt shows
+it one row per line with a status-bar hint naming where it will run. Enter
+returns it, Esc / Backspace let it go, and every other key is ignored.
+`Shell._run_paste` sends a bash block to `source-bash -c` as a pre-built
+`Stage`, bypassing `expand_vars` (which would expand `$VAR` in a quoted body
+that contains a `'`), and doesn't record it in history. An eosh block runs
+through `_execute` line by line, as if typed.
+
 **Ctrl+] context switching:** The user can press `Ctrl+]` at the shell prompt (or during a running process) to open a TUI picker listing all contexts. Selecting a context with a live process resumes it immediately. While the picker is open, the focused context's last few lines of buffered output are previewed below the list, and the following action keys mutate the context list in place: `Ctrl+N` creates a new context (inheriting the current context's variables), `Ctrl+D` deletes the focused context (including the current one — the manager picks the next current automatically), `Ctrl+R` renames the focused context. Action keys refuse to delete a context with a live process or to leave fewer than one context. The shell tracks running work across context switches with slots (`PipelineSlot` in `job.py`).
 
 ### commands.py — Command Registry
