@@ -232,6 +232,8 @@ def test_ctrl_r_opens_filtered_by_the_buffer(monkeypatch, capsys):
             seen["items"] = [e.cmd for e in items]
             seen["typed"] = kw.get("typed")
             self.accepted = False                   # closed with Esc
+            self.interrupted = False
+            self.typed = kw.get("typed")
 
         def run(self):
             return None
@@ -241,28 +243,61 @@ def test_ctrl_r_opens_filtered_by_the_buffer(monkeypatch, capsys):
     ed._buf, ed._cursor = "git", 3
     ed._history_search()
     assert seen == {"items": ["git commit -m a", "git status"], "typed": "git"}
-    assert ed._buf == "git"                         # Esc restores the line
+    assert ed._buf == "git"                         # Esc keeps the line
     capsys.readouterr()
 
 
-def test_enter_on_no_matches_keeps_the_query(monkeypatch, capsys):
-    """#97: Enter while "(no matches)" is shown must not wipe the line."""
+def _search_with_keys(monkeypatch, buf, keys, cols=80):
     import eosh.tui as tui
 
     store = HistoryStore(None)
     store.add("git status", cwd="/r")
-    keys = iter([b"x", b"y", b"z", b"\r"])
+    keys = iter(keys)
     real = tui.InlinePicker
     monkeypatch.setattr(
         tui, "InlinePicker",
         lambda items, **kw: real(items, key_source=lambda t: next(keys), **kw))
-    monkeypatch.setattr(tui.terminal, "terminal_size", lambda: (80, 24))
-    monkeypatch.setattr(tui.os, "get_terminal_size", lambda *a: os.terminal_size((80, 24)))
+    monkeypatch.setattr(tui.terminal, "terminal_size", lambda: (cols, 24))
+    monkeypatch.setattr(tui.os, "get_terminal_size", lambda *a: os.terminal_size((cols, 24)))
     monkeypatch.setattr(tui.sys, "stdin", type("In", (), {"fileno": lambda s: 0})())
     ed = _editor(history=store)
-    ed._buf, ed._cursor = "git ", 4
+    ed._cols = cols
+    ed._buf, ed._cursor = buf, len(buf)
     ed._history_search()
+    return ed
+
+
+def test_enter_on_no_matches_keeps_the_query(monkeypatch, capsys):
+    """#97: Enter while "(no matches)" is shown must not wipe the line."""
+    ed = _search_with_keys(monkeypatch, "git ", [b"x", b"y", b"z", b"\r"])
     assert (ed._buf, ed._cursor) == ("git xyz", 7)
+    capsys.readouterr()
+
+
+def test_esc_keeps_the_edited_query(monkeypatch, capsys):
+    """Esc closes the list; the line stays as the query was edited."""
+    ed = _search_with_keys(monkeypatch, "git", [b" ", b"s", b"\x7f", b"\x1b"])
+    assert (ed._buf, ed._cursor) == ("git ", 4)
+    capsys.readouterr()
+
+
+def test_backspacing_the_query_away_leaves_an_empty_line(monkeypatch, capsys):
+    """Erasing the whole query closes the list; the old line doesn't return."""
+    ed = _search_with_keys(monkeypatch, "git", [b"\x7f"] * 4)
+    assert (ed._buf, ed._cursor) == ("", 0)
+    capsys.readouterr()
+
+
+def test_ctrl_c_undoes_the_search(monkeypatch, capsys):
+    ed = _search_with_keys(monkeypatch, "git", [b"\x7f", b"\x03"])
+    assert ed._buf == "git"
+    capsys.readouterr()
+
+
+def test_esc_restores_a_line_too_long_to_seed_the_query(monkeypatch, capsys):
+    long = "echo " + "x" * 100
+    ed = _search_with_keys(monkeypatch, long, [b"g", b"\x1b"])
+    assert ed._buf == long
     capsys.readouterr()
 
 

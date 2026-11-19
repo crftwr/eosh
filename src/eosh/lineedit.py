@@ -1184,9 +1184,12 @@ class LineEditor:
             self._buf = selected.cmd
             self._cursor = len(self._buf)
             self._hist_idx = 0
-        elif picker.accepted:
-            # Enter on "(no matches)": keep the query as the line rather
-            # than throwing it away (#97).  Only Esc / Ctrl+C restore.
+        elif picker.accepted or (seed == saved_buf and not picker.interrupted):
+            # The query started as the line, so it *is* the line being
+            # edited: closing without a pick — Esc, Backspace past the start,
+            # Enter on "(no matches)" (#97) — leaves it as the user left it.
+            # Only Ctrl+C undoes the search.  A line too long to seed the
+            # query was never touched, so it comes back below.
             self._buf = picker.typed
             self._cursor = len(self._buf)
         else:
