@@ -385,6 +385,35 @@ because its absence from the dump doesn't prove the script unset it.
 Windows needs a `bash` on `PATH` (Git Bash's, typically); without one the
 command reports `no 'bash' on PATH` and does nothing.
 
+## Pasting at the prompt — where a paste runs is a guess
+
+A paste that uses bash syntax runs as a whole in a child bash through
+`source-bash`. Any other multi-line paste runs as eosh lines, one at a
+time. `paste.needs_bash` makes the call by looking at the words in
+command position (`export`, `source`, `if`, `for`, `{`, `(`, …) and at
+constructs eosh's parser doesn't have (backticks, `<<`, `$((`,
+`${VAR:-x}`). The status bar says which way a paste will go before Enter
+runs it. Known gaps:
+
+- **A bash script made only of commands eosh also understands** (`cd x`
+  and then `make`) runs in eosh. That is almost always what you want, but
+  bash-only behaviour such as `$'…'` quoting or globbing options won't
+  apply.
+- **No native parsing of the assignment lines.** Even a plain
+  `export KEY=VALUE` block needs `bash` on `PATH`. The cmd (`set K=V`) and
+  PowerShell (`$Env:K="V"`) forms that consoles also hand out aren't
+  recognised at all.
+- **POSIX only.** On Windows the console delivers a paste as plain keys
+  (`msvcrt` has no bracketed-paste markers), so each line still runs as
+  it arrives. Fixing this needs the console in VT-input mode.
+- **A bash paste isn't recorded in history.** It usually carries
+  credentials, and a multi-line entry can't be recalled onto the one-line
+  editor anyway.
+- **A held paste can't be edited.** The prompt shows it one row per line,
+  cut to the width and to a screenful. Esc turns a one-line paste back into
+  an editable line, which then runs as eosh. Esc on a multi-line paste
+  discards it.
+
 ## argcomplete completion borrows the shell's fd 8
 
 argcomplete hard-codes fd 8 as the channel for its candidates. To hand the

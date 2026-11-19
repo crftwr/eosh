@@ -112,6 +112,8 @@ eosh> source-bash -c 'export A=$(date +%s)'
 
 `--no-cd` keeps the current directory and `-q` suppresses the summary of imported variable names. Shell functions, aliases and shell options can't be imported.
 
+You usually don't need to type `source-bash` for a paste. Paste the `export` lines a console hands out straight at the prompt. eosh holds the paste instead of running it line by line, and shows where it will run: `bash (source-bash)` when it uses bash syntax (`export`, `source`, `for`, heredocs, …), and `eosh, line by line` for anything else. Enter runs it and Esc discards it. This relies on the terminal's bracketed paste, so it works on macOS and Linux but not yet on Windows.
+
 ### Contexts
 
 Contexts let you define named environments with variables that are exported to `os.environ` and a remembered working directory.
