@@ -101,6 +101,8 @@ _builtin("prompt.eof", ["Ctrl-D"], "on an empty line, exit the shell")
 _builtin("prompt.interrupt", ["Ctrl-C"], "discard the line")
 
 _builtin("picker.accept", ["Enter", "Ctrl-J"], "choose the highlighted row")
+_builtin("picker.accept_suggestion", ["Right", "Ctrl-F", "Ctrl-E", "End"],
+         "choose the highlighted row shown dimmed on the line (completion)")
 _builtin("picker.cancel", ["Esc"], "close without choosing")
 _builtin("picker.interrupt", ["Ctrl-C"], "close without choosing (an interrupt)")
 _builtin("picker.previous", ["Up", "Ctrl-P"], "highlight the row above")

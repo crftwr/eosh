@@ -136,7 +136,7 @@ DIY raw-mode line editor. No prompt_toolkit or readline.
 
 - `LineEditor.prompt()` — reads one line in raw terminal mode
 - Full key binding suite: `Ctrl+A/E/B/F/W/K/U/L`, `Alt+B/F`, arrows, `Ctrl+P/N`, `Ctrl+R`, `Ctrl+]`
-- TAB opens `InlinePicker` (flags included, one row each) with **no candidate pre-selected** — Enter dismisses, only Down/Up select (TAB extends the common prefix, never selects); supports narrowing by typing, TAB-extend, backspace-to-close, and self-closes when narrowing leaves zero candidates
+- TAB opens `InlinePicker` (flags included, one row each) with **no candidate pre-selected** — Enter dismisses, only Down/Up select, and the highlighted row is previewed as a dim ghost on the line, taken with → like the history ghost (TAB extends the common prefix, never selects); supports narrowing by typing, TAB-extend, backspace-to-close, and self-closes when narrowing leaves zero candidates
 - `Ctrl+R` opens a filterable picker over the shared history, starting from what is typed
 - A fish-style ghost suggestion (the latest line run in the cwd that extends the buffer) is drawn dim after the caret; `→` / `Ctrl+E` accept it, `Alt+F` one word — see [history.md](history.md)
 - Multi-line wrap tracking for correct cursor repositioning

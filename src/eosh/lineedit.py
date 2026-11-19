@@ -1035,6 +1035,16 @@ class LineEditor:
             buf_at_tab = self._buf[: self._cursor]
             caret_char_at_tab = caret_char
 
+            def ghost(c: Completion, typed: str) -> str | None:
+                # What applying *c* would add after what is on the line now
+                # (the buffer plus the picker's typed chars), when it reads
+                # as a continuation.  A candidate that rewrites the token
+                # (a case fix, added quotes) has no ghost.
+                line = buf_at_tab + typed
+                new_buf, new_cursor = self._applied(c, line, len(line))
+                applied = new_buf[:new_cursor]
+                return applied[len(line):] if applied.startswith(line) else None
+
             def refresh(typed: str) -> tuple[list[Completion], int]:
                 new_completions, new_prefix, _ = self._get_completions(buf_at_tab + typed)
                 new_caret_col = _pending_wrap_col(
@@ -1059,6 +1069,10 @@ class LineEditor:
                 # Open with nothing highlighted: Enter must not insert a
                 # candidate the user never picked. Only Down/Up select.
                 select_first=False,
+                # Preview the highlighted row on the line, as the history
+                # suggestion is previewed: dimmed, taken with Right.  Only at
+                # the end of the line, where it overwrites nothing.
+                ghost_fn=ghost if cols_from_end == 0 else None,
             )
             with self._picker_session():
                 selected = picker.run()
@@ -1179,22 +1193,19 @@ class LineEditor:
             self._buf = saved_buf
             self._cursor = saved_cursor
 
-    def _raw_token_start(self) -> int:
-        """Return the index in self._buf where the current raw token starts.
-
-        Shares :func:`parsing.raw_token_start` with the completers, so a
-        candidate is measured from exactly the position it is inserted at.
-        """
-        return raw_token_start(self._buf[: self._cursor])
-
     def _apply(self, completion: Completion) -> None:
+        self._buf, self._cursor = self._applied(completion, self._buf, self._cursor)
+
+    @staticmethod
+    def _applied(completion: Completion, buf: str, cursor: int) -> tuple[str, int]:
+        """The buffer and caret after applying *completion* at *cursor*."""
         # Find where the raw token starts in the buffer.  We cannot use
         # len(prefix) here because shlex.split returns the *unquoted* length,
         # which differs from the raw length when the token is surrounded by
         # quotes (e.g. `'My Documents/'` is 16 raw chars but 14 unquoted).
-        raw_start = self._raw_token_start()
-        pre = self._buf[:raw_start]
-        post = self._buf[self._cursor :]
+        raw_start = raw_token_start(buf[:cursor])
+        pre = buf[:raw_start]
+        post = buf[cursor:]
         # Shell-quote the value if it contains whitespace or other characters
         # that shlex would split on (e.g. spaces in S3 keys or local filenames).
         # _shell_quote only adds quotes when necessary and treats ~ as safe so
@@ -1207,8 +1218,7 @@ class LineEditor:
         # already starts with whitespace.
         if not completion.value.endswith(("/", "=")) and not post[:1].isspace():
             value = value + " "
-        self._buf = pre + value + post
-        self._cursor = len(pre) + len(value)
+        return pre + value + post, len(pre) + len(value)
 
 
 class EditorContext:
